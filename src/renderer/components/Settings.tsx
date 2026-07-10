@@ -5049,7 +5049,7 @@ const Settings: React.FC<SettingsProps> = ({
           <div className="flex min-h-full flex-col items-center pt-6 pb-3">
             {/* Logo & App Name */}
             <img
-              src="logo.png"
+              src="/logo.png"
               alt="LfClaw"
               className="w-16 h-16 mb-3 cursor-pointer select-none"
               onClick={(e) => {

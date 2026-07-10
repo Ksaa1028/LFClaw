@@ -31,7 +31,7 @@ const WelcomeDialog: React.FC<WelcomeDialogProps> = ({ onLogin, onCustomModel, o
       <div className="relative z-10 flex flex-col items-center py-12 w-[420px]">
         {/* logo */}
         <img
-          src="logo.png"
+          src="/logo.png"
           alt="LfClaw"
           width={72}
           height={72}

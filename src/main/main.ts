@@ -2718,15 +2718,44 @@ const PRELOAD_PATH = app.isPackaged
   ? path.join(__dirname, 'preload.js')
   : path.join(__dirname, '../dist-electron/preload.js');
 
+const firstExistingPath = (candidates: string[]): string => {
+  const found = candidates.find(candidate => fs.existsSync(candidate));
+  return found ?? candidates[0];
+};
+
+const resolveRendererIndexPath = (): string =>
+  firstExistingPath([
+    path.join(__dirname, '../dist/index.html'),
+    path.join(__dirname, '../../dist/index.html'),
+    path.join(app.getAppPath(), 'dist/index.html'),
+  ]);
+
+const resolveErrorPagePath = (): string =>
+  firstExistingPath([
+    path.join(__dirname, '../resources/error.html'),
+    path.join(__dirname, '../../resources/error.html'),
+    path.join(app.getAppPath(), 'resources/error.html'),
+  ]);
+
 // 获取应用图标路径（Windows 使用 .ico，其他平台使用 .png）
 const getAppIconPath = (): string | undefined => {
   if (process.platform !== 'win32' && process.platform !== 'linux') return undefined;
-  const basePath = app.isPackaged
-    ? path.join(process.resourcesPath, 'tray')
-    : path.join(__dirname, '..', 'resources', 'tray');
-  return process.platform === 'win32'
-    ? path.join(basePath, 'tray-icon.ico')
-    : path.join(basePath, 'tray-icon.png');
+  const candidates = process.platform === 'win32'
+    ? [
+        path.join(__dirname, '../build/icons/win/icon.ico'),
+        path.join(__dirname, '../../build/icons/win/icon.ico'),
+        path.join(process.resourcesPath, 'app-icon/icon.ico'),
+        path.join(process.resourcesPath, 'tray/tray-icon.ico'),
+        path.join(__dirname, '..', 'resources', 'tray', 'tray-icon.ico'),
+      ]
+    : [
+        path.join(__dirname, '../build/icons/png/512x512.png'),
+        path.join(__dirname, '../../build/icons/png/512x512.png'),
+        path.join(process.resourcesPath, 'app-icon/512x512.png'),
+        path.join(process.resourcesPath, 'tray/tray-icon.png'),
+        path.join(__dirname, '..', 'resources', 'tray', 'tray-icon.png'),
+      ];
+  return firstExistingPath(candidates);
 };
 
 const getNotificationIconPath = (): string | null => {
@@ -9883,7 +9912,7 @@ if (!gotTheLock) {
           } else {
             console.error('Failed to load URL after maximum retries');
             if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.loadFile(path.join(__dirname, '../resources/error.html'));
+              mainWindow.loadFile(resolveErrorPagePath());
             }
           }
         });
@@ -9895,7 +9924,7 @@ if (!gotTheLock) {
       mainWindow.webContents.openDevTools();
     } else {
       // 生产环境
-      mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+      mainWindow.loadFile(resolveRendererIndexPath());
     }
 
     // 添加错误处理

@@ -38,6 +38,8 @@ package-lock.json
 
 nul
 .work.env
+.dev-*.log
+.lfclaw-window.png
 .keyfrom-build/
 
 .playwright-mcp/

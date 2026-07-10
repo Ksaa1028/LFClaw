@@ -68,6 +68,10 @@
     {
       "from": "build/icons/png/512x512.png",
       "to": "app-icon/512x512.png"
+    },
+    {
+      "from": "build/icons/win/icon.ico",
+      "to": "app-icon/icon.ico"
     }
   ],
   "protocols": [

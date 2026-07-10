@@ -790,7 +790,7 @@ const composeExportCanvas = async (
     const img = new Image();
     img.onload = () => resolve(img);
     img.onerror = () => reject(new Error('Failed to load logo'));
-    img.src = 'logo.png';
+    img.src = '/logo.png';
   });
 
   // Logo with rounded clipping

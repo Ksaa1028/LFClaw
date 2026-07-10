@@ -785,7 +785,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
           {/* Welcome Section - staggered entrance animation */}
           <div className="w-full max-w-3xl text-center">
             <img
-              src="logo.png"
+              src="/logo.png"
               alt="LfClaw"
               className="mx-auto h-12 w-12 animate-fade-in-up"
             />
