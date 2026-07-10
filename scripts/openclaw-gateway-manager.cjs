@@ -421,6 +421,26 @@ function upsertUserInfo(input) {
   });
 }
 
+function syncActivationCodeUserInfo() {
+  const store = readActivationStore();
+  let count = 0;
+  for (const [activationCode, record] of Object.entries(store.codes || {})) {
+    if (!record) continue;
+    upsertUserInfo({
+      userId: record.userId,
+      displayName: record.displayName,
+      folderName: record.folderName,
+      activationCode,
+      activationEnabled: record.enabled !== false,
+      status: record.enabled === false ? 'disabled' : 'created',
+      deviceName: record.lastDeviceName,
+      lastActivatedAt: record.lastActivatedAt,
+    });
+    count += 1;
+  }
+  if (count > 0) log(`synced ${count} activation user info file(s)`);
+}
+
 async function ensureUserGateway(user) {
   const userKey = safePathSegment(user.folderName || user.id || safeUserKey(user.id));
   let entry = users.get(userKey);
@@ -1186,6 +1206,7 @@ function cleanupIdleUsers() {
 
 ensureDir(config.dataRoot);
 ensureActivationStore();
+syncActivationCodeUserInfo();
 const server = http.createServer(handleHttp);
 server.on('upgrade', pipeUpgradeToOpenClaw);
 server.listen(config.port, config.host, () => {
