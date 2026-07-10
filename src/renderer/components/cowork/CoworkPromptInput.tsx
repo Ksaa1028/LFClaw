@@ -548,25 +548,8 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   const modelSupportsImage = !!effectiveSelectedModel?.supportsImage;
 
   const resolveSubmitModelAccessPrompt = useCallback((): ModelAccessPromptKind | null => {
-    const hasAccessibleUserModel = availableModels.some(
-      model => !model.isServerModel && model.accessible !== false
-    );
-    if (!isLoggedIn && !hasAccessibleUserModel) {
-      return ModelAccessPromptKind.Login;
-    }
-    if (
-      effectiveSelectedModel?.providerKey === ProviderName.LobsteraiServer
-      && effectiveSelectedModel.accessible === false
-    ) {
-      return isLoggedIn ? ModelAccessPromptKind.Subscribe : ModelAccessPromptKind.Login;
-    }
     return null;
-  }, [
-    availableModels,
-    effectiveSelectedModel?.accessible,
-    effectiveSelectedModel?.providerKey,
-    isLoggedIn,
-  ]);
+  }, []);
 
   const {
     handleVoiceInput,

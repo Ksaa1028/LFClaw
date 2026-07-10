@@ -82,7 +82,7 @@
     "pretest": "npm rebuild better-sqlite3",
     "test:sqlite-backup:seed": "node tests/sqlite-backup/generate-large-db.cjs",
     "preview": "vite preview",
-    "compile:electron": "tsc --project electron-tsconfig.json",
+    "compile:electron": "tsc --project electron-tsconfig.json && node scripts/ensure-electron-entry.cjs",
     "precompile:electron": "electron-builder install-app-deps",
     "build:skill:web-search": "npm install --prefix SKILLs/web-search && npx tsc -p SKILLs/web-search/tsconfig.json && node -e \"const fs=require('fs');['.connection','.server.log','.server.pid'].forEach(f=>{try{fs.unlinkSync('SKILLs/web-search/'+f)}catch(e){}});\"",
     "build:skill:tech-news": "node scripts/build-skill-tech-news.js",
