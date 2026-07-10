@@ -1,4 +1,4 @@
-import { ExclamationTriangleIcon } from '@heroicons/react/24/outline';
+import { ExclamationTriangleIcon, KeyIcon } from '@heroicons/react/24/outline';
 import { AgentId } from '@shared/agent';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSelector } from 'react-redux';
@@ -49,6 +49,14 @@ interface SidebarProps {
   onToggleCollapse: () => void;
   updateBadge?: React.ReactNode;
   hideLogin?: boolean;
+  enterpriseActivation?: {
+    activated?: boolean;
+    activationCode?: string;
+    userId?: string;
+    displayName?: string;
+    folderName?: string;
+    activatedAt?: string;
+  } | null;
 }
 
 const DEFAULT_SIDEBAR_WIDTH = 244;
@@ -136,6 +144,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   onToggleCollapse,
   updateBadge,
   hideLogin,
+  enterpriseActivation,
 }) => {
   const currentAgentId = useSelector((state: RootState) => state.agent.currentAgentId);
   const agents = useSelector((state: RootState) => state.agent.agents);
@@ -153,9 +162,13 @@ const Sidebar: React.FC<SidebarProps> = ({
   const [isResizing, setIsResizing] = useState(false);
   const [agentScrollEdges, setAgentScrollEdges] = useState({ top: false, bottom: false });
   const [showKitsNewBadge, setShowKitsNewBadge] = useState(false);
+  const [showEnterpriseIdentity, setShowEnterpriseIdentity] = useState(false);
   const isResizingRef = useRef(false);
   const resizeStartXRef = useRef(0);
   const resizeStartWidthRef = useRef(DEFAULT_SIDEBAR_WIDTH);
+
+  const enterpriseIdentity = enterpriseActivation?.activated ? enterpriseActivation : null;
+  const enterpriseDisplayName = enterpriseIdentity?.displayName || enterpriseIdentity?.userId || '企业用户';
   const agentScrollContainerRef = useRef<HTMLDivElement>(null);
   const isMac = window.electron.platform === 'darwin';
   const batchSelectableKeySet = useMemo(
@@ -736,7 +749,44 @@ const Sidebar: React.FC<SidebarProps> = ({
         </div>
       ) : (
         <div className="flex items-center gap-1 pb-2 pl-3 pr-2 pt-1">
-          {!hideLogin && (
+          {enterpriseIdentity ? (
+            <div className="relative min-w-0 flex-1">
+              <button
+                type="button"
+                onClick={() => setShowEnterpriseIdentity((value) => !value)}
+                className="inline-flex h-7 w-full items-center gap-1.5 rounded-md px-1.5 text-left text-[13px] font-normal text-foreground/80 transition-colors hover:bg-black/[0.03] dark:hover:bg-white/[0.04]"
+                title={`${enterpriseDisplayName}${enterpriseIdentity.activationCode ? ` / ${enterpriseIdentity.activationCode}` : ''}`}
+              >
+                <KeyIcon className="h-4 w-4 shrink-0 text-emerald-600" />
+                {!isCollapsed && (
+                  <span className="min-w-0 truncate">{enterpriseDisplayName}</span>
+                )}
+              </button>
+              {showEnterpriseIdentity && (
+                <div className="absolute bottom-9 left-0 z-50 w-72 rounded-lg border border-border bg-surface p-3 text-xs shadow-lg">
+                  <div className="mb-2 text-sm font-medium text-foreground">企业身份</div>
+                  <div className="space-y-1.5 text-secondary">
+                    <div className="flex gap-2">
+                      <span className="w-16 shrink-0 text-muted-foreground">员工</span>
+                      <span className="min-w-0 break-all text-foreground">{enterpriseDisplayName}</span>
+                    </div>
+                    <div className="flex gap-2">
+                      <span className="w-16 shrink-0 text-muted-foreground">激活码</span>
+                      <span className="min-w-0 break-all font-mono text-foreground">{enterpriseIdentity.activationCode || '-'}</span>
+                    </div>
+                    <div className="flex gap-2">
+                      <span className="w-16 shrink-0 text-muted-foreground">用户编号</span>
+                      <span className="min-w-0 break-all font-mono text-foreground">{enterpriseIdentity.userId || '-'}</span>
+                    </div>
+                    <div className="flex gap-2">
+                      <span className="w-16 shrink-0 text-muted-foreground">服务目录</span>
+                      <span className="min-w-0 break-all font-mono text-foreground">{enterpriseIdentity.folderName || '-'}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : !hideLogin && (
             <div className="flex-1 min-w-0">
               <LoginButton />
             </div>
@@ -744,7 +794,7 @@ const Sidebar: React.FC<SidebarProps> = ({
           <button
             type="button"
             onClick={() => onShowSettings()}
-            className={`inline-flex h-7 items-center justify-start gap-1.5 rounded-md px-1.5 text-[14px] font-normal text-foreground/80 transition-colors hover:bg-black/[0.03] dark:hover:bg-white/[0.04] ${hideLogin ? 'w-full' : 'shrink-0'}`}
+            className={`inline-flex h-7 items-center justify-start gap-1.5 rounded-md px-1.5 text-[14px] font-normal text-foreground/80 transition-colors hover:bg-black/[0.03] dark:hover:bg-white/[0.04] ${hideLogin && !enterpriseIdentity ? 'w-full' : 'shrink-0'}`}
             aria-label={i18nService.t('settings')}
           >
             <Cog6ToothIcon className="h-4 w-4 shrink-0" />

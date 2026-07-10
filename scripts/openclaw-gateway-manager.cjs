@@ -135,6 +135,16 @@ function hashActivationToken(token) {
   return crypto.createHash('sha256').update(String(token)).digest('hex');
 }
 
+function findActivationCodeByHash(store, codeHash) {
+  if (!codeHash) return undefined;
+  for (const code of Object.keys(store.codes || {})) {
+    if (crypto.createHash('sha256').update(code).digest('hex') === codeHash) {
+      return code;
+    }
+  }
+  return undefined;
+}
+
 function hashActivationCode(code) {
   return crypto.createHash('sha256').update(String(code)).digest('hex');
 }
@@ -255,6 +265,7 @@ function resolveEnterpriseUserFromBearer(bearerToken) {
     id: String(tokenEntry.userId),
     displayName: String(tokenEntry.displayName || tokenEntry.userId),
     folderName: safePathSegment(tokenEntry.folderName || `${tokenEntry.userId}_${tokenEntry.displayName || ''}`),
+    activationCode: findActivationCodeByHash(store, tokenEntry.activationCodeHash),
   };
 }
 
@@ -378,7 +389,36 @@ function getUserPaths(userKey) {
     stateDir: path.join(root, 'state'),
     configPath: path.join(root, 'state', 'openclaw.json'),
     logPath: path.join(root, 'gateway.log'),
+    infoPath: path.join(root, 'user-info.json'),
   };
+}
+
+function upsertUserInfo(input) {
+  const userKey = safePathSegment(input.folderName || input.userId || safeUserKey(input.userId));
+  const paths = getUserPaths(userKey);
+  const previous = readJsonIfExists(paths.infoPath, {});
+  const now = new Date().toISOString();
+  ensureDir(paths.root);
+  writeJsonAtomic(paths.infoPath, {
+    ...previous,
+    userKey,
+    userId: String(input.userId || previous.userId || ''),
+    displayName: String(input.displayName || previous.displayName || ''),
+    folderName: userKey,
+    activationCode: input.activationCode || previous.activationCode,
+    activationEnabled: input.activationEnabled === undefined
+      ? previous.activationEnabled
+      : input.activationEnabled !== false,
+    status: input.status || previous.status || 'created',
+    deviceId: input.deviceId || previous.deviceId,
+    deviceName: input.deviceName || previous.deviceName,
+    appVersion: input.appVersion || previous.appVersion,
+    port: input.port || previous.port,
+    lastActivatedAt: input.lastActivatedAt || previous.lastActivatedAt,
+    lastGatewayStartedAt: input.lastGatewayStartedAt || previous.lastGatewayStartedAt,
+    createdAt: previous.createdAt || now,
+    updatedAt: now,
+  });
 }
 
 async function ensureUserGateway(user) {
@@ -429,6 +469,14 @@ async function ensureUserGateway(user) {
     lastUsedAt: Date.now(),
   };
   users.set(userKey, entry);
+  upsertUserInfo({
+    userId: user.id,
+    displayName: user.displayName,
+    folderName: userKey,
+    status: 'gateway-running',
+    port,
+    lastGatewayStartedAt: new Date().toISOString(),
+  });
 
   log(`Starting OpenClaw user=${userKey} port=${port}`);
   const ready = await waitForPort(port, config.startupTimeoutMs);
@@ -745,11 +793,24 @@ async function handleEnterpriseActivate(req, res) {
     record.lastActivatedAt = new Date().toISOString();
     record.lastDeviceName = typeof body.deviceName === 'string' ? body.deviceName : undefined;
     saveActivationStore(store);
+    upsertUserInfo({
+      userId,
+      displayName,
+      folderName,
+      activationCode,
+      activationEnabled: record.enabled !== false,
+      status: 'activated',
+      deviceId: typeof body.deviceId === 'string' ? body.deviceId : undefined,
+      deviceName: typeof body.deviceName === 'string' ? body.deviceName : undefined,
+      appVersion: typeof body.appVersion === 'string' ? body.appVersion : undefined,
+      lastActivatedAt: record.lastActivatedAt,
+    });
 
     sendJson(res, 200, {
       code: 0,
       data: {
         activationToken,
+        activationCode,
         userId,
         displayName,
         folderName,
@@ -820,6 +881,14 @@ async function handleAdminCreateActivationCode(req, res) {
       updatedAt: now,
     };
     saveActivationStore(store);
+    upsertUserInfo({
+      userId,
+      displayName,
+      folderName,
+      activationCode,
+      activationEnabled: store.codes[activationCode].enabled !== false,
+      status: 'created',
+    });
 
     sendJson(res, 200, {
       code: 0,
@@ -858,6 +927,14 @@ async function handleAdminDisableActivationCode(req, res) {
       tokenEntry.disabledAt = record.disabledAt;
     }
     saveActivationStore(store);
+    upsertUserInfo({
+      userId: record.userId,
+      displayName: record.displayName,
+      folderName: record.folderName,
+      activationCode,
+      activationEnabled: false,
+      status: 'disabled',
+    });
 
     sendJson(res, 200, {
       code: 0,
@@ -916,6 +993,14 @@ async function handleAdminEnableActivationCode(req, res) {
       delete tokenEntry.disabledAt;
     }
     saveActivationStore(store);
+    upsertUserInfo({
+      userId: record.userId,
+      displayName: record.displayName,
+      folderName: record.folderName,
+      activationCode,
+      activationEnabled: true,
+      status: 'enabled',
+    });
 
     sendJson(res, 200, {
       code: 0,
@@ -955,6 +1040,14 @@ async function handleAdminDeleteActivationCode(req, res) {
     }
     delete store.codes[activationCode];
     saveActivationStore(store);
+    upsertUserInfo({
+      userId: record.userId,
+      displayName: record.displayName,
+      folderName: record.folderName,
+      activationCode,
+      activationEnabled: false,
+      status: 'deleted',
+    });
 
     sendJson(res, 200, {
       code: 0,
@@ -988,6 +1081,12 @@ async function handleGatewayToken(req, res) {
         model: config.model,
         allowInsecurePrivateWs: gatewayUrl.startsWith('ws://'),
         expiresAt: new Date(lease.expiresAt).toISOString(),
+        activation: {
+          activationCode: user.activationCode,
+          userId: user.id,
+          displayName: user.displayName,
+          folderName: user.folderName,
+        },
       },
     });
   } catch (error) {

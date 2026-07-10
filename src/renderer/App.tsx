@@ -84,6 +84,15 @@ const SETTINGS_TAB_SHORTCUT_ACTIONS: Array<{
 const INIT_STEP_TIMEOUT_MS_WINDOWS = 24_000;
 const INIT_STEP_TIMEOUT_MS_DEFAULT = 16_000;
 
+type EnterpriseActivationView = {
+  activated: boolean;
+  activationCode?: string;
+  userId?: string;
+  displayName?: string;
+  folderName?: string;
+  activatedAt?: string;
+};
+
 const App: React.FC = () => {
   const [showSettings, setShowSettings] = useState(false);
   const [settingsOptions, setSettingsOptions] = useState<SettingsOpenOptions & { requestId: number }>({ requestId: 0 });
@@ -127,6 +136,7 @@ const App: React.FC = () => {
   const [enterpriseActivationCode, setEnterpriseActivationCode] = useState('');
   const [enterpriseActivationError, setEnterpriseActivationError] = useState<string | null>(null);
   const [enterpriseActivationLoading, setEnterpriseActivationLoading] = useState(false);
+  const [enterpriseActivation, setEnterpriseActivation] = useState<EnterpriseActivationView | null>(null);
   const toastTimerRef = useRef<number | null>(null);
   const hasInitialized = useRef(false);
   const hasReportedAppStartedRef = useRef(false);
@@ -210,6 +220,7 @@ const App: React.FC = () => {
 
         if (entConfig?.activation?.required) {
           const activation = await window.electron.enterprise.getActivation();
+          setEnterpriseActivation(activation);
           setEnterpriseActivationRequired(!activation.activated);
           mark(`enterprise activation ${activation.activated ? 'present' : 'required'}`);
         }
@@ -953,6 +964,14 @@ const App: React.FC = () => {
         return;
       }
       setEnterpriseActivationRequired(false);
+      setEnterpriseActivation({
+        activated: true,
+        activationCode: result.activationCode || code,
+        userId: result.userId,
+        displayName: result.displayName,
+        folderName: result.folderName,
+        activatedAt: new Date().toISOString(),
+      });
       setEnterpriseActivationCode('');
       showToast(`已激活：${result.displayName || result.userId || '企业用户'}`);
     } catch (error) {
@@ -1121,6 +1140,7 @@ const App: React.FC = () => {
           onToggleCollapse={handleToggleSidebar}
           updateBadge={!isSidebarCollapsed ? updateBadge : null}
           hideLogin={enterpriseConfig?.ui?.login === 'hide'}
+          enterpriseActivation={enterpriseActivation}
         />
         <div className={`flex-1 min-w-0 transition-[padding] duration-200 ease-out ${isSidebarCollapsed ? 'pl-1.5' : ''}`}>
           <div className="relative h-full min-h-0 rounded-xl border border-border bg-background overflow-hidden">

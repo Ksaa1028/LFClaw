@@ -3325,10 +3325,16 @@ if (!gotTheLock) {
 
   ipcMain.handle('enterprise:getActivation', async () => {
     try {
-      const identity = getEnterpriseActivationIdentity();
+      let identity = getEnterpriseActivationIdentity();
+      if (!identity) return { activated: false };
+      if (!identity.activationCode) {
+        await syncOpenClawGatewayPersonalToken('enterprise-getActivation');
+        identity = getEnterpriseActivationIdentity();
+      }
       if (!identity) return { activated: false };
       return {
         activated: true,
+        activationCode: identity.activationCode,
         userId: identity.userId,
         displayName: identity.displayName,
         folderName: identity.folderName,
@@ -3382,6 +3388,7 @@ if (!gotTheLock) {
         message?: string;
         data?: {
           activationToken?: string;
+          activationCode?: string;
           userId?: string;
           displayName?: string;
           folderName?: string;
@@ -3395,6 +3402,7 @@ if (!gotTheLock) {
       }
       const identity: EnterpriseActivationIdentity = {
         activationToken: body.data.activationToken,
+        activationCode: body.data.activationCode || activationCode,
         userId: body.data.userId,
         displayName: body.data.displayName || body.data.userId,
         folderName: body.data.folderName,
@@ -3404,6 +3412,7 @@ if (!gotTheLock) {
       await syncOpenClawGatewayPersonalToken('enterprise-activate');
       return {
         success: true,
+        activationCode: identity.activationCode,
         userId: identity.userId,
         displayName: identity.displayName,
         folderName: identity.folderName,
@@ -3656,6 +3665,7 @@ if (!gotTheLock) {
 
   type EnterpriseActivationIdentity = {
     activationToken: string;
+    activationCode?: string;
     userId: string;
     displayName: string;
     folderName?: string;
@@ -3913,6 +3923,25 @@ if (!gotTheLock) {
       if (!runtimeConfig?.token) {
         console.warn('[OpenClawGatewayAuth] personal gateway response did not include a token; using configured gateway token.');
         return false;
+      }
+      const activation = (body as {
+        data?: {
+          activation?: {
+            activationCode?: string;
+            userId?: string;
+            displayName?: string;
+            folderName?: string;
+          };
+        };
+      })?.data?.activation;
+      if (enterpriseIdentity && activation) {
+        saveEnterpriseActivationIdentity({
+          ...enterpriseIdentity,
+          activationCode: activation.activationCode || enterpriseIdentity.activationCode,
+          userId: activation.userId || enterpriseIdentity.userId,
+          displayName: activation.displayName || enterpriseIdentity.displayName,
+          folderName: activation.folderName || enterpriseIdentity.folderName,
+        });
       }
       setRuntimeOpenClawGatewayConfig(runtimeConfig);
       console.log('[OpenClawGatewayAuth] personal gateway config applied.');

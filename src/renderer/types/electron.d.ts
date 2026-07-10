@@ -1461,6 +1461,7 @@ interface IElectronAPI {
     } | null>;
     getActivation: () => Promise<{
       activated: boolean;
+      activationCode?: string;
       userId?: string;
       displayName?: string;
       folderName?: string;
@@ -1468,6 +1469,7 @@ interface IElectronAPI {
     }>;
     activate: (activationCode: string) => Promise<{
       success: boolean;
+      activationCode?: string;
       userId?: string;
       displayName?: string;
       folderName?: string;
