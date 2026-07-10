@@ -364,15 +364,17 @@ const App: React.FC = () => {
   }, [isInitialized, defaultSelectedModel?.id, defaultSelectedModel?.providerKey]);
 
   const handleShowSettings = useCallback((options?: SettingsOpenOptions) => {
+    const modelSettingsHidden = enterpriseConfig?.disableModelPicker === true || enterpriseConfig?.ui?.model === 'hide';
+    const initialTab = options?.initialTab === 'model' && modelSettingsHidden ? 'general' : options?.initialTab;
     setSettingsOptions((current) => ({
-      initialTab: options?.initialTab,
+      initialTab,
       notice: options?.notice,
       noticeI18nKey: options?.noticeI18nKey,
       noticeExtra: options?.noticeExtra,
       requestId: current.requestId + 1,
     }));
     setShowSettings(true);
-  }, []);
+  }, [enterpriseConfig]);
 
   const handleShowSkills = useCallback(() => {
     setMainView('skills');
