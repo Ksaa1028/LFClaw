@@ -13,6 +13,20 @@ export type EnterpriseManifest = {
   name: string;
   ui?: Record<string, EnterpriseUIAction>;
   disableUpdate?: boolean;
+  disableYoudaoLogin?: boolean;
+  disableModelPicker?: boolean;
+  fixedModel?: {
+    id: string;
+    name: string;
+    provider?: string;
+    providerKey?: string;
+    openClawProviderId?: string;
+    supportsImage?: boolean;
+  };
+  activation?: {
+    required?: boolean;
+    managerUrl?: string;
+  };
   sync: {
     openclaw: boolean;
     skills: boolean | 'merge' | 'overwrite';
@@ -283,10 +297,17 @@ function stripMergedChannelTopLevelAccountCredentialFields(config: Record<string
  * Returns the directory path if manifest.json is found, null otherwise.
  */
 export function resolveEnterpriseConfigPath(): string | null {
-  const configPath = path.join(app.getPath('userData'), ENTERPRISE_CONFIG_DIR);
-  const manifestPath = path.join(configPath, MANIFEST_FILE);
-  if (fs.existsSync(manifestPath)) {
-    return configPath;
+  const candidates = [
+    path.join(app.getPath('userData'), ENTERPRISE_CONFIG_DIR),
+    process.resourcesPath ? path.join(process.resourcesPath, ENTERPRISE_CONFIG_DIR) : null,
+    path.join(process.cwd(), 'resources', ENTERPRISE_CONFIG_DIR),
+  ].filter((candidate): candidate is string => !!candidate);
+
+  for (const configPath of candidates) {
+    const manifestPath = path.join(configPath, MANIFEST_FILE);
+    if (fs.existsSync(manifestPath)) {
+      return configPath;
+    }
   }
   return null;
 }

@@ -48,6 +48,7 @@ import {
   OpenClawEngineManager,
   type OpenClawGatewayConnectionInfo,
 } from '../openclawEngineManager';
+import { getOpenClawGatewayConfig } from '../openclawGatewayConfig';
 import {
   extractGatewayHistoryEntries,
   extractGatewayMessageText,
@@ -1815,6 +1816,8 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   private gatewayClient: GatewayClientLike | null = null;
   private gatewayClientVersion: string | null = null;
   private gatewayClientEntryPath: string | null = null;
+  private gatewayClientUrl: string | null = null;
+  private gatewayClientToken: string | null = null;
   /** Holds the client between start() and onHelloOk so stopGatewayClient can clean it up. */
   private pendingGatewayClient: GatewayClientLike | null = null;
   private gatewayReadyPromise: Promise<void> | null = null;
@@ -3718,7 +3721,13 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     }
 
     const agentId = options.agentId || session.agentId || 'main';
-    const sessionKey = this.toSessionKey(sessionId, agentId);
+    const runId = randomUUID();
+    const gatewayConfig = getOpenClawGatewayConfig();
+    const baseSessionKey = this.toSessionKey(sessionId, agentId);
+    const sessionKey = gatewayConfig.mode === 'remote'
+      ? `${baseSessionKey}:run:${runId}`
+      : baseSessionKey;
+    this.rememberSessionKey(sessionId, baseSessionKey);
     this.rememberSessionKey(sessionId, sessionKey);
 
     this.store.updateSession(sessionId, { status: 'running' });
@@ -3738,7 +3747,6 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     );
     this.startChannelPolling();
 
-    const runId = randomUUID();
     const turnToken = this.nextTurnToken(sessionId);
 
     const agent = this.store.getAgent(agentId);
@@ -3748,16 +3756,25 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     const currentModel = session.modelOverride
       ? rawCurrentModel
       : (rawCurrentModel ? this.normalizeModelRef(rawCurrentModel) : '');
+    const remoteGatewayModel = getOpenClawGatewayConfig().model;
+    const effectiveCurrentModel = remoteGatewayModel || currentModel;
     if (!session.modelOverride && currentModel && currentModel !== rawCurrentModel && agent?.id) {
       this.store.updateAgent(agent.id, { model: currentModel });
+    }
+    if (remoteGatewayModel) {
+      console.log(
+        '[OpenClawRuntime] using remote OpenClaw model override.',
+        `Session ${sessionId}.`,
+        `Model ${remoteGatewayModel}.`,
+      );
     }
     try {
       firstResponseTiming.modelPatchStartedAtMs = Date.now();
       await this.ensureSessionModelForTurn({
         sessionId,
         sessionKey,
-        model: currentModel,
-        source: session.modelOverride
+        model: effectiveCurrentModel,
+        source: remoteGatewayModel || session.modelOverride
           ? SessionModelPatchSource.SessionOverride
           : SessionModelPatchSource.AgentModel,
       });
@@ -3768,7 +3785,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       console.log(
         '[OpenClawRuntimeTiming] session model sync finished.',
         `Session ${sessionId}.`,
-        `Model ${currentModel || 'none'}.`,
+        `Model ${effectiveCurrentModel || 'none'}.`,
         `Elapsed ${formatTimingDuration(firstResponseTiming.modelPatchStartedAtMs, firstResponseTiming.modelPatchEndedAtMs)}.`,
         `Total ${formatTimingOffset(firstResponseTiming.turnStartedAtMs, firstResponseTiming.modelPatchEndedAtMs)}.`,
       );
@@ -3834,7 +3851,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       sessionId,
       sessionKey,
       runId,
-      model: currentModel,
+      model: effectiveCurrentModel,
       turnToken,
       planMode,
       knownRunIds: new Set([runId]),
@@ -3897,12 +3914,13 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       if (attachments) {
         console.log('[OpenClawRuntime] chat.send with attachments:', attachments.length, 'images,', attachments.map(a => ({ type: a.type, mimeType: a.mimeType, contentLength: a.content?.length ?? 0 })));
       }
+      const shouldSendCwd = getOpenClawGatewayConfig().mode !== 'remote';
       const chatSendParams = {
         sessionKey,
         message: outboundMessage,
         deliver: false,
         idempotencyKey: runId,
-        ...(runCwd ? { cwd: runCwd } : {}),
+        ...(shouldSendCwd && runCwd ? { cwd: runCwd } : {}),
         ...(attachments ? { attachments } : {}),
       };
       assertOpenClawChatSendPayloadWithinLimit(sessionId, chatSendParams, attachments);
@@ -4177,7 +4195,6 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     console.log('[ChannelSync] ensureGatewayClientReady: connection info — url=', connection.url ? '✓' : '✗', 'token=', connection.token ? '✓' : '✗', 'version=', connection.version, 'clientEntryPath=', connection.clientEntryPath ? '✓' : '✗');
     const missing: string[] = [];
     if (!connection.url) missing.push('url');
-    if (!connection.token) missing.push('token');
     if (!connection.version) missing.push('version');
     if (!connection.clientEntryPath) missing.push('clientEntryPath');
     if (missing.length > 0) {
@@ -4186,7 +4203,9 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
     const needsNewClient = !this.gatewayClient
       || this.gatewayClientVersion !== connection.version
-      || this.gatewayClientEntryPath !== connection.clientEntryPath;
+      || this.gatewayClientEntryPath !== connection.clientEntryPath
+      || this.gatewayClientUrl !== connection.url
+      || this.gatewayClientToken !== connection.token;
     console.log('[ChannelSync] ensureGatewayClientReady: needsNewClient=', needsNewClient, 'hasExistingClient=', !!this.gatewayClient);
     if (!needsNewClient && this.gatewayReadyPromise) {
       await waitWithTimeout(this.gatewayReadyPromise, GATEWAY_READY_TIMEOUT_MS);
@@ -4209,6 +4228,10 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
   private async createGatewayClient(connection: OpenClawGatewayConnectionInfo): Promise<void> {
     const GatewayClient = await this.loadGatewayClientCtor(connection.clientEntryPath);
+    const gatewayConfig = getOpenClawGatewayConfig();
+    if (gatewayConfig.allowInsecurePrivateWs) {
+      process.env.OPENCLAW_ALLOW_INSECURE_PRIVATE_WS = '1';
+    }
 
     let resolveReady: (() => void) | null = null;
     let rejectReady: ((error: Error) => void) | null = null;
@@ -4250,6 +4273,8 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         this.gatewayClient = client;
         this.gatewayClientVersion = connection.version;
         this.gatewayClientEntryPath = connection.clientEntryPath;
+        this.gatewayClientUrl = connection.url;
+        this.gatewayClientToken = connection.token;
         this.resetGatewayRpcHealth();
         settleResolve();
         try {
@@ -4344,6 +4369,8 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     this.pendingGatewayClient = null;
     this.gatewayClientVersion = null;
     this.gatewayClientEntryPath = null;
+    this.gatewayClientUrl = null;
+    this.gatewayClientToken = null;
     if (this.gatewayReadyReject) {
       const stoppedBeforeReadyError = new Error('OpenClaw gateway client stopped before handshake completed.');
       this.gatewayReadyPromise?.catch(() => {
@@ -7143,12 +7170,13 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     ].join('\n');
     const session = this.store.getSession(sessionId);
     const runCwd = session?.cwd?.trim() ? path.resolve(session.cwd.trim()) : undefined;
+    const shouldSendCwd = getOpenClawGatewayConfig().mode !== 'remote';
     const chatSendParams = {
       sessionKey: turn.sessionKey,
       message: recoveryPrompt,
       deliver: false,
       idempotencyKey: recoveryRunId,
-      ...(runCwd ? { cwd: runCwd } : {}),
+      ...(shouldSendCwd && runCwd ? { cwd: runCwd } : {}),
     };
 
     turn.runId = recoveryRunId;
@@ -7312,6 +7340,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     const recoveryRunId = randomUUID();
     const session = this.store.getSession(sessionId);
     const runCwd = session?.cwd?.trim() ? path.resolve(session.cwd.trim()) : undefined;
+    const shouldSendCwd = getOpenClawGatewayConfig().mode !== 'remote';
     const chatSendParams = {
       sessionKey: turn.sessionKey,
       message: [
@@ -7325,7 +7354,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       ].join('\n'),
       deliver: false,
       idempotencyKey: recoveryRunId,
-      ...(runCwd ? { cwd: runCwd } : {}),
+      ...(shouldSendCwd && runCwd ? { cwd: runCwd } : {}),
     };
 
     turn.runId = recoveryRunId;

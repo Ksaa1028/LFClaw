@@ -113,6 +113,19 @@ contextBridge.exposeInMainWorld('electron', {
   },
   enterprise: {
     getConfig: () => ipcRenderer.invoke('enterprise:getConfig'),
+    getActivation: () => ipcRenderer.invoke('enterprise:getActivation'),
+    activate: (activationCode: string) => ipcRenderer.invoke('enterprise:activate', { activationCode }),
+    clearActivation: () => ipcRenderer.invoke('enterprise:clearActivation'),
+  },
+  openclawGateway: {
+    getConfig: () => ipcRenderer.invoke('openclawGateway:getConfig'),
+    saveConfig: (config: {
+      mode?: 'local' | 'remote';
+      gatewayUrl?: string;
+      token?: string;
+      model?: string;
+      allowInsecurePrivateWs?: boolean;
+    }) => ipcRenderer.invoke('openclawGateway:saveConfig', config),
   },
   api: {
     // 普通 API 请求（非流式）

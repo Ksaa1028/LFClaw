@@ -245,6 +245,16 @@ import {
 import { buildProviderSelection, OpenClawConfigSync } from './libs/openclawConfigSync';
 import { OpenClawEngineManager, type OpenClawEngineStatus } from './libs/openclawEngineManager';
 import {
+  getEnterpriseOpenClawGatewayConfigFileCandidates,
+  getOpenClawGatewayConfig,
+  getOpenClawGatewayConfigFileCandidates,
+  readOpenClawGatewayFileConfig,
+  setRuntimeOpenClawGatewayConfig,
+  setRuntimeOpenClawGatewayToken,
+  type OpenClawGatewayFileConfig,
+  writeOpenClawGatewayFileConfig,
+} from './libs/openclawGatewayConfig';
+import {
   backupOpenClawConfig,
   getOpenClawGatewayRepairBusyError,
 } from './libs/openclawGatewayRepair';
@@ -3127,15 +3137,18 @@ if (!gotTheLock) {
   app.quit();
 } else {
   // Register custom protocol for OAuth callback
-  if (!app.isPackaged) {
-    // In dev mode, setAsDefaultProtocolClient needs the electron exe path
-    // and the app entry point as extra args so the OS can relaunch correctly
-    app.setAsDefaultProtocolClient('lobsterai', process.execPath, [
-      path.resolve(process.argv[1]),
-    ]);
-  } else {
-    app.setAsDefaultProtocolClient('lobsterai');
-  }
+  const registerProtocolClient = (scheme: string) => {
+    if (!app.isPackaged) {
+      app.setAsDefaultProtocolClient(scheme, process.execPath, [
+        path.resolve(process.argv[1]),
+      ]);
+    } else {
+      app.setAsDefaultProtocolClient(scheme);
+    }
+  };
+
+  registerProtocolClient('lfclaw');
+  registerProtocolClient('lobsterai');
 
   const authCallbackRouter = new AuthCallbackRouter({
     getTarget: () => {
@@ -3148,7 +3161,7 @@ if (!gotTheLock) {
   });
 
   /**
-   * Parse a lobsterai:// deep link and send (or buffer) the auth code.
+   * Parse an lfclaw:// or lobsterai:// deep link and send (or buffer) the auth code.
    */
   const handleDeepLink = (url: string) => {
     authCallbackRouter.handleDeepLink(url);
@@ -3204,7 +3217,7 @@ if (!gotTheLock) {
     }
 
     // Check for deep link in command line args (Windows/Linux)
-    const deepLink = commandLine.find(arg => arg.startsWith('lobsterai://'));
+    const deepLink = commandLine.find(arg => arg.startsWith('lfclaw://') || arg.startsWith('lobsterai://'));
     if (deepLink) {
       handleDeepLink(deepLink);
     }
@@ -3278,6 +3291,142 @@ if (!gotTheLock) {
       return getStore().get('enterprise_config') ?? null;
     } catch {
       return null;
+    }
+  });
+
+  ipcMain.handle('enterprise:getActivation', async () => {
+    try {
+      const identity = getEnterpriseActivationIdentity();
+      if (!identity) return { activated: false };
+      return {
+        activated: true,
+        userId: identity.userId,
+        displayName: identity.displayName,
+        folderName: identity.folderName,
+        activatedAt: identity.activatedAt,
+      };
+    } catch {
+      return { activated: false };
+    }
+  });
+
+  ipcMain.handle('enterprise:clearActivation', async () => {
+    clearEnterpriseActivationIdentity();
+    setRuntimeOpenClawGatewayToken(null);
+    return { success: true };
+  });
+
+  ipcMain.handle('enterprise:activate', async (_event, input: { activationCode?: string }) => {
+    const activationCode = typeof input?.activationCode === 'string' ? input.activationCode.trim() : '';
+    if (!activationCode) {
+      return { success: false, error: '请输入激活码。' };
+    }
+
+    const manifest = getStore().get<{
+      activation?: { managerUrl?: string };
+    }>('enterprise_config');
+    const managerUrl = manifest?.activation?.managerUrl?.trim()
+      || readOpenClawGatewayFileConfig()?.gatewayUrl?.trim()
+      || readOpenClawGatewayFileConfig()?.url?.trim();
+    if (!managerUrl) {
+      return { success: false, error: '未找到企业网关地址。' };
+    }
+
+    try {
+      const deviceId = getOrCreateInstallationId();
+      const activateUrl = `${managerUrl.replace(/^ws:/i, 'http:').replace(/^wss:/i, 'https:').replace(/\/+$/, '')}/api/enterprise/activate`;
+      const response = await net.fetch(activateUrl, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          activationCode,
+          deviceId,
+          deviceName: os.hostname(),
+          appVersion: app.getVersion(),
+        }),
+      });
+      const body = await response.json() as {
+        code?: number;
+        message?: string;
+        data?: {
+          activationToken?: string;
+          userId?: string;
+          displayName?: string;
+          folderName?: string;
+        };
+      };
+      if (!response.ok || body.code !== 0 || !body.data?.activationToken || !body.data.userId) {
+        return {
+          success: false,
+          error: body.message || `激活失败：HTTP ${response.status}`,
+        };
+      }
+      const identity: EnterpriseActivationIdentity = {
+        activationToken: body.data.activationToken,
+        userId: body.data.userId,
+        displayName: body.data.displayName || body.data.userId,
+        folderName: body.data.folderName,
+        activatedAt: new Date().toISOString(),
+      };
+      saveEnterpriseActivationIdentity(identity);
+      await syncOpenClawGatewayPersonalToken('enterprise-activate');
+      return {
+        success: true,
+        userId: identity.userId,
+        displayName: identity.displayName,
+        folderName: identity.folderName,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
+
+  ipcMain.handle('openclawGateway:getConfig', async () => {
+    try {
+      const effective = getOpenClawGatewayConfig();
+      const fileConfig = readOpenClawGatewayFileConfig();
+      return {
+        success: true,
+        config: {
+          mode: effective.mode,
+          gatewayUrl: effective.httpUrl,
+          token: effective.token,
+          model: effective.model,
+          allowInsecurePrivateWs: effective.allowInsecurePrivateWs,
+        },
+        fileConfig,
+        candidates: [
+          ...getOpenClawGatewayConfigFileCandidates(),
+          ...getEnterpriseOpenClawGatewayConfigFileCandidates(),
+        ],
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
+
+  ipcMain.handle('openclawGateway:saveConfig', async (_event, config: OpenClawGatewayFileConfig) => {
+    try {
+      const result = writeOpenClawGatewayFileConfig(config);
+      return {
+        success: true,
+        path: result.path,
+        config: result.config,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
     }
   });
 
@@ -3476,8 +3625,32 @@ if (!gotTheLock) {
     getStore().set('auth_tokens', { accessToken, refreshToken });
   };
 
+  type EnterpriseActivationIdentity = {
+    activationToken: string;
+    userId: string;
+    displayName: string;
+    folderName?: string;
+    activatedAt: string;
+  };
+
+  const ENTERPRISE_ACTIVATION_STORE_KEY = 'enterprise_activation_identity';
+
   const getAuthTokens = (): { accessToken: string; refreshToken: string } | null => {
     return getStore().get<{ accessToken: string; refreshToken: string }>('auth_tokens') || null;
+  };
+
+  const getEnterpriseActivationIdentity = (): EnterpriseActivationIdentity | null => {
+    const identity = getStore().get<EnterpriseActivationIdentity>(ENTERPRISE_ACTIVATION_STORE_KEY);
+    if (!identity?.activationToken || !identity.userId) return null;
+    return identity;
+  };
+
+  const saveEnterpriseActivationIdentity = (identity: EnterpriseActivationIdentity) => {
+    getStore().set(ENTERPRISE_ACTIVATION_STORE_KEY, identity);
+  };
+
+  const clearEnterpriseActivationIdentity = () => {
+    getStore().delete(ENTERPRISE_ACTIVATION_STORE_KEY);
   };
 
   const clearAuthTokens = () => {
@@ -3633,6 +3806,92 @@ if (!gotTheLock) {
     }
 
     return resp;
+  };
+
+  const resolveOpenClawGatewayTokenUrl = (): string => {
+    const configured = process.env.LOBSTERAI_OPENCLAW_GATEWAY_TOKEN_URL?.trim();
+    if (configured) return appendKeyfromQuery(configured);
+    const configuredGatewayUrl = process.env.LOBSTERAI_OPENCLAW_GATEWAY_URL?.trim()
+      || readOpenClawGatewayFileConfig()?.gatewayUrl?.trim()
+      || readOpenClawGatewayFileConfig()?.url?.trim();
+    if (configuredGatewayUrl) {
+      return appendKeyfromQuery(`${configuredGatewayUrl.replace(/^ws:/i, 'http:').replace(/^wss:/i, 'https:').replace(/\/+$/, '')}/api/openclaw/gateway-token`);
+    }
+    return appendKeyfromQuery(`${getServerApiBaseUrl()}/api/openclaw/gateway-token`);
+  };
+
+  const extractOpenClawGatewayRuntimeConfig = (body: unknown): OpenClawGatewayFileConfig | null => {
+    if (!body || typeof body !== 'object') return null;
+    const root = body as Record<string, unknown>;
+    const data = root.data && typeof root.data === 'object'
+      ? root.data as Record<string, unknown>
+      : root;
+    const candidates = [
+      data.token,
+      data.gatewayToken,
+      data.openclawGatewayToken,
+      data.openClawGatewayToken,
+    ];
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' && candidate.trim()) {
+        const gatewayUrl = typeof data.gatewayUrl === 'string'
+          ? data.gatewayUrl
+          : (typeof data.url === 'string' ? data.url : undefined);
+        const model = typeof data.model === 'string' ? data.model : undefined;
+        const allowInsecurePrivateWs = data.allowInsecurePrivateWs === true;
+        return {
+          ...(gatewayUrl ? { gatewayUrl } : {}),
+          token: candidate.trim(),
+          ...(model ? { model } : {}),
+          ...(allowInsecurePrivateWs ? { allowInsecurePrivateWs: true } : {}),
+        };
+      }
+    }
+    return null;
+  };
+
+  const syncOpenClawGatewayPersonalToken = async (reason: string): Promise<boolean> => {
+    if (process.env.LOBSTERAI_OPENCLAW_GATEWAY_PERSONAL_TOKEN === '0') {
+      return false;
+    }
+    const enterpriseIdentity = getEnterpriseActivationIdentity();
+    if (!getAuthTokens() && !enterpriseIdentity?.activationToken) {
+      setRuntimeOpenClawGatewayToken(null);
+      return false;
+    }
+
+    const tokenUrl = resolveOpenClawGatewayTokenUrl();
+    try {
+      console.log(`[OpenClawGatewayAuth] requesting personal gateway token (reason: ${reason}) at ${tokenUrl}`);
+      const response = enterpriseIdentity?.activationToken
+        ? await net.fetch(tokenUrl, {
+          method: 'GET',
+          headers: {
+            Accept: 'application/json',
+            Authorization: `Bearer ${enterpriseIdentity.activationToken}`,
+          },
+        })
+        : await fetchWithAuth(tokenUrl, {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+        });
+      if (!response.ok) {
+        console.warn(`[OpenClawGatewayAuth] personal gateway token request returned HTTP ${response.status}; using configured gateway token.`);
+        return false;
+      }
+      const body = await response.json();
+      const runtimeConfig = extractOpenClawGatewayRuntimeConfig(body);
+      if (!runtimeConfig?.token) {
+        console.warn('[OpenClawGatewayAuth] personal gateway response did not include a token; using configured gateway token.');
+        return false;
+      }
+      setRuntimeOpenClawGatewayConfig(runtimeConfig);
+      console.log('[OpenClawGatewayAuth] personal gateway config applied.');
+      return true;
+    } catch (error) {
+      console.warn('[OpenClawGatewayAuth] failed to fetch personal gateway token; using configured gateway token:', error);
+      return false;
+    }
   };
 
   const extractSessionIdFromKey = (sessionKey: string): string | null =>
@@ -4635,6 +4894,9 @@ if (!gotTheLock) {
       const previousQuotaGateState = getAuthQuotaGateState();
       const quota = normalizeQuota(body.data.quota);
       syncOpenClawConfigIfAuthQuotaGateChanged(previousQuotaGateState);
+      syncOpenClawGatewayPersonalToken('auth-exchange').catch((error) => {
+        console.warn('[OpenClawGatewayAuth] post-login token sync failed:', error);
+      });
       return { success: true, user: body.data.user, quota };
     } catch (error) {
       console.error('[Auth] exchange failed:', error);
@@ -4674,6 +4936,9 @@ if (!gotTheLock) {
         }
       }
       console.log('[Auth] getUser profile data:', JSON.stringify(profileBody.data));
+      syncOpenClawGatewayPersonalToken('auth-get-user').catch((error) => {
+        console.warn('[OpenClawGatewayAuth] restore-login token sync failed:', error);
+      });
       return { success: true, user: profileBody.data, quota };
     } catch {
       return { success: false };
@@ -4737,6 +5002,7 @@ if (!gotTheLock) {
       }
       clearAuthTokens();
       clearAuthUser();
+      setRuntimeOpenClawGatewayToken(null);
       clearServerModelMetadata();
       const previousQuotaGateState = getAuthQuotaGateState();
       resetAuthQuotaGateState();
@@ -4756,6 +5022,7 @@ if (!gotTheLock) {
       const previousQuotaGateState = getAuthQuotaGateState();
       clearAuthTokens();
       clearAuthUser();
+      setRuntimeOpenClawGatewayToken(null);
       clearServerModelMetadata();
       resetAuthQuotaGateState();
       const quotaGateSyncScheduled = syncOpenClawConfigIfAuthQuotaGateChanged(previousQuotaGateState);
@@ -10141,6 +10408,14 @@ if (!gotTheLock) {
       console.warn('[Main] OpenClaw token proxy failed to start (non-fatal):', err);
     }
     profiler.measure('openClawTokenProxy');
+
+    profiler.mark('openClawGatewayPersonalToken');
+    try {
+      await syncOpenClawGatewayPersonalToken('startup');
+    } catch (err) {
+      console.warn('[Main] OpenClaw Gateway personal token sync failed (non-fatal):', err);
+    }
+    profiler.measure('openClawGatewayPersonalToken');
 
     // Enterprise config sync — must run before openclawConfigSync
     profiler.mark('enterpriseConfigSync');

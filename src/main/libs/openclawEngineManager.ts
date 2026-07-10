@@ -18,6 +18,7 @@ import {
 } from './gatewayLogRotation';
 import { getCodexHomeDir } from './openaiCodexAuth';
 import { migrateLegacyCronStorageWithDoctor } from './openclawCronLegacyMigration';
+import { getOpenClawGatewayConfig, isRemoteOpenClawGateway } from './openclawGatewayConfig';
 import { cleanupStaleThirdPartyPluginsFromBundledDir, listLocalOpenClawExtensionIds,syncLocalOpenClawExtensionsIntoRuntime } from './openclawLocalExtensions';
 import { ensureOpenClawWorkerShims } from './openclawWorkerShims';
 import { appendPythonRuntimeToEnv } from './pythonRuntime';
@@ -333,6 +334,17 @@ export class OpenClawEngineManager extends EventEmitter {
 
   getGatewayConnectionInfo(): OpenClawGatewayConnectionInfo {
     const runtime = this.resolveRuntimeMetadata();
+    const gatewayConfig = getOpenClawGatewayConfig();
+    if (gatewayConfig.mode === 'remote') {
+      return {
+        version: runtime.version || this.desiredVersion,
+        port: null,
+        token: gatewayConfig.token,
+        url: gatewayConfig.wsUrl,
+        clientEntryPath: runtime.root ? this.resolveGatewayClientEntry(runtime.root) : null,
+      };
+    }
+
     const port = this.gatewayPort ?? this.readGatewayPort();
     const token = this.readGatewayToken();
     const clientEntryPath = runtime.root ? this.resolveGatewayClientEntry(runtime.root) : null;
@@ -347,8 +359,22 @@ export class OpenClawEngineManager extends EventEmitter {
   }
 
   async ensureReady(_options: { forceReinstall?: boolean } = {}): Promise<OpenClawEngineStatus> {
+    const gatewayConfig = getOpenClawGatewayConfig();
     const runtime = this.resolveRuntimeMetadata();
     this.desiredVersion = runtime.version || DEFAULT_OPENCLAW_VERSION;
+
+    if (gatewayConfig.mode === 'remote') {
+      if (this.status.phase === 'running') {
+        return this.getStatus();
+      }
+      this.setStatus({
+        phase: 'ready',
+        version: this.desiredVersion,
+        message: `Using remote OpenClaw Gateway: ${gatewayConfig.httpUrl}`,
+        canRetry: false,
+      });
+      return this.getStatus();
+    }
 
     if (!runtime.root) {
       this.setStatus({
@@ -398,6 +424,11 @@ export class OpenClawEngineManager extends EventEmitter {
   }
 
   async startGateway(reason = 'unknown'): Promise<OpenClawEngineStatus> {
+    const gatewayConfig = getOpenClawGatewayConfig();
+    if (gatewayConfig.mode === 'remote') {
+      console.log(`[OpenClaw] Using remote OpenClaw Gateway: ${gatewayConfig.httpUrl}`);
+      console.log('[OpenClaw] Skip local OpenClaw runtime startup.');
+    }
     if (this.startGatewayPromise) {
       console.log(`${gwDiagTs()} startGateway: already in progress, reusing existing promise (new reason=${reason})`);
       return this.startGatewayPromise;
@@ -418,6 +449,21 @@ export class OpenClawEngineManager extends EventEmitter {
     console.log(`[OpenClaw] startGateway: ensureReady done (${elapsed()}), phase=${ensured.phase}`);
     if (ensured.phase !== 'ready' && ensured.phase !== 'running') {
       return ensured;
+    }
+
+    if (isRemoteOpenClawGateway()) {
+      const gatewayConfig = getOpenClawGatewayConfig();
+      const healthy = await this.isRemoteGatewayHealthy(gatewayConfig.httpUrl, true);
+      this.setStatus({
+        phase: healthy ? 'running' : 'error',
+        version: this.desiredVersion,
+        progressPercent: healthy ? 100 : undefined,
+        message: healthy
+          ? `Remote OpenClaw gateway is reachable: ${gatewayConfig.httpUrl}`
+          : `Remote OpenClaw gateway is not reachable: ${gatewayConfig.httpUrl}`,
+        canRetry: !healthy,
+      });
+      return this.getStatus();
     }
 
     if (isGatewayProcessAlive(this.gatewayProcess)) {
@@ -674,6 +720,17 @@ export class OpenClawEngineManager extends EventEmitter {
       this.gatewayProcess = null;
     }
 
+    if (isRemoteOpenClawGateway()) {
+      const gatewayConfig = getOpenClawGatewayConfig();
+      this.setStatus({
+        phase: 'ready',
+        version: this.desiredVersion,
+        message: `Using remote OpenClaw Gateway: ${gatewayConfig.httpUrl}`,
+        canRetry: false,
+      });
+      return;
+    }
+
     const runtime = this.resolveRuntimeMetadata();
     this.setStatus({
       phase: runtime.root ? 'ready' : 'not_installed',
@@ -697,10 +754,17 @@ export class OpenClawEngineManager extends EventEmitter {
   }
 
   private buildGatewayHttpUrl(port: number | null): string | null {
+    const gatewayConfig = getOpenClawGatewayConfig();
+    if (gatewayConfig.mode === 'remote') {
+      return `${gatewayConfig.httpUrl}/`;
+    }
     return port ? `http://localhost:${port}/` : null;
   }
 
   private resolveStatusGatewayPort(phase: OpenClawEnginePhase): number | null {
+    if (isRemoteOpenClawGateway()) {
+      return null;
+    }
     if (phase !== 'running' && phase !== 'starting') {
       return null;
     }
@@ -1329,6 +1393,33 @@ export class OpenClawEngineManager extends EventEmitter {
       console.log(`[OpenClaw] health probe details: tcp=${tcpResult}, ${httpResults.join(', ')}`);
     }
     return healthy;
+  }
+
+  private async isRemoteGatewayHealthy(baseUrl: string, verbose = false): Promise<boolean> {
+    const normalizedBaseUrl = baseUrl.replace(/\/+$/, '');
+    const probeUrls = [
+      `${normalizedBaseUrl}/health`,
+      `${normalizedBaseUrl}/healthz`,
+      `${normalizedBaseUrl}/ready`,
+      `${normalizedBaseUrl}/`,
+    ];
+
+    const results = await Promise.all(probeUrls.map(async (url) => {
+      try {
+        const response = await fetchWithTimeout(url, 3000);
+        if (verbose) {
+          console.log(`[OpenClaw] remote gateway probe ${url} -> ${response.status}`);
+        }
+        return response.status < 500;
+      } catch (err) {
+        if (verbose) {
+          console.log(`[OpenClaw] remote gateway probe ${url} -> ${(err as Error).message || err}`);
+        }
+        return false;
+      }
+    }));
+
+    return results.some(Boolean);
   }
 
   private waitForGatewayReady(port: number, timeoutMs: number): Promise<boolean> {

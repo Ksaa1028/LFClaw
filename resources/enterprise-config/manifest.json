@@ -1,0 +1,29 @@
+{
+  "version": "2026.6.30-enterprise.1",
+  "name": "LfClaw 企业内部版",
+  "disableUpdate": true,
+  "disableYoudaoLogin": true,
+  "disableModelPicker": true,
+  "fixedModel": {
+    "id": "glm-5.2",
+    "name": "企业 AI 助手",
+    "provider": "企业网关",
+    "providerKey": "zai",
+    "openClawProviderId": "zai"
+  },
+  "activation": {
+    "required": true,
+    "managerUrl": "http://8.216.38.213:18791"
+  },
+  "ui": {
+    "login": "hide",
+    "model": "hide"
+  },
+  "sync": {
+    "openclaw": false,
+    "skills": false,
+    "agents": false,
+    "mcp": false
+  },
+  "autoAcceptPrivacy": true
+}

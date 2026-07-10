@@ -174,6 +174,10 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
   alignDropdownToTriggerEnd = false,
 }) => {
   const dispatch = useDispatch();
+  const [enterpriseModelLocked, setEnterpriseModelLocked] = React.useState<{
+    locked: boolean;
+    label: string;
+  }>({ locked: false, label: '企业 AI 助手' });
   const [isOpen, setIsOpen] = React.useState(false);
   const [resolvedDirection, setResolvedDirection] = React.useState<'up' | 'down'>('down');
   const [portalStyle, setPortalStyle] = React.useState<React.CSSProperties>({});
@@ -230,6 +234,24 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
   const stableListMinHeight = shouldShowGroupTabs
     ? Math.min(largestGroupRowCount * MODEL_ITEM_HEIGHT + LIST_VERTICAL_PADDING, LIST_MAX_HEIGHT)
     : undefined;
+
+  React.useEffect(() => {
+    let cancelled = false;
+    window.electron.enterprise.getConfig()
+      .then((config) => {
+        if (cancelled) return;
+        setEnterpriseModelLocked({
+          locked: config?.disableModelPicker === true || config?.ui?.model === 'hide',
+          label: config?.fixedModel?.name || '企业 AI 助手',
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setEnterpriseModelLocked({ locked: false, label: '企业 AI 助手' });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // 点击外部区域关闭下拉框
   React.useEffect(() => {
@@ -370,6 +392,15 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
     return (
       <div className="px-3 py-1.5 rounded-xl bg-surface text-secondary text-sm">
         {i18nService.t('modelSelectorNoModels')}
+      </div>
+    );
+  }
+
+  if (enterpriseModelLocked.locked) {
+    const fixedLabel = enterpriseModelLocked.label || selectedModel?.name || '企业 AI 助手';
+    return (
+      <div className={`${compact ? 'px-2 py-1 rounded-lg text-[13px]' : 'px-3 py-1.5 rounded-xl text-sm'} max-w-[220px] truncate bg-surface text-foreground`}>
+        {fixedLabel}
       </div>
     );
   }

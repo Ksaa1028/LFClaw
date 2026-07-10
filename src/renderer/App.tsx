@@ -108,7 +108,25 @@ const App: React.FC = () => {
   const [enterpriseConfig, setEnterpriseConfig] = useState<{
     ui?: Record<string, 'hide' | 'disable' | 'readonly'>;
     disableUpdate?: boolean;
+    disableYoudaoLogin?: boolean;
+    disableModelPicker?: boolean;
+    fixedModel?: {
+      id: string;
+      name: string;
+      provider?: string;
+      providerKey?: string;
+      openClawProviderId?: string;
+      supportsImage?: boolean;
+    };
+    activation?: {
+      required?: boolean;
+      managerUrl?: string;
+    };
   } | null>(null);
+  const [enterpriseActivationRequired, setEnterpriseActivationRequired] = useState(false);
+  const [enterpriseActivationCode, setEnterpriseActivationCode] = useState('');
+  const [enterpriseActivationError, setEnterpriseActivationError] = useState<string | null>(null);
+  const [enterpriseActivationLoading, setEnterpriseActivationLoading] = useState(false);
   const toastTimerRef = useRef<number | null>(null);
   const hasInitialized = useRef(false);
   const hasReportedAppStartedRef = useRef(false);
@@ -182,9 +200,19 @@ const App: React.FC = () => {
         await waitWithTimeout(i18nService.initialize(), initTimeoutMs, 'i18nService.initialize');
         mark('i18nService.initialize done');
 
-        mark('authService.init begin');
-        await authService.init();
-        mark('authService.init done');
+        if (entConfig?.disableYoudaoLogin) {
+          mark('authService skipped by enterprise config');
+        } else {
+          mark('authService.init begin');
+          await authService.init();
+          mark('authService.init done');
+        }
+
+        if (entConfig?.activation?.required) {
+          const activation = await window.electron.enterprise.getActivation();
+          setEnterpriseActivationRequired(!activation.activated);
+          mark(`enterprise activation ${activation.activated ? 'present' : 'required'}`);
+        }
 
         const config = await configService.getConfig();
         const apiConfig: ApiConfig = {
@@ -194,7 +222,16 @@ const App: React.FC = () => {
         apiService.setConfig(apiConfig);
 
         const providerModels: { id: string; name: string; provider?: string; providerKey?: string; openClawProviderId?: string; supportsImage?: boolean }[] = [];
-        if (config.providers) {
+        if (entConfig?.fixedModel?.id) {
+          providerModels.push({
+            id: entConfig.fixedModel.id,
+            name: entConfig.fixedModel.name || entConfig.fixedModel.id,
+            provider: entConfig.fixedModel.provider || '企业网关',
+            providerKey: entConfig.fixedModel.providerKey,
+            openClawProviderId: entConfig.fixedModel.openClawProviderId,
+            supportsImage: entConfig.fixedModel.supportsImage ?? false,
+          });
+        } else if (config.providers) {
           Object.entries(config.providers).forEach(([providerName, providerConfig]) => {
             if (providerConfig.enabled && providerConfig.models) {
               const openClawProviderId = ProviderRegistry.getOpenClawProviderIdForConfig(providerName, providerConfig);
@@ -217,10 +254,12 @@ const App: React.FC = () => {
         dispatch(setAvailableModels(providerModels));
         if (providerModels.length > 0) {
           const allModels = store.getState().model.availableModels;
-          const preferredModel = allModels.find(
-            model => model.id === config.model.defaultModel
-              && (!config.model.defaultModelProvider || model.providerKey === config.model.defaultModelProvider)
-          ) ?? allModels[0];
+          const preferredModel = entConfig?.fixedModel?.id
+            ? allModels.find(model => model.id === entConfig.fixedModel?.id) ?? allModels[0]
+            : allModels.find(
+              model => model.id === config.model.defaultModel
+                && (!config.model.defaultModelProvider || model.providerKey === config.model.defaultModelProvider)
+            ) ?? allModels[0];
           dispatch(setDefaultSelectedModel(preferredModel));
         }
         mark('model resolution done');
@@ -897,6 +936,64 @@ const App: React.FC = () => {
   }, [isInitialized, runUpdateCheck, enterpriseConfig]);
 
   // 根据场景选择使用哪个权限组件
+  const handleEnterpriseActivate = useCallback(async () => {
+    const code = enterpriseActivationCode.trim();
+    if (!code) {
+      setEnterpriseActivationError('请输入激活码');
+      return;
+    }
+    setEnterpriseActivationLoading(true);
+    setEnterpriseActivationError(null);
+    try {
+      const result = await window.electron.enterprise.activate(code);
+      if (!result.success) {
+        setEnterpriseActivationError(result.error || '激活失败');
+        return;
+      }
+      setEnterpriseActivationRequired(false);
+      setEnterpriseActivationCode('');
+      showToast(`已激活：${result.displayName || result.userId || '企业用户'}`);
+    } catch (error) {
+      setEnterpriseActivationError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setEnterpriseActivationLoading(false);
+    }
+  }, [enterpriseActivationCode, showToast]);
+
+  const enterpriseActivationModal = enterpriseActivationRequired ? (
+    <div className="fixed inset-0 z-[10060] flex items-center justify-center bg-black/35 px-4">
+      <div className="w-full max-w-sm rounded-xl border border-border bg-surface p-5 shadow-modal">
+        <div className="text-base font-semibold text-foreground">企业版激活</div>
+        <div className="mt-2 text-sm leading-5 text-secondary">
+          请输入公司分配的个人激活码。激活后会按员工身份连接企业网关，并在服务器上隔离个人数据目录。
+        </div>
+        <input
+          value={enterpriseActivationCode}
+          onChange={(event) => setEnterpriseActivationCode(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !enterpriseActivationLoading) {
+              void handleEnterpriseActivate();
+            }
+          }}
+          className="mt-4 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+          placeholder="例如 LOB-XXXX-XXXX"
+          autoFocus
+        />
+        {enterpriseActivationError && (
+          <div className="mt-2 text-sm text-red-500">{enterpriseActivationError}</div>
+        )}
+        <button
+          type="button"
+          disabled={enterpriseActivationLoading}
+          onClick={() => { void handleEnterpriseActivate(); }}
+          className="mt-4 w-full rounded-lg bg-primary px-3 py-2.5 text-sm font-medium text-white transition-colors hover:bg-primary/90 disabled:cursor-wait disabled:opacity-70"
+        >
+          {enterpriseActivationLoading ? '激活中...' : '激活并连接'}
+        </button>
+      </div>
+    </div>
+  ) : null;
+
   const permissionModal = useMemo(() => {
     if (!pendingPermission) return null;
 
@@ -1110,6 +1207,7 @@ const App: React.FC = () => {
           onClose={handleWelcomeClose}
         />
       )}
+      {enterpriseActivationModal}
     </div>
   );
 };

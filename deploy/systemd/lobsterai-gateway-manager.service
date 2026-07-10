@@ -1,0 +1,29 @@
+[Unit]
+Description=LobsterAI OpenClaw Gateway Manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/lobsterai-gateway-manager
+Environment=NODE_ENV=production
+Environment=LOBSTERAI_GATEWAY_MANAGER_HOST=0.0.0.0
+Environment=LOBSTERAI_GATEWAY_MANAGER_PORT=18791
+Environment=LOBSTERAI_GATEWAY_MANAGER_PUBLIC_BASE_URL=http://8.216.38.213:18791
+Environment=LOBSTERAI_SERVER_BASE_URL=https://lobsterai-server.youdao.com
+Environment=OPENCLAW_BIN=/usr/local/bin/openclaw
+Environment=LOBSTERAI_GATEWAY_MANAGER_DATA_ROOT=/opt/lobsterai-gateway-manager
+Environment=LOBSTERAI_OPENCLAW_TEMPLATE_CONFIG=/root/.openclaw/openclaw.json
+Environment=LOBSTERAI_OPENCLAW_MODEL=zai/glm-5.2
+Environment=LOBSTERAI_OPENCLAW_PORT_START=19001
+Environment=LOBSTERAI_OPENCLAW_PORT_END=19999
+Environment=LOBSTERAI_OPENCLAW_IDLE_MS=1800000
+ExecStart=/usr/bin/env node /opt/lobsterai-gateway-manager/openclaw-gateway-manager.cjs
+Restart=always
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

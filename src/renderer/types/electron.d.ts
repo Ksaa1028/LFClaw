@@ -1442,9 +1442,78 @@ interface IElectronAPI {
     getConfig: () => Promise<{
       ui?: Record<string, 'hide' | 'disable' | 'readonly'>;
       disableUpdate?: boolean;
+      disableYoudaoLogin?: boolean;
+      disableModelPicker?: boolean;
+      fixedModel?: {
+        id: string;
+        name: string;
+        provider?: string;
+        providerKey?: string;
+        openClawProviderId?: string;
+        supportsImage?: boolean;
+      };
+      activation?: {
+        required?: boolean;
+        managerUrl?: string;
+      };
       version: string;
       name: string;
     } | null>;
+    getActivation: () => Promise<{
+      activated: boolean;
+      userId?: string;
+      displayName?: string;
+      folderName?: string;
+      activatedAt?: string;
+    }>;
+    activate: (activationCode: string) => Promise<{
+      success: boolean;
+      userId?: string;
+      displayName?: string;
+      folderName?: string;
+      error?: string;
+    }>;
+    clearActivation: () => Promise<{ success: boolean }>;
+  };
+  openclawGateway: {
+    getConfig: () => Promise<{
+      success: boolean;
+      config?: {
+        mode: 'local' | 'remote';
+        gatewayUrl: string;
+        token: string | null;
+        model: string | null;
+        allowInsecurePrivateWs: boolean;
+      };
+      fileConfig?: {
+        mode?: string;
+        gatewayUrl?: string;
+        url?: string;
+        token?: string;
+        model?: string;
+        allowInsecurePrivateWs?: boolean;
+      } | null;
+      candidates?: string[];
+      error?: string;
+    }>;
+    saveConfig: (config: {
+      mode?: 'local' | 'remote';
+      gatewayUrl?: string;
+      token?: string;
+      model?: string;
+      allowInsecurePrivateWs?: boolean;
+    }) => Promise<{
+      success: boolean;
+      path?: string;
+      config?: {
+        mode?: string;
+        gatewayUrl?: string;
+        token?: string;
+        model?: string;
+        allowInsecurePrivateWs?: boolean;
+      };
+      error?: string;
+    }>;
   };
   networkStatus: {
     send: (status: 'online' | 'offline') => void;

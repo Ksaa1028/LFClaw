@@ -849,6 +849,13 @@ interface SettingsProps extends SettingsOpenOptions {
   } | null;
 }
 
+type OpenClawGatewaySettingsForm = {
+  mode: 'local' | 'remote';
+  gatewayUrl: string;
+  token: string;
+  model: string;
+  allowInsecurePrivateWs: boolean;
+};
 
 type ProviderConnectionTestResult = {
   success: boolean;
@@ -1593,6 +1600,18 @@ const Settings: React.FC<SettingsProps> = ({
   const [isRestoringOpenClawData, setIsRestoringOpenClawData] = useState<boolean>(false);
   const [openClawDataBackupResult, setOpenClawDataBackupResult] = useState<{ path: string; sizeBytes?: number } | null>(null);
   const [showOpenClawDataRestoreConfirm, setShowOpenClawDataRestoreConfirm] = useState<boolean>(false);
+  const [openClawGatewayForm, setOpenClawGatewayForm] = useState<OpenClawGatewaySettingsForm>({
+    mode: 'local',
+    gatewayUrl: '',
+    token: '',
+    model: '',
+    allowInsecurePrivateWs: false,
+  });
+  const [openClawGatewayLoading, setOpenClawGatewayLoading] = useState<boolean>(false);
+  const [openClawGatewaySaving, setOpenClawGatewaySaving] = useState<boolean>(false);
+  const [openClawGatewaySaveMessage, setOpenClawGatewaySaveMessage] = useState<string | null>(null);
+  const [openClawGatewaySaveError, setOpenClawGatewaySaveError] = useState<string | null>(null);
+  const [openClawGatewayConfigPath, setOpenClawGatewayConfigPath] = useState<string | null>(null);
 
   useEffect(() => {
     setCoworkAgentEngine(coworkConfig.agentEngine || 'openclaw');
@@ -2498,6 +2517,80 @@ const Settings: React.FC<SettingsProps> = ({
   useEffect(() => {
     setOpenClawGatewayCopied(false);
   }, [openClawGatewayHttpUrl]);
+
+  useEffect(() => {
+    if (activeTab !== 'coworkAgentEngine' || !window.electron?.openclawGateway) {
+      return;
+    }
+
+    let cancelled = false;
+    setOpenClawGatewayLoading(true);
+    setOpenClawGatewaySaveError(null);
+
+    window.electron.openclawGateway.getConfig()
+      .then(result => {
+        if (cancelled) return;
+        if (!result.success) {
+          setOpenClawGatewaySaveError(result.error || i18nService.t('openClawRemoteGatewayLoadFailed'));
+          return;
+        }
+
+        const config = result.config;
+        setOpenClawGatewayForm({
+          mode: config?.mode === 'remote' ? 'remote' : 'local',
+          gatewayUrl: config?.gatewayUrl || '',
+          token: config?.token || '',
+          model: config?.model || '',
+          allowInsecurePrivateWs: config?.allowInsecurePrivateWs === true,
+        });
+        setOpenClawGatewayConfigPath(result.candidates?.[0] || null);
+      })
+      .catch(loadError => {
+        if (cancelled) return;
+        setOpenClawGatewaySaveError(loadError instanceof Error ? loadError.message : i18nService.t('openClawRemoteGatewayLoadFailed'));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setOpenClawGatewayLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab]);
+
+  const handleSaveOpenClawGatewayConfig = useCallback(async () => {
+    if (openClawGatewaySaving || !window.electron?.openclawGateway) {
+      return;
+    }
+
+    setOpenClawGatewaySaving(true);
+    setOpenClawGatewaySaveMessage(null);
+    setOpenClawGatewaySaveError(null);
+
+    try {
+      const result = await window.electron.openclawGateway.saveConfig({
+        mode: openClawGatewayForm.mode,
+        gatewayUrl: openClawGatewayForm.gatewayUrl.trim(),
+        token: openClawGatewayForm.token.trim(),
+        model: openClawGatewayForm.model.trim(),
+        allowInsecurePrivateWs: openClawGatewayForm.allowInsecurePrivateWs,
+      });
+
+      if (!result.success) {
+        setOpenClawGatewaySaveError(result.error || i18nService.t('openClawRemoteGatewaySaveFailed'));
+        return;
+      }
+
+      setOpenClawGatewayConfigPath(result.path || openClawGatewayConfigPath);
+      setOpenClawGatewaySaveMessage(i18nService.t('openClawRemoteGatewaySaved'));
+    } catch (saveError) {
+      setOpenClawGatewaySaveError(saveError instanceof Error ? saveError.message : i18nService.t('openClawRemoteGatewaySaveFailed'));
+    } finally {
+      setOpenClawGatewaySaving(false);
+    }
+  }, [openClawGatewayConfigPath, openClawGatewayForm, openClawGatewaySaving]);
 
   const resolveOpenClawStatusText = (status: OpenClawEngineStatus | null): string => {
     if (!status) {
@@ -4338,6 +4431,144 @@ const Settings: React.FC<SettingsProps> = ({
                           </div>
                         )}
                       </div>
+                    </div>
+                  </div>
+                </section>
+
+                <section className="space-y-3">
+                  <h4 className="text-sm font-medium text-foreground">
+                    {i18nService.t('openClawRemoteGatewayTitle')}
+                  </h4>
+
+                  <div className="rounded-xl border border-border bg-surface p-4">
+                    <p className="text-sm leading-5 text-secondary">
+                      {i18nService.t('openClawRemoteGatewayDesc')}
+                    </p>
+
+                    <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                      <div className="space-y-2">
+                        <label className="text-xs font-medium text-secondary">
+                          {i18nService.t('openClawRemoteGatewayMode')}
+                        </label>
+                        <div className="grid grid-cols-2 overflow-hidden rounded-lg border border-border bg-background p-1">
+                          {(['local', 'remote'] as const).map(mode => (
+                            <button
+                              key={mode}
+                              type="button"
+                              onClick={() => {
+                                setOpenClawGatewayForm(prev => ({ ...prev, mode }));
+                                setOpenClawGatewaySaveMessage(null);
+                                setOpenClawGatewaySaveError(null);
+                              }}
+                              className={`h-8 rounded-md text-sm font-medium transition-colors ${
+                                openClawGatewayForm.mode === mode
+                                  ? 'bg-surface text-foreground shadow-sm'
+                                  : 'text-secondary hover:text-foreground'
+                              }`}
+                            >
+                              {i18nService.t(mode === 'remote' ? 'openClawRemoteGatewayModeRemote' : 'openClawRemoteGatewayModeLocal')}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <label className="text-xs font-medium text-secondary">
+                          {i18nService.t('openClawRemoteGatewayModel')}
+                        </label>
+                        <input
+                          type="text"
+                          value={openClawGatewayForm.model}
+                          onChange={event => {
+                            setOpenClawGatewayForm(prev => ({ ...prev, model: event.target.value }));
+                            setOpenClawGatewaySaveMessage(null);
+                            setOpenClawGatewaySaveError(null);
+                          }}
+                          placeholder="zai/glm-5.2"
+                          className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors placeholder:text-secondary/70 focus:border-primary"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="mt-4 space-y-2">
+                      <label className="text-xs font-medium text-secondary">
+                        {i18nService.t('openClawRemoteGatewayUrl')}
+                      </label>
+                      <input
+                        type="text"
+                        value={openClawGatewayForm.gatewayUrl}
+                        onChange={event => {
+                          setOpenClawGatewayForm(prev => ({ ...prev, gatewayUrl: event.target.value }));
+                          setOpenClawGatewaySaveMessage(null);
+                          setOpenClawGatewaySaveError(null);
+                        }}
+                        placeholder="https://ai-gateway.company.com"
+                        className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors placeholder:text-secondary/70 focus:border-primary"
+                      />
+                    </div>
+
+                    <div className="mt-4 space-y-2">
+                      <label className="text-xs font-medium text-secondary">
+                        {i18nService.t('openClawRemoteGatewayToken')}
+                      </label>
+                      <input
+                        type="password"
+                        value={openClawGatewayForm.token}
+                        onChange={event => {
+                          setOpenClawGatewayForm(prev => ({ ...prev, token: event.target.value }));
+                          setOpenClawGatewaySaveMessage(null);
+                          setOpenClawGatewaySaveError(null);
+                        }}
+                        className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors focus:border-primary"
+                      />
+                    </div>
+
+                    <div className="mt-5 rounded-lg border border-border-subtle bg-background p-3">
+                      <SettingsToggleRow
+                        title={i18nService.t('openClawRemoteGatewayAllowInsecure')}
+                        description={i18nService.t('openClawRemoteGatewayAllowInsecureDesc')}
+                        checked={openClawGatewayForm.allowInsecurePrivateWs}
+                        onToggle={() => {
+                          setOpenClawGatewayForm(prev => ({
+                            ...prev,
+                            allowInsecurePrivateWs: !prev.allowInsecurePrivateWs,
+                          }));
+                          setOpenClawGatewaySaveMessage(null);
+                          setOpenClawGatewaySaveError(null);
+                        }}
+                      />
+                    </div>
+
+                    {openClawGatewayConfigPath && (
+                      <div className="mt-4 rounded-lg bg-background px-3 py-2 text-xs leading-5 text-secondary">
+                        <span className="font-medium">{i18nService.t('openClawRemoteGatewayConfigPath')}: </span>
+                        <span className="break-all font-mono">{openClawGatewayConfigPath}</span>
+                      </div>
+                    )}
+
+                    {openClawGatewaySaveMessage && (
+                      <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-300">
+                        {openClawGatewaySaveMessage}
+                      </div>
+                    )}
+
+                    {openClawGatewaySaveError && (
+                      <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
+                        {openClawGatewaySaveError}
+                      </div>
+                    )}
+
+                    <div className="mt-4 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => { void handleSaveOpenClawGatewayConfig(); }}
+                        disabled={openClawGatewayLoading || openClawGatewaySaving}
+                        className="inline-flex h-9 items-center justify-center rounded-lg bg-primary px-4 text-sm font-medium text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {openClawGatewaySaving
+                          ? i18nService.t('openClawRemoteGatewaySaving')
+                          : i18nService.t('openClawRemoteGatewaySave')}
+                      </button>
                     </div>
                   </div>
                 </section>

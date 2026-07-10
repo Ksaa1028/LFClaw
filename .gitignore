@@ -3,6 +3,8 @@ build/*
 !build/icons/
 !build/icons/**
 release/
+company-release/*.exe
+company-release/*.zip
 node_modules
 dist
 dist-electron
