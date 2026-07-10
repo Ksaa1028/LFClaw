@@ -1,17 +1,17 @@
 ﻿# LfClaw 企业内部 AI 客户端
 
-LfClaw 是基于 LobsterAI / OpenClaw 二次开发的企业内部 AI 客户端。当前版本的目标不是继续保留外部 SaaS 形态，而是把客户端、模型调用、用户目录和 OpenClaw 网关统一收敛到公司自有服务器，方便公司员工在 Windows 和 macOS 上安装使用。
+LfClaw 是基于 OpenClaw 生态与原桌面 Agent 客户端二次开发的企业内部 AI 客户端。当前版本的目标不是继续保留外部 SaaS 形态，而是把客户端、模型调用、用户目录和 OpenClaw 网关统一收敛到公司自有服务器，方便公司员工在 Windows 和 macOS 上安装使用。
 
 ## 当前定位
 
 - 客户端名称：LfClaw
-- 上游项目：LobsterAI
+- 上游项目：原桌面 Agent 客户端
 - Agent 引擎：OpenClaw
 - 企业网关地址：`http://8.216.38.213:18791`
 - 默认模型：`zai/glm-5.2`
 - 用户进入方式：企业激活码
 - 模型选择：隐藏，统一使用企业固定模型
-- 外部登录：隐藏有道登录
+- 外部登录：隐藏外部登录
 - 外部更新：关闭，后续由公司内部发包
 
 ## 核心改造
@@ -216,7 +216,7 @@ https://git.code.tencent.com/tongkai/LfClaw.git
 
 ```text
 origin   -> LfClaw 企业二开仓库
-upstream -> 原 LobsterAI 上游仓库
+upstream -> 原始上游仓库
 ```
 
 每次关键改动后执行：

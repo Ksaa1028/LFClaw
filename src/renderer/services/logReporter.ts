@@ -3,11 +3,11 @@ import { configService } from './config';
 import { getInstallationId } from './installationId';
 
 export const LogReporterEndpoint = {
-  YoudaoAnalyzer: 'https://rlogs.youdao.com/rlog.php',
+  Enterprise: 'about:blank',
 } as const;
 
 export const LogReporterProduct = {
-  LobsterAI: 'wisdom',
+  LfClaw: 'lfclaw',
 } as const;
 
 export const LogReporterCategory = {
@@ -15,53 +15,53 @@ export const LogReporterCategory = {
 } as const;
 
 export const LogReporterActionPrefix = {
-  LobsterAI: 'lobsterai_',
+  LfClaw: 'lfclaw_',
 } as const;
 
 export const LogReporterAction = {
-  AgentCreateAction: 'lobsterai_agent_create_action',
-  AgentSettingsAction: 'lobsterai_agent_settings_action',
-  AgentEngineMaintenanceAction: 'lobsterai_agent_engine_maintenance_action',
-  AgentEngineSettingChanged: 'lobsterai_agent_engine_setting_changed',
-  AboutAction: 'lobsterai_about_action',
-  AccountMenuAction: 'lobsterai_account_menu_action',
-  AppStarted: 'lobsterai_app_started',
-  AppearanceSettingChanged: 'lobsterai_appearance_setting_changed',
-  ArtifactPreviewAction: 'lobsterai_artifact_preview_action',
-  BrowserSettingChanged: 'lobsterai_browser_setting_changed',
-  CustomModelConnectionTested: 'lobsterai_custom_model_connection_tested',
-  CustomModelSettingsSaved: 'lobsterai_custom_model_settings_saved',
-  ConversationBlockAction: 'lobsterai_conversation_block_action',
-  ConversationMessageAction: 'lobsterai_conversation_message_action',
-  ConversationNavigationAction: 'lobsterai_conversation_navigation_action',
-  DreamingSettingChanged: 'lobsterai_dreaming_setting_changed',
-  EmailSkillConnectionTested: 'lobsterai_email_skill_connection_tested',
-  EmailSkillSettingsSaved: 'lobsterai_email_skill_settings_saved',
-  ExpertKitAction: 'lobsterai_expert_kit_action',
-  ExpertKitSelected: 'lobsterai_expert_kit_selected',
-  GeneralSettingChanged: 'lobsterai_general_setting_changed',
-  ImConnectionTested: 'lobsterai_im_connection_tested',
-  ImGatewayToggled: 'lobsterai_im_gateway_toggled',
-  ImInstanceChanged: 'lobsterai_im_instance_changed',
-  ImSettingsSaved: 'lobsterai_im_settings_saved',
-  MemoryEntryChanged: 'lobsterai_memory_entry_changed',
-  MemorySettingChanged: 'lobsterai_memory_setting_changed',
-  McpEnabled: 'lobsterai_mcp_enabled',
-  McpAction: 'lobsterai_mcp_action',
-  ModelSelected: 'lobsterai_model_selected',
-  PlanModeEnabled: 'lobsterai_plan_mode_enabled',
-  PluginAction: 'lobsterai_plugin_action',
-  PluginSettingsSaved: 'lobsterai_plugin_settings_saved',
-  PromptControlAction: 'lobsterai_prompt_control_action',
-  PromptSubmit: 'lobsterai_prompt_submit',
-  PromptTemplateAction: 'lobsterai_prompt_template_action',
-  ShortcutSettingChanged: 'lobsterai_shortcut_setting_changed',
-  SidebarAction: 'lobsterai_sidebar_action',
-  SkillAction: 'lobsterai_skill_action',
-  SkillEnabled: 'lobsterai_skill_enabled',
-  ScheduledTaskAction: 'lobsterai_scheduled_task_action',
-  TaskSearchAction: 'lobsterai_task_search_action',
-  UsageAnalyticsEnabled: 'lobsterai_usage_analytics_enabled',
+  AgentCreateAction: 'lfclaw_agent_create_action',
+  AgentSettingsAction: 'lfclaw_agent_settings_action',
+  AgentEngineMaintenanceAction: 'lfclaw_agent_engine_maintenance_action',
+  AgentEngineSettingChanged: 'lfclaw_agent_engine_setting_changed',
+  AboutAction: 'lfclaw_about_action',
+  AccountMenuAction: 'lfclaw_account_menu_action',
+  AppStarted: 'lfclaw_app_started',
+  AppearanceSettingChanged: 'lfclaw_appearance_setting_changed',
+  ArtifactPreviewAction: 'lfclaw_artifact_preview_action',
+  BrowserSettingChanged: 'lfclaw_browser_setting_changed',
+  CustomModelConnectionTested: 'lfclaw_custom_model_connection_tested',
+  CustomModelSettingsSaved: 'lfclaw_custom_model_settings_saved',
+  ConversationBlockAction: 'lfclaw_conversation_block_action',
+  ConversationMessageAction: 'lfclaw_conversation_message_action',
+  ConversationNavigationAction: 'lfclaw_conversation_navigation_action',
+  DreamingSettingChanged: 'lfclaw_dreaming_setting_changed',
+  EmailSkillConnectionTested: 'lfclaw_email_skill_connection_tested',
+  EmailSkillSettingsSaved: 'lfclaw_email_skill_settings_saved',
+  ExpertKitAction: 'lfclaw_expert_kit_action',
+  ExpertKitSelected: 'lfclaw_expert_kit_selected',
+  GeneralSettingChanged: 'lfclaw_general_setting_changed',
+  ImConnectionTested: 'lfclaw_im_connection_tested',
+  ImGatewayToggled: 'lfclaw_im_gateway_toggled',
+  ImInstanceChanged: 'lfclaw_im_instance_changed',
+  ImSettingsSaved: 'lfclaw_im_settings_saved',
+  MemoryEntryChanged: 'lfclaw_memory_entry_changed',
+  MemorySettingChanged: 'lfclaw_memory_setting_changed',
+  McpEnabled: 'lfclaw_mcp_enabled',
+  McpAction: 'lfclaw_mcp_action',
+  ModelSelected: 'lfclaw_model_selected',
+  PlanModeEnabled: 'lfclaw_plan_mode_enabled',
+  PluginAction: 'lfclaw_plugin_action',
+  PluginSettingsSaved: 'lfclaw_plugin_settings_saved',
+  PromptControlAction: 'lfclaw_prompt_control_action',
+  PromptSubmit: 'lfclaw_prompt_submit',
+  PromptTemplateAction: 'lfclaw_prompt_template_action',
+  ShortcutSettingChanged: 'lfclaw_shortcut_setting_changed',
+  SidebarAction: 'lfclaw_sidebar_action',
+  SkillAction: 'lfclaw_skill_action',
+  SkillEnabled: 'lfclaw_skill_enabled',
+  ScheduledTaskAction: 'lfclaw_scheduled_task_action',
+  TaskSearchAction: 'lfclaw_task_search_action',
+  UsageAnalyticsEnabled: 'lfclaw_usage_analytics_enabled',
 } as const;
 
 export const LogReporterEntry = {
@@ -70,14 +70,14 @@ export const LogReporterEntry = {
 
 type LogParamValue = string | number | boolean | null | undefined;
 
-export type LogEventAction = `${typeof LogReporterActionPrefix.LobsterAI}${string}`;
+export type LogEventAction = `${typeof LogReporterActionPrefix.LfClaw}${string}`;
 
 export type LogEventParams = Record<string, LogParamValue> & {
   action: LogEventAction;
 };
 
 const logCommons = {
-  _npid: LogReporterProduct.LobsterAI,
+  _npid: LogReporterProduct.LfClaw,
   _ncat: LogReporterCategory.Actions,
 } as const;
 
@@ -198,11 +198,15 @@ const getWindowArch = (): string => {
   return window.electron?.arch || '';
 };
 
+void getWindowAppVersion;
+void getInstallationIdForAnalytics;
+void getWindowKeyfromAttribution;
+
 export const buildLogUrl = (
   params: LogEventParams,
   options: BuildLogUrlOptions = {},
 ): string => {
-  const url = new URL(LogReporterEndpoint.YoudaoAnalyzer);
+  const url = new URL(LogReporterEndpoint.Enterprise);
   const config = configService.getConfig();
   const userId = options.userId ?? store.getState().auth.user?.yid ?? '';
   const firstKeyfrom = options.firstKeyfrom ?? cachedKeyfromAttribution?.firstKeyfrom;
@@ -233,43 +237,6 @@ export const buildLogUrl = (
 };
 
 export const reportYdAnalyzer = async (params: LogEventParams): Promise<boolean> => {
-  if (configService.getConfig().usageAnalyticsEnabled === false) {
-    writeReporterLog('debug', `skipped event ${params.action} because usage analytics is disabled`);
-    return false;
-  }
-
-  if (!params.action.trim()) {
-    writeReporterLog('warn', 'skipped an event without an action');
-    return false;
-  }
-
-  if (!params.action.startsWith(LogReporterActionPrefix.LobsterAI)) {
-    writeReporterLog('warn', 'skipped an event without the LobsterAI action prefix');
-    return false;
-  }
-
-  try {
-    await Promise.all([
-      getWindowAppVersion(),
-      getInstallationIdForAnalytics(),
-      getWindowKeyfromAttribution(),
-    ]);
-    writeReporterLog('debug', `sending event ${params.action}`);
-    const response = await window.electron.api.fetch({
-      url: buildLogUrl(params),
-      method: 'GET',
-      headers: {},
-    });
-
-    if (!response.ok) {
-      writeReporterLog('warn', `event ${params.action} failed with status ${response.status}`);
-      return false;
-    }
-
-    writeReporterLog('debug', `sent event ${params.action} successfully`);
-    return true;
-  } catch (error) {
-    writeReporterLog('warn', `event ${params.action} failed`, error);
-    return false;
-  }
+  writeReporterLog('debug', `skipped event ${params.action} because enterprise analytics is disabled`);
+  return false;
 };

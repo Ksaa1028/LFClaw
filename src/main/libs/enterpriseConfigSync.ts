@@ -13,7 +13,7 @@ export type EnterpriseManifest = {
   name: string;
   ui?: Record<string, EnterpriseUIAction>;
   disableUpdate?: boolean;
-  disableYoudaoLogin?: boolean;
+  disableExternalLogin?: boolean;
   disableModelPicker?: boolean;
   fixedModel?: {
     id: string;

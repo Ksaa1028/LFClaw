@@ -1,13 +1,13 @@
 {
   "version": "2026.6.30-enterprise.1",
-  "name": "LfClaw 企业内部版",
+  "name": "LfClaw Enterprise",
   "disableUpdate": true,
-  "disableYoudaoLogin": true,
+  "disableExternalLogin": true,
   "disableModelPicker": true,
   "fixedModel": {
     "id": "glm-5.2",
-    "name": "企业 AI 助手",
-    "provider": "企业网关",
+    "name": "Enterprise AI Assistant",
+    "provider": "Enterprise Gateway",
     "providerKey": "zai",
     "openClawProviderId": "zai"
   },

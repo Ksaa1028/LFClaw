@@ -108,7 +108,7 @@ const App: React.FC = () => {
   const [enterpriseConfig, setEnterpriseConfig] = useState<{
     ui?: Record<string, 'hide' | 'disable' | 'readonly'>;
     disableUpdate?: boolean;
-    disableYoudaoLogin?: boolean;
+    disableExternalLogin?: boolean;
     disableModelPicker?: boolean;
     fixedModel?: {
       id: string;
@@ -200,7 +200,7 @@ const App: React.FC = () => {
         await waitWithTimeout(i18nService.initialize(), initTimeoutMs, 'i18nService.initialize');
         mark('i18nService.initialize done');
 
-        if (entConfig?.disableYoudaoLogin) {
+        if (entConfig?.disableExternalLogin) {
           mark('authService skipped by enterprise config');
         } else {
           mark('authService.init begin');

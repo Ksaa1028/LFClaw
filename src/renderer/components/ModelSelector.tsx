@@ -177,7 +177,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
   const [enterpriseModelLocked, setEnterpriseModelLocked] = React.useState<{
     locked: boolean;
     label: string;
-  }>({ locked: false, label: '企业 AI 助手' });
+  }>({ locked: true, label: '' });
   const [isOpen, setIsOpen] = React.useState(false);
   const [resolvedDirection, setResolvedDirection] = React.useState<'up' | 'down'>('down');
   const [portalStyle, setPortalStyle] = React.useState<React.CSSProperties>({});
@@ -242,11 +242,11 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
         if (cancelled) return;
         setEnterpriseModelLocked({
           locked: config?.disableModelPicker === true || config?.ui?.model === 'hide',
-          label: config?.fixedModel?.name || '企业 AI 助手',
+          label: config?.fixedModel?.name || '',
         });
       })
       .catch(() => {
-        if (!cancelled) setEnterpriseModelLocked({ locked: false, label: '企业 AI 助手' });
+        if (!cancelled) setEnterpriseModelLocked({ locked: false, label: '' });
       });
     return () => {
       cancelled = true;
@@ -387,20 +387,15 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
     setHoverCardStyle(style => ({ ...style, top: nextTop }));
   }, [hoveredModel, hoverCardStyle.top]);
 
+  if (enterpriseModelLocked.locked) {
+    return null;
+  }
+
   // 如果没有可用模型，显示提示
   if (availableModels.length === 0) {
     return (
       <div className="px-3 py-1.5 rounded-xl bg-surface text-secondary text-sm">
         {i18nService.t('modelSelectorNoModels')}
-      </div>
-    );
-  }
-
-  if (enterpriseModelLocked.locked) {
-    const fixedLabel = enterpriseModelLocked.label || selectedModel?.name || '企业 AI 助手';
-    return (
-      <div className={`${compact ? 'px-2 py-1 rounded-lg text-[13px]' : 'px-3 py-1.5 rounded-xl text-sm'} max-w-[220px] truncate bg-surface text-foreground`}>
-        {fixedLabel}
       </div>
     );
   }
