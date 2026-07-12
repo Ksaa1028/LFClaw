@@ -93,6 +93,22 @@ type EnterpriseActivationView = {
   activatedAt?: string;
 };
 
+const normalizeEnterpriseActivationError = (message?: string): string => {
+  const text = (message || '').trim();
+  if (!text) return '激活失败，请检查激活码后重试';
+  const lower = text.toLowerCase();
+  if (lower.includes('invalid') || lower.includes('disabled') || lower.includes('401') || lower.includes('403')) {
+    return '激活码无效或已被禁用，请联系管理员确认';
+  }
+  if (lower.includes('missing activation') || lower.includes('missing activationcode')) {
+    return '请输入激活码';
+  }
+  if (lower.includes('network') || lower.includes('fetch') || lower.includes('timeout')) {
+    return '连接企业网关失败，请稍后重试';
+  }
+  return text;
+};
+
 const App: React.FC = () => {
   const [showSettings, setShowSettings] = useState(false);
   const [settingsOptions, setSettingsOptions] = useState<SettingsOpenOptions & { requestId: number }>({ requestId: 0 });
@@ -960,7 +976,7 @@ const App: React.FC = () => {
     try {
       const result = await window.electron.enterprise.activate(code);
       if (!result.success) {
-        setEnterpriseActivationError(result.error || '激活失败');
+        setEnterpriseActivationError(normalizeEnterpriseActivationError(result.error));
         return;
       }
       setEnterpriseActivationRequired(false);
@@ -975,7 +991,7 @@ const App: React.FC = () => {
       setEnterpriseActivationCode('');
       showToast(`已激活：${result.displayName || result.userId || '企业用户'}`);
     } catch (error) {
-      setEnterpriseActivationError(error instanceof Error ? error.message : String(error));
+      setEnterpriseActivationError(normalizeEnterpriseActivationError(error instanceof Error ? error.message : String(error)));
     } finally {
       setEnterpriseActivationLoading(false);
     }
@@ -1005,8 +1021,20 @@ const App: React.FC = () => {
 
   const enterpriseActivationModal = enterpriseActivationRequired ? (
     <div className="fixed inset-0 z-[10060] flex items-center justify-center bg-black/35 px-4">
-      <div className="w-full max-w-sm rounded-xl border border-border bg-surface p-5 shadow-modal">
-        <div className="text-base font-semibold text-foreground">企业版激活</div>
+      <div className="relative w-full max-w-sm rounded-xl border border-border bg-surface p-5 shadow-modal">
+        <button
+          type="button"
+          onClick={() => {
+            setEnterpriseActivationError(null);
+            setEnterpriseActivationRequired(false);
+          }}
+          className="absolute right-3 top-3 inline-flex h-7 w-7 items-center justify-center rounded-md text-lg leading-none text-secondary transition-colors hover:bg-black/[0.04] hover:text-foreground dark:hover:bg-white/[0.06]"
+          aria-label="关闭激活窗口"
+          title="关闭"
+        >
+          ×
+        </button>
+        <div className="pr-8 text-base font-semibold text-foreground">企业版激活</div>
         <div className="mt-2 text-sm leading-5 text-secondary">
           请输入公司分配的个人激活码。激活后会按员工身份连接企业网关，并在服务器上隔离个人数据目录。
         </div>
