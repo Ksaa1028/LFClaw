@@ -13,6 +13,7 @@ import remarkMath from 'remark-math';
 
 import { i18nService } from '../services/i18n';
 import {
+  downloadRemoteOpenClawFile,
   isRemoteOpenClawFilePath,
   openLocalPathWithToast,
   revealLocalPathWithToast,
@@ -255,6 +256,20 @@ const isLikelyLocalFilePath = (href: string): boolean => {
   const ext = extMatch[1].toLowerCase();
   const commonTlds = new Set(['com', 'net', 'org', 'io', 'cn', 'co', 'ai', 'app', 'dev', 'gov', 'edu']);
   return !commonTlds.has(ext);
+};
+
+const isLikelyRemoteGeneratedFileName = (href: string): boolean => {
+  const base = stripHashAndQuery(String(href || '').trim());
+  if (!base || base.includes('/') || base.includes('\\')) return false;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(base)) return false;
+  const extMatch = base.match(/\.([A-Za-z0-9]{1,8})$/);
+  if (!extMatch) return false;
+  const ext = extMatch[1].toLowerCase();
+  return new Set([
+    'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'pdf', 'txt', 'md',
+    'csv', 'json', 'html', 'htm', 'png', 'jpg', 'jpeg', 'webp', 'svg',
+    'zip', 'rar', '7z',
+  ]).has(ext);
 };
 
 const toFileHref = (filePath: string): string => {
@@ -515,6 +530,9 @@ const createMarkdownComponents = (
         ?? stripFileProtocol(stripHashAndQuery(hrefValue));
       const decodedPath = safeDecodeURIComponent(rawPath);
       const filePath = decodedPath || rawPath;
+      const remoteGeneratedFileName = isLikelyRemoteGeneratedFileName(hrefValue)
+        ? safeDecodeURIComponent(stripHashAndQuery(hrefValue))
+        : null;
       const isDirectoryLink = looksLikeDirectory(filePath);
       const shouldShowRevealInFolderAction = showRevealInFolderAction && !isDirectoryLink;
 
@@ -529,6 +547,17 @@ const createMarkdownComponents = (
           const result = await window.electron.shell.openPath(filePath);
           if (result?.success) {
             return;
+          }
+
+          if (result?.reason === 'not_found' && remoteGeneratedFileName) {
+            const downloadedPath = await downloadRemoteOpenClawFile(remoteGeneratedFileName);
+            if (downloadedPath) {
+              const downloadedResult = await window.electron.shell.openPath(downloadedPath);
+              if (!downloadedResult?.success) {
+                showShellFailureToast(downloadedResult, 'openFileFailed');
+              }
+              return;
+            }
           }
 
           const fallbackPath = findFallbackPathFromContext(
@@ -576,6 +605,13 @@ const createMarkdownComponents = (
           }
           if (await tryReveal(filePath)) {
             return;
+          }
+
+          if ((lastResult as ShellActionResult | null)?.reason === 'not_found' && remoteGeneratedFileName) {
+            const downloadedPath = await downloadRemoteOpenClawFile(remoteGeneratedFileName);
+            if (downloadedPath && await tryReveal(downloadedPath)) {
+              return;
+            }
           }
 
           const fallbackPath = findFallbackPathFromContext(

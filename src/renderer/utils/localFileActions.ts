@@ -53,7 +53,7 @@ export const isRemoteOpenClawFilePath = (filePath: string): boolean => {
     || /^\\root\\\.openclaw\\workspace\\/i.test(normalized);
 };
 
-const downloadRemoteOpenClawFile = async (filePath: string): Promise<string | null> => {
+export const downloadRemoteOpenClawFile = async (filePath: string): Promise<string | null> => {
   const result = await window.electron?.enterprise?.downloadRemoteFile?.(filePath);
   if (result?.success && result.filePath) {
     showToast(`已下载到本地：${result.filePath}`);

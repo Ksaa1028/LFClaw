@@ -452,9 +452,23 @@ function resolveAllowedDownloadPath(user, rawPath) {
     paths.homeDir,
     paths.stateDir,
     path.join(paths.stateDir, 'workspace-main'),
+    path.join(paths.homeDir, '.openclaw', 'workspace'),
     path.join(os.homedir(), '.openclaw', 'workspace'),
   ].map(root => path.resolve(root));
-  const resolved = path.resolve(normalized);
+
+  const candidates = path.isAbsolute(normalized)
+    ? [path.resolve(normalized)]
+    : [
+        path.resolve(path.join(paths.stateDir, 'workspace-main', normalized)),
+        path.resolve(path.join(paths.homeDir, '.openclaw', 'workspace', normalized)),
+        path.resolve(path.join(paths.root, normalized)),
+        path.resolve(path.join(os.homedir(), '.openclaw', 'workspace', normalized)),
+      ];
+  const resolved = candidates.find(candidate => (
+    allowedRoots.some(root => isPathInside(candidate, root))
+    && fs.existsSync(candidate)
+  )) || candidates[0];
+
   if (!allowedRoots.some(root => isPathInside(resolved, root))) {
     throw Object.assign(new Error('File path is outside allowed workspace'), { statusCode: 403 });
   }
