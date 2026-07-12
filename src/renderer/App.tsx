@@ -165,6 +165,8 @@ const App: React.FC = () => {
   const authUser = useSelector((state: RootState) => state.auth.user);
   const runtimePlatform = window.electron?.platform ?? 'win32';
   const isWindows = runtimePlatform === 'win32';
+  const enterpriseActivationBlocked = enterpriseConfig?.activation?.required === true
+    && enterpriseActivation?.activated !== true;
 
   const waitWithTimeout = useCallback(
     async <T,>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> => {
@@ -1023,19 +1025,7 @@ const App: React.FC = () => {
   const enterpriseActivationModal = enterpriseActivationRequired ? (
     <div className="fixed inset-0 z-[10060] flex items-center justify-center bg-black/35 px-4">
       <div className="relative w-full max-w-sm rounded-xl border border-border bg-surface p-5 shadow-modal">
-        <button
-          type="button"
-          onClick={() => {
-            setEnterpriseActivationError(null);
-            setEnterpriseActivationRequired(false);
-          }}
-          className="absolute right-3 top-3 inline-flex h-7 w-7 items-center justify-center rounded-md text-lg leading-none text-secondary transition-colors hover:bg-black/[0.04] hover:text-foreground dark:hover:bg-white/[0.06]"
-          aria-label="关闭激活窗口"
-          title="关闭"
-        >
-          ×
-        </button>
-        <div className="pr-8 text-base font-semibold text-foreground">企业版激活</div>
+        <div className="text-base font-semibold text-foreground">企业版激活</div>
         <div className="mt-2 text-sm leading-5 text-secondary">
           请输入公司分配的个人激活码。激活后会按员工身份连接企业网关，并在服务器上隔离个人数据目录。
         </div>
@@ -1233,6 +1223,7 @@ const App: React.FC = () => {
                 onRequestAppSettings={privacyAgreed === true && !showWelcome ? handleShowSettings : undefined}
                 onShowSkills={handleShowSkills}
                 onShowKits={handleShowKits}
+                enterpriseActivationBlocked={enterpriseActivationBlocked}
                 isSidebarCollapsed={isSidebarCollapsed}
                 onToggleSidebar={handleToggleSidebar}
                 onNewChat={handleNewChat}

@@ -49,13 +49,24 @@ export interface CoworkViewProps {
   onRequestAppSettings?: (options?: SettingsOpenOptions) => void;
   onShowSkills?: () => void;
   onShowKits?: () => void;
+  enterpriseActivationBlocked?: boolean;
   isSidebarCollapsed?: boolean;
   onToggleSidebar?: () => void;
   onNewChat?: () => void;
   updateBadge?: React.ReactNode;
 }
 
-const CoworkView: React.FC<CoworkViewProps> = ({ onShowSkills, onShowKits, isSidebarCollapsed, onToggleSidebar, onNewChat, updateBadge }) => {
+const ENTERPRISE_ACTIVATION_BLOCKED_MESSAGE = '请先完成企业版激活后再使用对话';
+
+const CoworkView: React.FC<CoworkViewProps> = ({
+  onShowSkills,
+  onShowKits,
+  enterpriseActivationBlocked = false,
+  isSidebarCollapsed,
+  onToggleSidebar,
+  onNewChat,
+  updateBadge,
+}) => {
   const dispatch = useDispatch();
   const isMac = window.electron.platform === 'darwin';
   const [isInitialized, setIsInitialized] = useState(false);
@@ -237,6 +248,10 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onShowSkills, onShowKits, isSid
     selectedTextSnippets?: CoworkSelectedTextSnippet[],
     collaborationMode: CoworkCollaborationModeType = CoworkCollaborationMode.Default,
   ): Promise<boolean | void> => {
+    if (enterpriseActivationBlocked) {
+      window.dispatchEvent(new CustomEvent('app:showToast', { detail: ENTERPRISE_ACTIVATION_BLOCKED_MESSAGE }));
+      return false;
+    }
     console.log('[CoworkView] handleStartSession: imageAttachments diagnosis', {
       hasImageAttachments: !!imageAttachments,
       count: imageAttachments?.length ?? 0,
@@ -434,6 +449,10 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onShowSkills, onShowKits, isSid
     selectedTextSnippets?: CoworkSelectedTextSnippet[],
     collaborationMode: CoworkCollaborationModeType = CoworkCollaborationMode.Default,
   ) => {
+    if (enterpriseActivationBlocked) {
+      window.dispatchEvent(new CustomEvent('app:showToast', { detail: ENTERPRISE_ACTIVATION_BLOCKED_MESSAGE }));
+      return false;
+    }
     if (!currentSession) return false;
     // Prevent duplicate submissions
     if (isContinuingRef.current) return false;
@@ -738,6 +757,8 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onShowSkills, onShowKits, isSid
           onManageKits={() => onShowKits?.()}
           onContinue={handleContinueSession}
           onStop={handleStopSession}
+          enterpriseActivationBlocked={enterpriseActivationBlocked}
+          enterpriseActivationMessage={ENTERPRISE_ACTIVATION_BLOCKED_MESSAGE}
           isSidebarCollapsed={isSidebarCollapsed}
           onToggleSidebar={onToggleSidebar}
           onNewChat={onNewChat}
@@ -790,8 +811,8 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onShowSkills, onShowKits, isSid
               onSubmit={handleStartSession}
               onStop={handleStopSession}
               isStreaming={isStreaming}
-              disabled={!isEngineReady}
-              placeholder={i18nService.t('coworkPlaceholder')}
+              disabled={!isEngineReady || enterpriseActivationBlocked}
+              placeholder={enterpriseActivationBlocked ? ENTERPRISE_ACTIVATION_BLOCKED_MESSAGE : i18nService.t('coworkPlaceholder')}
               size="large"
               workingDirectory={currentAgentWorkingDirectory}
               onWorkingDirectoryChange={async (dir: string) => {

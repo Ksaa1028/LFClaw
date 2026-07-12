@@ -108,6 +108,8 @@ import UserMessageItem from './UserMessageItem';
 interface CoworkSessionDetailProps {
   onManageSkills?: () => void;
   onManageKits?: () => void;
+  enterpriseActivationBlocked?: boolean;
+  enterpriseActivationMessage?: string;
   onContinue: (
     prompt: string,
     skillPrompt?: string,
@@ -1030,6 +1032,8 @@ const EMPTY_PREVIEW_TABS: ArtifactPreviewTab[] = [];
 const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   onManageSkills,
   onManageKits,
+  enterpriseActivationBlocked = false,
+  enterpriseActivationMessage,
   onContinue,
   onStop,
   isSidebarCollapsed,
@@ -1381,6 +1385,12 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       }));
       return;
     }
+    if (enterpriseActivationBlocked) {
+      window.dispatchEvent(new CustomEvent('app:showToast', {
+        detail: enterpriseActivationMessage || '请先完成企业版激活后再使用对话',
+      }));
+      return;
+    }
     window.electron?.log?.fromRenderer?.(
       'debug',
       'CoworkSessionDetail',
@@ -1409,7 +1419,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       sessionId: currentSession.id,
       messageId,
     }));
-  }, [confirmExecutionSkillPrompt, currentSession?.id, currentSession?.status, dispatch, isSessionBusy, latestProposedPlan, onContinue]);
+  }, [confirmExecutionSkillPrompt, currentSession?.id, currentSession?.status, dispatch, enterpriseActivationBlocked, enterpriseActivationMessage, isSessionBusy, latestProposedPlan, onContinue]);
 
   const handleAdjustPlan = useCallback((messageId: string) => {
     if (!currentSession?.id || !latestProposedPlan || latestProposedPlan.messageId !== messageId) return;
@@ -4438,8 +4448,10 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
             onSubmit={onContinue}
             onStop={onStop}
             isStreaming={isSessionBusy}
-            placeholder={i18nService.t(remoteManaged ? 'coworkRemoteManagedPlaceholder' : 'coworkContinuePlaceholder')}
-            disabled={remoteManaged}
+            placeholder={enterpriseActivationBlocked
+              ? (enterpriseActivationMessage || '请先完成企业版激活后再使用对话')
+              : i18nService.t(remoteManaged ? 'coworkRemoteManagedPlaceholder' : 'coworkContinuePlaceholder')}
+            disabled={remoteManaged || enterpriseActivationBlocked}
             size={isArtifactPanelExpanded ? 'compact' : 'large'}
             remoteManaged={remoteManaged}
             onManageSkills={remoteManaged ? undefined : onManageSkills}
