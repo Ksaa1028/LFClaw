@@ -7,6 +7,7 @@
  * Public surface:
  *   GET /health
  *   POST /api/enterprise/activate
+ *   GET /api/enterprise/files/download
  *   GET /api/openclaw/gateway-token
  *   GET /api/admin/activation-codes
  *   POST /api/admin/activation-codes
@@ -304,6 +305,31 @@ function copyTemplateConfigIfMissing(targetPath) {
   });
 }
 
+function enforceUserConfigIsolation(configPath, paths) {
+  const openclawConfig = readJsonIfExists(configPath, {});
+  const workspaceDir = path.join(paths.stateDir, 'workspace-main');
+  ensureDir(workspaceDir);
+  const nextConfig = {
+    ...openclawConfig,
+    agents: {
+      ...(openclawConfig.agents && typeof openclawConfig.agents === 'object' ? openclawConfig.agents : {}),
+      defaults: {
+        ...(openclawConfig.agents?.defaults && typeof openclawConfig.agents.defaults === 'object'
+          ? openclawConfig.agents.defaults
+          : {}),
+        workspace: workspaceDir,
+        model: {
+          ...(openclawConfig.agents?.defaults?.model && typeof openclawConfig.agents.defaults.model === 'object'
+            ? openclawConfig.agents.defaults.model
+            : {}),
+          primary: config.model,
+        },
+      },
+    },
+  };
+  writeJsonAtomic(configPath, nextConfig);
+}
+
 function copyFileIfExistsAndMissing(sourcePath, targetPath) {
   if (!fs.existsSync(sourcePath) || fs.existsSync(targetPath)) return false;
   ensureDir(path.dirname(targetPath));
@@ -393,6 +419,48 @@ function getUserPaths(userKey) {
   };
 }
 
+function isPathInside(childPath, parentPath) {
+  const relative = path.relative(parentPath, childPath);
+  return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function normalizeRemoteFilePath(rawPath) {
+  const value = String(rawPath || '').trim();
+  if (!value) return '';
+  let decoded = value;
+  try {
+    decoded = decodeURIComponent(decoded);
+  } catch {
+    // keep original value
+  }
+  decoded = decoded.replace(/^file:\/\//i, '');
+  if (/^\\root\\/.test(decoded)) {
+    decoded = `/${decoded.replace(/^\\+/, '').replace(/\\/g, '/')}`;
+  }
+  return decoded;
+}
+
+function resolveAllowedDownloadPath(user, rawPath) {
+  const normalized = normalizeRemoteFilePath(rawPath);
+  if (!normalized) {
+    throw Object.assign(new Error('Missing file path'), { statusCode: 400 });
+  }
+  const userKey = safePathSegment(user.folderName || user.id || safeUserKey(user.id));
+  const paths = getUserPaths(userKey);
+  const allowedRoots = [
+    paths.root,
+    paths.homeDir,
+    paths.stateDir,
+    path.join(paths.stateDir, 'workspace-main'),
+    path.join(os.homedir(), '.openclaw', 'workspace'),
+  ].map(root => path.resolve(root));
+  const resolved = path.resolve(normalized);
+  if (!allowedRoots.some(root => isPathInside(resolved, root))) {
+    throw Object.assign(new Error('File path is outside allowed workspace'), { statusCode: 403 });
+  }
+  return resolved;
+}
+
 function upsertUserInfo(input) {
   const userKey = safePathSegment(input.folderName || input.userId || safeUserKey(input.userId));
   const paths = getUserPaths(userKey);
@@ -454,6 +522,7 @@ async function ensureUserGateway(user) {
   ensureDir(paths.homeDir);
   ensureDir(paths.stateDir);
   copyTemplateConfigIfMissing(paths.configPath);
+  enforceUserConfigIsolation(paths.configPath, paths);
   copyTemplateAuthStoreIfMissing(paths.stateDir);
 
   const port = entry?.port || await allocatePort();
@@ -461,6 +530,7 @@ async function ensureUserGateway(user) {
   const logStream = fs.createWriteStream(paths.logPath, { flags: 'a' });
   const env = {
     ...process.env,
+    HOME: paths.homeDir,
     OPENCLAW_HOME: paths.homeDir,
     OPENCLAW_STATE_DIR: paths.stateDir,
     OPENCLAW_CONFIG_PATH: paths.configPath,
@@ -1085,6 +1155,31 @@ async function handleAdminDeleteActivationCode(req, res) {
   }
 }
 
+async function handleEnterpriseFileDownload(req, res, url) {
+  try {
+    const auth = req.headers.authorization || '';
+    const bearer = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length).trim() : '';
+    const user = await resolveUserFromBearer(bearer);
+    const targetPath = resolveAllowedDownloadPath(user, url.searchParams.get('path') || '');
+    const stat = fs.statSync(targetPath);
+    if (!stat.isFile()) {
+      sendJson(res, 404, { code: 404, message: 'File not found' });
+      return;
+    }
+    const fileName = path.basename(targetPath).replace(/[\r\n"]/g, '_') || 'download';
+    res.writeHead(200, {
+      'Content-Type': 'application/octet-stream',
+      'Content-Length': stat.size,
+      'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+      'Cache-Control': 'no-store',
+    });
+    fs.createReadStream(targetPath).pipe(res);
+  } catch (error) {
+    const status = error.statusCode || (error.code === 'ENOENT' ? 404 : 500);
+    sendJson(res, status, { code: status, message: error.message || String(error) });
+  }
+}
+
 async function handleGatewayToken(req, res) {
   try {
     const auth = req.headers.authorization || '';
@@ -1132,6 +1227,10 @@ function handleHttp(req, res) {
   }
   if (req.method === 'POST' && url.pathname === '/api/enterprise/activate') {
     void handleEnterpriseActivate(req, res);
+    return;
+  }
+  if (req.method === 'GET' && url.pathname === '/api/enterprise/files/download') {
+    void handleEnterpriseFileDownload(req, res, url);
     return;
   }
   if (req.method === 'GET' && url.pathname === '/api/admin/activation-codes') {

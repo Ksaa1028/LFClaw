@@ -47,14 +47,34 @@ const logLocalFileActionFailure = (
   );
 };
 
+export const isRemoteOpenClawFilePath = (filePath: string): boolean => {
+  const normalized = String(filePath || '').trim().replace(/^file:\/\//i, '');
+  return /^\/root\/\.openclaw\/workspace\//i.test(normalized)
+    || /^\\root\\\.openclaw\\workspace\\/i.test(normalized);
+};
+
+const downloadRemoteOpenClawFile = async (filePath: string): Promise<string | null> => {
+  const result = await window.electron?.enterprise?.downloadRemoteFile?.(filePath);
+  if (result?.success && result.filePath) {
+    showToast(`已下载到本地：${result.filePath}`);
+    return result.filePath;
+  }
+  showToast(result?.error || '远程文件下载失败');
+  return null;
+};
+
 export const openLocalPathWithToast = async (
   filePath: string,
   fallbackKey = 'openFileFailed',
 ): Promise<boolean> => {
   try {
-    const result = await window.electron?.shell?.openPath(filePath);
+    const targetPath = isRemoteOpenClawFilePath(filePath)
+      ? await downloadRemoteOpenClawFile(filePath)
+      : filePath;
+    if (!targetPath) return false;
+    const result = await window.electron?.shell?.openPath(targetPath);
     if (result?.success) return true;
-    logLocalFileActionFailure('open', filePath, result);
+    logLocalFileActionFailure('open', targetPath, result);
     showShellFailureToast(result, fallbackKey);
     return false;
   } catch (error) {
@@ -69,9 +89,13 @@ export const revealLocalPathWithToast = async (
   fallbackKey = 'showInFolderFailed',
 ): Promise<boolean> => {
   try {
-    const result = await window.electron?.shell?.showItemInFolder(filePath);
+    const targetPath = isRemoteOpenClawFilePath(filePath)
+      ? await downloadRemoteOpenClawFile(filePath)
+      : filePath;
+    if (!targetPath) return false;
+    const result = await window.electron?.shell?.showItemInFolder(targetPath);
     if (result?.success) return true;
-    logLocalFileActionFailure('reveal', filePath, result);
+    logLocalFileActionFailure('reveal', targetPath, result);
     showShellFailureToast(result, fallbackKey);
     return false;
   } catch (error) {

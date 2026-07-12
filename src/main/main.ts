@@ -3348,6 +3348,89 @@ if (!gotTheLock) {
     return { success: true };
   });
 
+  const resolveEnterpriseManagerBaseUrl = (): string => {
+    const manifest = getStore().get<{
+      activation?: { managerUrl?: string };
+    }>('enterprise_config');
+    const managerUrl = manifest?.activation?.managerUrl?.trim()
+      || readOpenClawGatewayFileConfig()?.gatewayUrl?.trim()
+      || readOpenClawGatewayFileConfig()?.url?.trim()
+      || '';
+    return managerUrl.replace(/^ws:/i, 'http:').replace(/^wss:/i, 'https:').replace(/\/+$/, '');
+  };
+
+  const normalizeRemoteOpenClawPath = (inputPath: string): string => {
+    let normalized = String(inputPath || '').trim();
+    if (/^file:\/\//i.test(normalized)) {
+      normalized = safeDecodeURIComponent(normalized.replace(/^file:\/\//i, ''));
+    }
+    if (/^\\root\\/.test(normalized)) {
+      normalized = `/${normalized.replace(/^\\+/, '').replace(/\\/g, '/')}`;
+    }
+    return normalized;
+  };
+
+  const getUniqueDownloadPath = async (dir: string, fileName: string): Promise<string> => {
+    const parsed = path.parse(fileName);
+    const candidate = path.join(dir, fileName);
+    try {
+      await fs.promises.access(candidate);
+    } catch {
+      return candidate;
+    }
+    const suffix = new Date().toISOString().replace(/[:.]/g, '-');
+    return path.join(dir, `${parsed.name}-${suffix}${parsed.ext}`);
+  };
+
+  ipcMain.handle('enterprise:downloadRemoteFile', async (_event, input: { filePath?: string }) => {
+    const identity = getEnterpriseActivationIdentity();
+    if (!identity?.activationToken) {
+      return { success: false, error: '请先完成企业版激活' };
+    }
+    const managerUrl = resolveEnterpriseManagerBaseUrl();
+    if (!managerUrl) {
+      return { success: false, error: '未找到企业网关地址' };
+    }
+    const remotePath = normalizeRemoteOpenClawPath(input?.filePath || '');
+    if (!remotePath) {
+      return { success: false, error: '文件路径为空' };
+    }
+    try {
+      const response = await net.fetch(`${managerUrl}/api/enterprise/files/download?path=${encodeURIComponent(remotePath)}`, {
+        method: 'GET',
+        headers: {
+          Accept: 'application/octet-stream',
+          Authorization: `Bearer ${identity.activationToken}`,
+        },
+      });
+      if (!response.ok) {
+        let message = `下载远程文件失败：HTTP ${response.status}`;
+        try {
+          const body = await response.json() as { message?: string };
+          if (body?.message) message = body.message;
+        } catch {
+          // ignore non-json response
+        }
+        if (response.status === 401 || response.status === 403) {
+          clearEnterpriseActivationRuntime(`remote_file_${response.status}`);
+        }
+        return { success: false, error: message };
+      }
+      const downloadDir = path.join(app.getPath('downloads'), 'LfClaw');
+      await fs.promises.mkdir(downloadDir, { recursive: true });
+      const fileName = sanitizeAttachmentFileName(path.basename(remotePath) || 'download');
+      const localPath = await getUniqueDownloadPath(downloadDir, fileName);
+      const buffer = Buffer.from(await response.arrayBuffer());
+      await fs.promises.writeFile(localPath, buffer);
+      return { success: true, filePath: localPath };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
+
   ipcMain.handle('enterprise:activate', async (_event, input: { activationCode?: string }) => {
     const activationCode = typeof input?.activationCode === 'string' ? input.activationCode.trim() : '';
     if (!activationCode) {

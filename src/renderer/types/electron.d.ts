@@ -1476,6 +1476,11 @@ interface IElectronAPI {
       error?: string;
     }>;
     clearActivation: () => Promise<{ success: boolean }>;
+    downloadRemoteFile: (filePath: string) => Promise<{
+      success: boolean;
+      filePath?: string;
+      error?: string;
+    }>;
     onActivationInvalidated: (callback: (payload: { reason?: string }) => void) => () => void;
   };
   openclawGateway: {

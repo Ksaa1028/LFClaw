@@ -116,6 +116,8 @@ contextBridge.exposeInMainWorld('electron', {
     getActivation: () => ipcRenderer.invoke('enterprise:getActivation'),
     activate: (activationCode: string) => ipcRenderer.invoke('enterprise:activate', { activationCode }),
     clearActivation: () => ipcRenderer.invoke('enterprise:clearActivation'),
+    downloadRemoteFile: (filePath: string) =>
+      ipcRenderer.invoke('enterprise:downloadRemoteFile', { filePath }),
     onActivationInvalidated: (callback: (payload: { reason?: string }) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, payload: { reason?: string }) => callback(payload);
       ipcRenderer.on('enterprise:activationInvalidated', handler);

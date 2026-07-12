@@ -12,7 +12,14 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 
 import { i18nService } from '../services/i18n';
-import { type ShellActionResult, showShellFailureToast, showToast } from '../utils/localFileActions';
+import {
+  isRemoteOpenClawFilePath,
+  openLocalPathWithToast,
+  revealLocalPathWithToast,
+  type ShellActionResult,
+  showShellFailureToast,
+  showToast,
+} from '../utils/localFileActions';
 import CodeBlock from './CodeBlock';
 
 const SAFE_URL_PROTOCOLS = new Set(['http', 'https', 'mailto', 'tel', 'file', 'localfile', 'kit']);
@@ -515,6 +522,10 @@ const createMarkdownComponents = (
         e.preventDefault();
         const anchor = e.currentTarget;
         try {
+          if (isRemoteOpenClawFilePath(filePath)) {
+            await openLocalPathWithToast(filePath);
+            return;
+          }
           const result = await window.electron.shell.openPath(filePath);
           if (result?.success) {
             return;
@@ -559,6 +570,10 @@ const createMarkdownComponents = (
         };
 
         try {
+          if (isRemoteOpenClawFilePath(filePath)) {
+            await revealLocalPathWithToast(filePath);
+            return;
+          }
           if (await tryReveal(filePath)) {
             return;
           }
