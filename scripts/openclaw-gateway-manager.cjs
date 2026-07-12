@@ -604,6 +604,72 @@ function createLease(entry) {
   return leases.get(leaseId);
 }
 
+function collectUserKeysForActivation(store, activationCode, record) {
+  const codeHash = hashActivationCode(activationCode);
+  const userKeys = new Set();
+  if (record?.folderName) userKeys.add(safePathSegment(record.folderName));
+
+  for (const tokenEntry of Object.values(store.tokens || {})) {
+    if (tokenEntry?.activationCodeHash !== codeHash) continue;
+    if (tokenEntry.folderName) {
+      userKeys.add(safePathSegment(tokenEntry.folderName));
+      continue;
+    }
+    if (tokenEntry.userId) {
+      userKeys.add(safePathSegment(`${tokenEntry.userId}_${tokenEntry.displayName || ''}`));
+    }
+  }
+
+  return userKeys;
+}
+
+function stopUserGateway(entry, reason) {
+  if (!entry?.process || entry.process.killed) return false;
+  log(`Stopping OpenClaw user=${entry.userKey} port=${entry.port} reason=${reason}`);
+  try {
+    entry.process.kill('SIGTERM');
+  } catch (error) {
+    log(`Failed to stop OpenClaw user=${entry.userKey}: ${error.message || error}`);
+    return false;
+  }
+  const forceKill = setTimeout(() => {
+    if (entry.process.exitCode === null && entry.process.signalCode === null) {
+      try {
+        entry.process.kill('SIGKILL');
+      } catch {
+        // Process may have exited between the status check and kill call.
+      }
+    }
+  }, 3_000);
+  forceKill.unref?.();
+  return true;
+}
+
+function invalidateRuntimeForActivation(store, activationCode, record, reason) {
+  const userKeys = collectUserKeysForActivation(store, activationCode, record);
+  let removedLeases = 0;
+  let stoppedUsers = 0;
+
+  for (const [leaseId, lease] of leases.entries()) {
+    if (!userKeys.has(lease.userKey)) continue;
+    leases.delete(leaseId);
+    removedLeases += 1;
+  }
+
+  for (const userKey of userKeys) {
+    const entry = users.get(userKey);
+    if (!entry) continue;
+    if (stopUserGateway(entry, reason)) stoppedUsers += 1;
+    users.delete(userKey);
+  }
+
+  return {
+    userKeys: [...userKeys],
+    removedLeases,
+    stoppedUsers,
+  };
+}
+
 function sendJson(res, status, payload) {
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
@@ -1030,6 +1096,7 @@ async function handleAdminDisableActivationCode(req, res) {
       tokenEntry.enabled = false;
       tokenEntry.disabledAt = record.disabledAt;
     }
+    const invalidatedRuntime = invalidateRuntimeForActivation(store, activationCode, record, 'activation-disabled');
     saveActivationStore(store);
     upsertUserInfo({
       userId: record.userId,
@@ -1045,6 +1112,7 @@ async function handleAdminDisableActivationCode(req, res) {
       data: {
         ...publicActivationRecord(activationCode, record, store),
         disabledTokens,
+        invalidatedRuntime,
       },
     });
   } catch (error) {
@@ -1137,6 +1205,7 @@ async function handleAdminDeleteActivationCode(req, res) {
 
     const codeHash = hashActivationCode(activationCode);
     let deletedTokens = 0;
+    const invalidatedRuntime = invalidateRuntimeForActivation(store, activationCode, record, 'activation-deleted');
     for (const tokenHash of Object.keys(store.tokens || {})) {
       if (store.tokens[tokenHash]?.activationCodeHash !== codeHash) continue;
       delete store.tokens[tokenHash];
@@ -1161,6 +1230,7 @@ async function handleAdminDeleteActivationCode(req, res) {
         displayName: record.displayName,
         folderName: record.folderName,
         deletedTokens,
+        invalidatedRuntime,
       },
     });
   } catch (error) {
