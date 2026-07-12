@@ -49,6 +49,7 @@ interface SidebarProps {
   onToggleCollapse: () => void;
   updateBadge?: React.ReactNode;
   hideLogin?: boolean;
+  onEnterpriseRebind?: () => void;
   enterpriseActivation?: {
     activated?: boolean;
     activationCode?: string;
@@ -144,6 +145,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   onToggleCollapse,
   updateBadge,
   hideLogin,
+  onEnterpriseRebind,
   enterpriseActivation,
 }) => {
   const currentAgentId = useSelector((state: RootState) => state.agent.currentAgentId);
@@ -783,6 +785,18 @@ const Sidebar: React.FC<SidebarProps> = ({
                       <span className="min-w-0 break-all font-mono text-foreground">{enterpriseIdentity.folderName || '-'}</span>
                     </div>
                   </div>
+                  {onEnterpriseRebind && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowEnterpriseIdentity(false);
+                        onEnterpriseRebind();
+                      }}
+                      className="mt-3 inline-flex h-7 w-full items-center justify-center rounded-md border border-border text-xs font-medium text-foreground transition-colors hover:bg-surface-raised"
+                    >
+                      更换激活码
+                    </button>
+                  )}
                 </div>
               )}
             </div>

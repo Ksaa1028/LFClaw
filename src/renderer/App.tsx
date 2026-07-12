@@ -981,6 +981,28 @@ const App: React.FC = () => {
     }
   }, [enterpriseActivationCode, showToast]);
 
+  const handleEnterpriseRebind = useCallback(async () => {
+    try {
+      await window.electron.enterprise.clearActivation();
+    } finally {
+      setEnterpriseActivation(null);
+      setEnterpriseActivationCode('');
+      setEnterpriseActivationError(null);
+      setEnterpriseActivationRequired(true);
+      showToast('已解除当前激活，请输入新的激活码');
+    }
+  }, [showToast]);
+
+  useEffect(() => {
+    return window.electron.enterprise.onActivationInvalidated(() => {
+      setEnterpriseActivation(null);
+      setEnterpriseActivationCode('');
+      setEnterpriseActivationError('当前激活码已失效，请重新输入新的激活码');
+      setEnterpriseActivationRequired(true);
+      showToast('当前激活码已失效，请重新激活');
+    });
+  }, [showToast]);
+
   const enterpriseActivationModal = enterpriseActivationRequired ? (
     <div className="fixed inset-0 z-[10060] flex items-center justify-center bg-black/35 px-4">
       <div className="w-full max-w-sm rounded-xl border border-border bg-surface p-5 shadow-modal">
@@ -1141,6 +1163,7 @@ const App: React.FC = () => {
           updateBadge={!isSidebarCollapsed ? updateBadge : null}
           hideLogin={enterpriseConfig?.ui?.login === 'hide'}
           enterpriseActivation={enterpriseActivation}
+          onEnterpriseRebind={handleEnterpriseRebind}
         />
         <div className={`flex-1 min-w-0 transition-[padding] duration-200 ease-out ${isSidebarCollapsed ? 'pl-1.5' : ''}`}>
           <div className="relative h-full min-h-0 rounded-xl border border-border bg-background overflow-hidden">

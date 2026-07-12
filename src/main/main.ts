@@ -3327,10 +3327,8 @@ if (!gotTheLock) {
     try {
       let identity = getEnterpriseActivationIdentity();
       if (!identity) return { activated: false };
-      if (!identity.activationCode) {
-        await syncOpenClawGatewayPersonalToken('enterprise-getActivation');
-        identity = getEnterpriseActivationIdentity();
-      }
+      await syncOpenClawGatewayPersonalToken('enterprise-getActivation');
+      identity = getEnterpriseActivationIdentity();
       if (!identity) return { activated: false };
       return {
         activated: true,
@@ -3346,8 +3344,7 @@ if (!gotTheLock) {
   });
 
   ipcMain.handle('enterprise:clearActivation', async () => {
-    clearEnterpriseActivationIdentity();
-    setRuntimeOpenClawGatewayToken(null);
+    clearEnterpriseActivationRuntime();
     return { success: true };
   });
 
@@ -3692,6 +3689,17 @@ if (!gotTheLock) {
     getStore().delete(ENTERPRISE_ACTIVATION_STORE_KEY);
   };
 
+  const clearEnterpriseActivationRuntime = (reason?: string) => {
+    clearEnterpriseActivationIdentity();
+    setRuntimeOpenClawGatewayConfig(null);
+    setRuntimeOpenClawGatewayToken(null);
+    BrowserWindow.getAllWindows().forEach(win => {
+      if (!win.isDestroyed()) {
+        win.webContents.send('enterprise:activationInvalidated', { reason });
+      }
+    });
+  };
+
   const clearAuthTokens = () => {
     getStore().delete('auth_tokens');
   };
@@ -3915,6 +3923,11 @@ if (!gotTheLock) {
           headers: { Accept: 'application/json' },
         });
       if (!response.ok) {
+        if (enterpriseIdentity?.activationToken && (response.status === 401 || response.status === 403)) {
+          clearEnterpriseActivationRuntime(`http_${response.status}`);
+          console.warn(`[OpenClawGatewayAuth] enterprise activation rejected by server (HTTP ${response.status}); activation has been cleared.`);
+          return false;
+        }
         console.warn(`[OpenClawGatewayAuth] personal gateway token request returned HTTP ${response.status}; using configured gateway token.`);
         return false;
       }

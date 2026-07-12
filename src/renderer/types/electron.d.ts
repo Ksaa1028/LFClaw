@@ -1476,6 +1476,7 @@ interface IElectronAPI {
       error?: string;
     }>;
     clearActivation: () => Promise<{ success: boolean }>;
+    onActivationInvalidated: (callback: (payload: { reason?: string }) => void) => () => void;
   };
   openclawGateway: {
     getConfig: () => Promise<{

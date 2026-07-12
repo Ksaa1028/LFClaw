@@ -116,6 +116,11 @@ contextBridge.exposeInMainWorld('electron', {
     getActivation: () => ipcRenderer.invoke('enterprise:getActivation'),
     activate: (activationCode: string) => ipcRenderer.invoke('enterprise:activate', { activationCode }),
     clearActivation: () => ipcRenderer.invoke('enterprise:clearActivation'),
+    onActivationInvalidated: (callback: (payload: { reason?: string }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: { reason?: string }) => callback(payload);
+      ipcRenderer.on('enterprise:activationInvalidated', handler);
+      return () => ipcRenderer.off('enterprise:activationInvalidated', handler);
+    },
   },
   openclawGateway: {
     getConfig: () => ipcRenderer.invoke('openclawGateway:getConfig'),
