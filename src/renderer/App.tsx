@@ -163,7 +163,8 @@ const App: React.FC = () => {
   const currentSessionId = useSelector(selectCurrentSessionId);
   const pendingPermission = useSelector(selectFirstPendingPermission);
   const authUser = useSelector((state: RootState) => state.auth.user);
-  const isWindows = window.electron.platform === 'win32';
+  const runtimePlatform = window.electron?.platform ?? 'win32';
+  const isWindows = runtimePlatform === 'win32';
 
   const waitWithTimeout = useCallback(
     async <T,>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> => {
@@ -205,17 +206,17 @@ const App: React.FC = () => {
 
       try {
         mark('start');
-        document.documentElement.classList.add(`platform-${window.electron.platform}`);
+        document.documentElement.classList.add(`platform-${runtimePlatform}`);
 
         const initTimeoutMs =
-          window.electron.platform === 'win32'
+          runtimePlatform === 'win32'
             ? INIT_STEP_TIMEOUT_MS_WINDOWS
             : INIT_STEP_TIMEOUT_MS_DEFAULT;
         mark('configService.init begin');
         await waitWithTimeout(configService.init(), initTimeoutMs, 'configService.init');
         mark('configService.init done');
 
-        const entConfig = await window.electron.enterprise.getConfig();
+        const entConfig = await window.electron?.enterprise?.getConfig?.() ?? null;
         setEnterpriseConfig(entConfig);
         mark('enterprise.getConfig done');
 
