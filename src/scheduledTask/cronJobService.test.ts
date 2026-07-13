@@ -332,6 +332,20 @@ describe('mapGatewayRun', () => {
     expect(run.error).toBe('agent crashed');
   });
 
+  test('suppresses missing-channel delivery error when the agent produced a summary', () => {
+    const run = mapGatewayRun({
+      ...baseEntry,
+      status: GatewayStatus.Error,
+      error: 'Channel is required (no configured channels detected). Run openclaw channels add to configure one.',
+      deliveryStatus: 'not-delivered',
+      deliveryError: 'Channel is required (no configured channels detected).',
+      summary: 'Morning reminder text',
+    });
+    expect(run.status).toBe(TaskStatus.Success);
+    expect(run.error).toBeNull();
+    expect(run.summary).toBe('Morning reminder text');
+  });
+
   test('does not suppress error when no deliveryError is present', () => {
     const run = mapGatewayRun({
       ...baseEntry,
@@ -420,7 +434,7 @@ describe('mapGatewayTaskState', () => {
     expect(state.lastError).toBeNull();
   });
 
-  test('does not suppress delivery error when delivery mode is announce', () => {
+  test('suppresses delivery-only error when delivery mode is announce', () => {
     const state = mapGatewayTaskState(
       {
         lastRunStatus: GatewayStatus.Error,
@@ -430,8 +444,26 @@ describe('mapGatewayTaskState', () => {
       },
       DeliveryMode.Announce,
     );
-    expect(state.lastStatus).toBe(TaskStatus.Error);
-    expect(state.lastError).toBe('⚠️ ✉️ Message failed');
+    expect(state.lastStatus).toBe(TaskStatus.Success);
+    expect(state.lastError).toBeNull();
+    expect(state.consecutiveErrors).toBe(0);
+  });
+
+  test('suppresses missing-channel delivery error in task state', () => {
+    const state = mapGatewayTaskState(
+      {
+        lastRunStatus: GatewayStatus.Error,
+        lastError:
+          'Channel is required (no configured channels detected). Run openclaw channels add to configure one.',
+        lastDeliveryStatus: 'not-delivered',
+        lastDeliveryError: 'Channel is required (no configured channels detected).',
+        consecutiveErrors: 1,
+      },
+      DeliveryMode.Announce,
+    );
+    expect(state.lastStatus).toBe(TaskStatus.Success);
+    expect(state.lastError).toBeNull();
+    expect(state.consecutiveErrors).toBe(0);
   });
 
   test('does not suppress non-delivery errors even for mode none', () => {

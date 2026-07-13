@@ -208,11 +208,28 @@ function isDeliveryOnlyError(opts: {
   error?: string;
   deliveryError?: string;
   deliveryStatus?: string;
+  summary?: string;
 }): boolean {
   if (opts.status !== GatewayStatus.Error) return false;
   if (!opts.error) return false;
+
+  const error = opts.error.toLowerCase();
+  const deliveryError = opts.deliveryError?.toLowerCase() ?? '';
+  const hasSummary = typeof opts.summary === 'string' && opts.summary.trim().length > 0;
+
   // The error is delivery-only when its text matches the deliveryError exactly.
-  return !!opts.deliveryError && opts.error === opts.deliveryError;
+  if (opts.deliveryError && opts.error === opts.deliveryError) return true;
+
+  // OpenClaw can mark a cron run as failed after the agent turn succeeds if
+  // result delivery has no IM channel to target. Treat that as a delivery-only
+  // failure so the scheduled task reflects the completed assistant response.
+  const channelMissing =
+    error.includes('channel is required') ||
+    error.includes('no configured channels detected') ||
+    deliveryError.includes('channel is required') ||
+    deliveryError.includes('no configured channels detected');
+
+  return channelMissing && (hasSummary || opts.deliveryStatus === 'not-delivered');
 }
 
 export function mapGatewaySchedule(schedule: GatewaySchedule): Schedule {
@@ -327,17 +344,16 @@ function toGatewayDelivery(delivery?: ScheduledTaskDelivery): GatewayDelivery | 
 
 export function mapGatewayTaskState(
   state: GatewayJobState,
-  deliveryMode?: DeliveryModeType,
+  _deliveryMode?: DeliveryModeType,
 ): TaskState {
   let lastStatus = state.runningAtMs
     ? TaskStatus.Running
     : mapGatewayResultStatus(state.lastRunStatus ?? state.lastStatus);
 
-  // When delivery.mode is "none" and the gateway reports an error that is
+  // When the agent turn completed but the gateway reports an error that is
   // purely a delivery failure, downgrade to success.
   if (
     lastStatus === TaskStatus.Error &&
-    deliveryMode === DeliveryMode.None &&
     isDeliveryOnlyError({
       status: state.lastRunStatus ?? state.lastStatus,
       error: state.lastError,
@@ -348,6 +364,9 @@ export function mapGatewayTaskState(
     lastStatus = TaskStatus.Success;
   }
 
+  const consecutiveErrors =
+    lastStatus === TaskStatus.Success ? 0 : safeFiniteNumber(state.consecutiveErrors ?? 0, 0);
+
   return {
     nextRunAtMs: safeFiniteNumberOrNull(state.nextRunAtMs),
     lastRunAtMs: safeFiniteNumberOrNull(state.lastRunAtMs),
@@ -355,7 +374,7 @@ export function mapGatewayTaskState(
     lastError: lastStatus === TaskStatus.Success ? null : (state.lastError ?? null),
     lastDurationMs: safeFiniteNumberOrNull(state.lastDurationMs),
     runningAtMs: safeFiniteNumberOrNull(state.runningAtMs),
-    consecutiveErrors: safeFiniteNumber(state.consecutiveErrors ?? 0, 0),
+    consecutiveErrors,
   };
 }
 
@@ -428,6 +447,7 @@ export function mapGatewayRun(entry: GatewayRunLogEntry): ScheduledTaskRun {
       error: entry.error,
       deliveryError: entry.deliveryError,
       deliveryStatus: entry.deliveryStatus,
+      summary: entry.summary,
     })
   ) {
     status = TaskStatus.Success;
