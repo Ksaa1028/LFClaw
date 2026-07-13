@@ -2636,6 +2636,28 @@ test('chat error maps non-managed OpenClaw session key to existing local session
   ))).toBe(true);
 });
 
+test('chat final maps scheduled-task run session key back to existing local session id', () => {
+  const localSessionId = '9d1af7fd-2827-42aa-a28d-8282c9b8df47';
+  const runId = '43e22dbd-7da5-44a4-a46f-6e6f60396406';
+  const { session, store } = createReconcileStore([
+    { id: 'msg-1', type: 'user', content: 'create a reminder', timestamp: 1, metadata: {} },
+  ], { sessionId: localSessionId });
+  const adapter = new OpenClawRuntimeAdapter(store, {});
+  const cronSessionKey = `agent:main:lobsterai:${session.id}:run:${runId}`;
+
+  adapter.handleChatEvent({
+    state: 'final',
+    runId,
+    sessionKey: cronSessionKey,
+    message: { role: 'assistant', content: '早安提醒到了' },
+  }, 1);
+
+  expect(session.messages.some((message) => (
+    message.type === 'assistant'
+    && message.content === '早安提醒到了'
+  ))).toBe(true);
+});
+
 test('chat error replaces generic LLM failure using safe OpenClaw metadata', () => {
   const { session, store } = createReconcileStore([
     { id: 'msg-1', type: 'user', content: 'hello', timestamp: 1, metadata: {} },

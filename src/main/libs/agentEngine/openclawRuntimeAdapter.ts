@@ -5428,7 +5428,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
     const session = this.store.getSession(parsedManagedSession.sessionId);
     if (!session) {
-      return null;
+      return this.resolveLocalSessionIdFromGatewaySessionKey(normalizedSessionKey);
     }
 
     this.rememberSessionKey(session.id, normalizedSessionKey);
@@ -5437,7 +5437,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   }
 
   private resolveLocalSessionIdFromGatewaySessionKey(sessionKey: string): string | null {
-    const match = /^agent:([^:]+):([^:]+):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(sessionKey);
+    const match = /^agent:([^:]+):([^:]+):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?::run:[0-9a-f-]{36})?$/i.exec(sessionKey);
     if (!match) {
       return null;
     }
