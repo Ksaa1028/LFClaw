@@ -215,21 +215,20 @@ function isDeliveryOnlyError(opts: {
 
   const error = opts.error.toLowerCase();
   const deliveryError = opts.deliveryError?.toLowerCase() ?? '';
-  const hasSummary = typeof opts.summary === 'string' && opts.summary.trim().length > 0;
 
   // The error is delivery-only when its text matches the deliveryError exactly.
   if (opts.deliveryError && opts.error === opts.deliveryError) return true;
 
-  // OpenClaw can mark a cron run as failed after the agent turn succeeds if
-  // result delivery has no IM channel to target. Treat that as a delivery-only
-  // failure so the scheduled task reflects the completed assistant response.
+  // OpenClaw can mark a cron run as failed when result delivery has no IM
+  // channel to target. Some gateway state payloads only include lastError, so
+  // treat this specific channel-missing message as delivery-only.
   const channelMissing =
     error.includes('channel is required') ||
     error.includes('no configured channels detected') ||
     deliveryError.includes('channel is required') ||
     deliveryError.includes('no configured channels detected');
 
-  return channelMissing && (hasSummary || opts.deliveryStatus === 'not-delivered');
+  return channelMissing;
 }
 
 export function mapGatewaySchedule(schedule: GatewaySchedule): Schedule {

@@ -466,6 +466,21 @@ describe('mapGatewayTaskState', () => {
     expect(state.consecutiveErrors).toBe(0);
   });
 
+  test('suppresses missing-channel task error even without delivery metadata', () => {
+    const state = mapGatewayTaskState(
+      {
+        lastRunStatus: GatewayStatus.Error,
+        lastError:
+          'Channel is required (no configured channels detected). Run openclaw channels add to configure one.',
+        consecutiveErrors: 2,
+      },
+      DeliveryMode.Announce,
+    );
+    expect(state.lastStatus).toBe(TaskStatus.Success);
+    expect(state.lastError).toBeNull();
+    expect(state.consecutiveErrors).toBe(0);
+  });
+
   test('does not suppress non-delivery errors even for mode none', () => {
     const state = mapGatewayTaskState(
       {
