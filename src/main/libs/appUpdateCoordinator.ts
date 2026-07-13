@@ -698,12 +698,15 @@ export class AppUpdateCoordinator {
     if (!url || isManualDownloadUrl(url)) {
       return false;
     }
-    const normalizedPath = new URL(url).pathname.toLowerCase();
+    const parsedUrl = new URL(url);
+    const normalizedPath = parsedUrl.pathname.toLowerCase();
+    const releasePath = parsedUrl.searchParams.get('path')?.toLowerCase() ?? '';
+    const candidatePaths = [normalizedPath, releasePath].filter(Boolean);
     if (process.platform === 'darwin') {
-      return normalizedPath.endsWith('.dmg');
+      return candidatePaths.some((candidatePath) => candidatePath.endsWith('.dmg'));
     }
     if (process.platform === 'win32') {
-      return normalizedPath.endsWith('.exe');
+      return candidatePaths.some((candidatePath) => candidatePath.endsWith('.exe'));
     }
     return false;
   }
