@@ -287,13 +287,18 @@ export class AppUpdateCoordinator {
   }
 
   async retryDownload(): Promise<AppUpdateRuntimeState> {
+    console.log(
+      `[AppUpdate] retryDownload requested, status=${this.state.status}, source=${this.state.source ?? 'none'}, version=${this.state.info?.latestVersion ?? 'none'}, url=${this.state.info?.url ?? 'none'}`,
+    );
     if (!this.state.info) {
       return this.getState();
     }
     if (!this.canPredownload(this.state.info.url)) {
+      console.log(`[AppUpdate] retryDownload ignored because url cannot be predownloaded: ${this.state.info.url}`);
       return this.getState();
     }
     if (this.state.status === AppUpdateStatus.Downloading || this.state.status === AppUpdateStatus.Installing) {
+      console.log(`[AppUpdate] retryDownload ignored because status=${this.state.status}`);
       return this.getState();
     }
     const source = this.state.source ?? AppUpdateSource.Auto;

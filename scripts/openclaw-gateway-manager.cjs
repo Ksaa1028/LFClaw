@@ -1327,6 +1327,10 @@ async function handleEnterpriseReleaseDownload(req, res, url) {
       'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
       'Cache-Control': 'public, max-age=300',
     });
+    if (req.method === 'HEAD') {
+      res.end();
+      return;
+    }
     fs.createReadStream(targetPath).pipe(res);
   } catch (error) {
     const status = error.statusCode || (error.code === 'ENOENT' ? 404 : 500);
@@ -1418,7 +1422,7 @@ function handleHttp(req, res) {
     void handleEnterpriseReleaseLatest(req, res);
     return;
   }
-  if (req.method === 'GET' && url.pathname === '/api/enterprise/releases/download') {
+  if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/api/enterprise/releases/download') {
     void handleEnterpriseReleaseDownload(req, res, url);
     return;
   }

@@ -570,25 +570,32 @@ const App: React.FC = () => {
   const handleConfirmUpdate = useCallback(async () => {
     if (!updateInfo) return;
 
+    console.log('[AppUpdate:UI] confirm update clicked', {
+      status: appUpdateState.status,
+      hasReadyFile: Boolean(appUpdateState.readyFilePath),
+      isManualUrl: isManualDownloadUrl(updateInfo.url),
+      url: updateInfo.url,
+    });
+
     if (appUpdateState.readyFilePath) {
       shouldInstallReadyUpdateRef.current = false;
       const installResult = await window.electron.appUpdate.installReady();
+      setAppUpdateState(installResult.state);
       if (!installResult.success) {
         showToast(installResult.error || i18nService.t('updateInstallFailed'));
       }
       return;
     }
 
-    if (appUpdateState.status === AppUpdateStatus.Error || appUpdateState.status === AppUpdateStatus.Available) {
-      if (!isManualDownloadUrl(updateInfo.url)) {
-        shouldInstallReadyUpdateRef.current = appUpdateState.status === AppUpdateStatus.Available;
-        const retryResult = await window.electron.appUpdate.retryDownload();
-        if (!retryResult.success) {
-          shouldInstallReadyUpdateRef.current = false;
-          showToast(i18nService.t('updateDownloadFailed'));
-        }
-        return;
+    if (!isManualDownloadUrl(updateInfo.url)) {
+      shouldInstallReadyUpdateRef.current = appUpdateState.status === AppUpdateStatus.Available;
+      const retryResult = await window.electron.appUpdate.retryDownload();
+      setAppUpdateState(retryResult.state);
+      if (!retryResult.success || retryResult.state.status === AppUpdateStatus.Error) {
+        shouldInstallReadyUpdateRef.current = false;
+        showToast(retryResult.state.errorMessage || i18nService.t('updateDownloadFailed'));
       }
+      return;
     }
 
     if (isManualDownloadUrl(updateInfo.url)) {
