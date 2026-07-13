@@ -43,6 +43,8 @@ export interface AppUpdateInfo {
   date: string;
   changeLog: { zh: ChangeLogEntry; en: ChangeLogEntry };
   url: string;
+  size?: number;
+  sha256?: string;
 }
 
 export interface AppUpdateRuntimeState {

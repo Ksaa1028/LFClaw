@@ -201,7 +201,7 @@ export class AppUpdateCoordinator {
       const matchingReadyFile = await this.resolveMatchingReadyFile(
         previousState,
         targetSource,
-        info.latestVersion,
+        info,
       );
       if (!this.isFlowActive(flowId, targetSource)) {
         console.log(
@@ -614,6 +614,8 @@ export class AppUpdateCoordinator {
         },
       },
       url,
+      size: Number.isFinite(installer.size) ? installer.size : undefined,
+      sha256: installer.sha256,
     };
     console.log(`[AppUpdate] enterprise update available: ${currentVersion} -> ${latestVersion}, downloadUrl=${url}`);
     return result;
@@ -896,8 +898,9 @@ export class AppUpdateCoordinator {
   private async resolveMatchingReadyFile(
     previousState: AppUpdateRuntimeState,
     targetSource: AppUpdateSource,
-    latestVersion: string,
+    latestInfo: AppUpdateInfo,
   ): Promise<StoredReadyFile | null> {
+    const latestVersion = latestInfo.latestVersion;
     console.log(
       `[AppUpdate] resolveMatchingReadyFile started, targetSource=${targetSource}, previousStatus=${previousState.status}, previousSource=${previousState.source ?? 'none'}, previousVersion=${previousState.info?.latestVersion ?? 'none'}, latestVersion=${latestVersion}`,
     );
@@ -918,9 +921,10 @@ export class AppUpdateCoordinator {
       console.log(
         `[AppUpdate] checking in-memory ready file: ${inMemoryReadyFile.filePath}`,
       );
-      const isValid = await this.isReadyFileValid(
+      const isValid = await this.isReadyFileValidForInfo(
         inMemoryReadyFile.filePath,
         inMemoryReadyFile.fileHash,
+        latestInfo,
       );
       if (isValid) {
         console.log('[AppUpdate] in-memory ready file is valid');
@@ -948,9 +952,10 @@ export class AppUpdateCoordinator {
       console.log(
         `[AppUpdate] checking persisted ready file: ${storedReadyFile.filePath}`,
       );
-      const isValid = await this.isReadyFileValid(
+      const isValid = await this.isReadyFileValidForInfo(
         storedReadyFile.filePath,
         storedReadyFile.fileHash,
+        latestInfo,
       );
       if (isValid) {
         console.log(`[AppUpdate] persisted ready file from source=${source} is valid`);
@@ -966,12 +971,32 @@ export class AppUpdateCoordinator {
     return null;
   }
 
-  private async isReadyFileValid(filePath: string, expectedHash: string): Promise<boolean> {
+  private async isReadyFileValidForInfo(
+    filePath: string,
+    storedHash: string,
+    info: AppUpdateInfo,
+  ): Promise<boolean> {
+    const expectedHash = (info.sha256 || storedHash || '').trim().toLowerCase();
+    const expectedSize = Number.isFinite(info.size) ? info.size : undefined;
+    return this.isReadyFileValid(filePath, expectedHash, expectedSize);
+  }
+
+  private async isReadyFileValid(
+    filePath: string,
+    expectedHash: string,
+    expectedSize?: number,
+  ): Promise<boolean> {
     try {
       const stat = await fs.promises.stat(filePath);
       if (!stat.isFile() || stat.size <= 0) {
         console.warn(
           `[AppUpdate] ready file validation failed: file missing or empty, path=${filePath}`,
+        );
+        return false;
+      }
+      if (expectedSize != null && stat.size !== expectedSize) {
+        console.warn(
+          `[AppUpdate] ready file validation failed: size mismatch, path=${filePath}, expectedSize=${expectedSize}, actualSize=${stat.size}`,
         );
         return false;
       }
