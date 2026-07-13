@@ -168,15 +168,14 @@ function collectPlatformArtifacts(sourceDir, platform, releaseId, targetDir) {
   }
 
   const platformDir = path.join(targetDir, rule.directory);
-  const releaseDir = path.join(platformDir, releaseId);
-  fs.mkdirSync(releaseDir, { recursive: true });
+  fs.mkdirSync(platformDir, { recursive: true });
 
   const copied = [];
   for (const installer of installers) {
     const ext = path.extname(installer).toLowerCase();
     const arch = detectArch(path.basename(installer));
     const targetName = `LfClaw-${releaseId}-${platform}-${arch}${ext}`;
-    const targetPath = path.join(releaseDir, targetName);
+    const targetPath = path.join(platformDir, targetName);
     fs.copyFileSync(installer, targetPath);
     copied.push(fileInfo(targetPath, targetDir));
 
@@ -194,17 +193,17 @@ function collectPlatformArtifacts(sourceDir, platform, releaseId, targetDir) {
     });
 
     for (const sidecar of sidecars) {
-      const sidecarTarget = path.join(releaseDir, `${targetName}${path.extname(sidecar)}`);
+      const sidecarTarget = path.join(platformDir, `${targetName}${path.extname(sidecar)}`);
       fs.copyFileSync(sidecar, sidecarTarget);
       copied.push(fileInfo(sidecarTarget, targetDir));
     }
   }
 
-  pruneOldReleases(platformDir, KEEP_RELEASES);
+  pruneOldReleaseFiles(platformDir, KEEP_RELEASES);
   return {
     releaseId,
     platform,
-    directory: path.relative(targetDir, releaseDir).replace(/\\/g, '/'),
+    directory: path.relative(targetDir, platformDir).replace(/\\/g, '/'),
     createdAt: new Date().toISOString(),
     files: copied,
   };
@@ -231,20 +230,36 @@ function selectInstallers(candidates) {
     .map((entry) => entry.file);
 }
 
-function pruneOldReleases(platformDir, keep) {
+function pruneOldReleaseFiles(platformDir, keep) {
   if (!fs.existsSync(platformDir)) return;
-  const releases = fs.readdirSync(platformDir, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
+  const releaseFiles = fs.readdirSync(platformDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && /^LfClaw-/i.test(entry.name))
     .map((entry) => {
       const fullPath = path.join(platformDir, entry.name);
-      return { name: entry.name, path: fullPath, mtimeMs: fs.statSync(fullPath).mtimeMs };
-    })
-    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+      const releaseId = extractReleaseId(entry.name);
+      return { name: entry.name, path: fullPath, releaseId, mtimeMs: fs.statSync(fullPath).mtimeMs };
+    });
 
-  for (const entry of releases.slice(keep)) {
-    fs.rmSync(entry.path, { recursive: true, force: true });
-    console.log(`[package-release] pruned old release ${entry.path}`);
+  const releaseGroups = new Map();
+  for (const file of releaseFiles) {
+    const group = releaseGroups.get(file.releaseId) ?? { releaseId: file.releaseId, mtimeMs: 0, files: [] };
+    group.mtimeMs = Math.max(group.mtimeMs, file.mtimeMs);
+    group.files.push(file);
+    releaseGroups.set(file.releaseId, group);
   }
+
+  const groups = [...releaseGroups.values()].sort((a, b) => b.mtimeMs - a.mtimeMs);
+  for (const group of groups.slice(keep)) {
+    for (const file of group.files) {
+      fs.rmSync(file.path, { force: true });
+      console.log(`[package-release] pruned old release file ${file.path}`);
+    }
+  }
+}
+
+function extractReleaseId(fileName) {
+  const match = /^LfClaw-(.+?)-(?:windows|mac)-(?:x64|arm64|ia32)(?:\.(?:exe|msi|dmg|pkg|zip))(?:\..+)?$/i.exec(fileName);
+  return match?.[1] || fileName;
 }
 
 function readExistingLatest(targetDir) {
