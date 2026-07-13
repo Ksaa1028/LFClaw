@@ -39,6 +39,7 @@ package-lock.json
 nul
 .work.env
 .dev-*.log
+.lfclaw-dev*.log
 .lfclaw-window.png
 .keyfrom-build/
 
