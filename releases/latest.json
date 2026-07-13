@@ -1,0 +1,26 @@
+{
+  "product": "LfClaw",
+  "generatedAt": "2026-07-13T00:36:54.431Z",
+  "channels": {
+    "windows": {
+      "releaseId": "2026.7.13",
+      "platform": "windows",
+      "directory": "windows/2026.7.13",
+      "createdAt": "2026-07-13T00:36:54.429Z",
+      "files": [
+        {
+          "name": "LfClaw-2026.7.13-windows-x64.exe",
+          "path": "windows/2026.7.13/LfClaw-2026.7.13-windows-x64.exe",
+          "size": 257878784,
+          "sha256": "9de2985c3aa80d26144670f0ccfcbfd6c7b5c40a22c43b9f75069132653ff8bd"
+        },
+        {
+          "name": "LfClaw-2026.7.13-windows-x64.exe.blockmap",
+          "path": "windows/2026.7.13/LfClaw-2026.7.13-windows-x64.exe.blockmap",
+          "size": 269837,
+          "sha256": "0300ccb670dfa65ada372bbb5d286f67e0cc11f77d930b3b600b8086d2307b8b"
+        }
+      ]
+    }
+  }
+}

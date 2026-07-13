@@ -121,6 +121,43 @@ npm run compile:electron
 node --check scripts/openclaw-gateway-manager.cjs
 ```
 
+## 企业发包与安装包保留策略
+
+员工不需要拉代码或自行打包。维护人员打包后，将安装包整理到仓库的 `releases/` 目录，并只保留每个平台最近两个版本：
+
+```text
+releases/
+  latest.json
+  windows/
+    <release-id>/
+      LfClaw-<release-id>-windows-x64.exe
+  mac/
+    <release-id>/
+      LfClaw-<release-id>-mac-arm64.dmg
+```
+
+Windows 发版流程：
+
+```bash
+npm run dist:win
+npm run release:collect:win -- --release 2026.7.13
+git add releases package.json scripts/package-release.cjs scripts/electron-builder-config.cjs README.md
+git commit -m "chore: 发布 Windows 安装包"
+git push
+```
+
+macOS 发版需要在 Mac 电脑上执行：
+
+```bash
+npm run dist:mac:arm64
+npm run release:collect:mac -- --release 2026.7.13
+git add releases
+git commit -m "chore: 发布 macOS 安装包"
+git push
+```
+
+`npm run release:collect` 会从 `release/` 目录复制安装包到 `releases/`，生成 `releases/latest.json`，并自动删除每个平台超过两个版本的旧目录。后续客户端自动更新也会基于这个 `latest.json` 做版本检查和下载安装。
+
 ## 服务端部署
 
 服务器目录：
