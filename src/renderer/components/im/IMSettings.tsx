@@ -365,6 +365,10 @@ const errorMessageI18nMap: Record<string, string> = {
 // Helper function to translate IM error messages
 function translateIMError(error: string | null): string {
   if (!error) return '';
+  const normalized = error.toLowerCase();
+  if (normalized.includes('web login provider is not available')) {
+    return '远程网关未加载微信扫码登录能力，请先在服务器启用 openclaw-weixin 插件后重启网关。';
+  }
   const i18nKey = errorMessageI18nMap[error];
   if (i18nKey) {
     return i18nService.t(i18nKey);
@@ -737,7 +741,7 @@ const IMSettings: React.FC = () => {
 
       if (!startResult.success || !startResult.qrDataUrl) {
         setWeixinQrStatus('error');
-        setWeixinQrError(startResult.message || i18nService.t('imWeixinQrFailed'));
+        setWeixinQrError(translateIMError(startResult.message || i18nService.t('imWeixinQrFailed')));
         return;
       }
 
@@ -776,13 +780,13 @@ const IMSettings: React.FC = () => {
         reportIMSettingsSaved('weixin', config, null, 'credential_state,enabled');
       } else {
         setWeixinQrStatus('error');
-        setWeixinQrError(waitResult.message || i18nService.t('imWeixinQrFailed'));
+        setWeixinQrError(translateIMError(waitResult.message || i18nService.t('imWeixinQrFailed')));
       }
     } catch (err) {
       if (weixinTimerRef.current) { clearTimeout(weixinTimerRef.current); weixinTimerRef.current = null; }
       if (!isMountedRef.current) return;
       setWeixinQrStatus('error');
-      setWeixinQrError(String(err));
+      setWeixinQrError(translateIMError(String(err)));
     }
   };
 

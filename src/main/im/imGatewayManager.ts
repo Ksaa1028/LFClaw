@@ -555,7 +555,7 @@ export class IMGatewayManager extends EventEmitter {
         })),
       },
       weixin: {
-        connected: Boolean(config.weixin?.enabled),
+        connected: false,
         accountId: config.weixin?.accountId?.trim() || null,
         startedAt: null as number | null,
         lastError: null as string | null,
