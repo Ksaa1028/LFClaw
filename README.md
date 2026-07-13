@@ -12,7 +12,7 @@ LfClaw 是基于 OpenClaw 生态与原桌面 Agent 客户端二次开发的企�
 - 用户进入方式：企业激活码
 - 模型选择：隐藏，统一使用企业固定模型
 - 外部登录：隐藏外部登录
-- 外部更新：关闭，后续由公司内部发包
+- 客户端更新：使用企业更新通道，员工可在客户端内主动检查并下载安装
 
 ## 核心改造
 
@@ -31,7 +31,11 @@ resources/enterprise-config/manifest.json
 resources/enterprise-config/openclaw-gateway.json
 ```
 
-这些配置会让客户端默认连接企业网关，并隐藏外部登录、模型选择和外部更新入口。
+这些配置会让客户端默认连接企业网关，并隐藏外部登录、模型选择等外部 SaaS 入口。客户端更新走企业网关：
+
+```text
+http://8.216.38.213:18791/api/enterprise/releases/latest
+```
 
 ### 2. 多用户网关管理
 
@@ -121,7 +125,7 @@ npm run compile:electron
 node --check scripts/openclaw-gateway-manager.cjs
 ```
 
-## 企业发包与安装包保留策略
+## 企业发包与客户端更新
 
 员工不需要拉代码或自行打包。维护人员打包后，将安装包整理到仓库的 `releases/` 目录，并只保留每个平台最近两个版本：
 
@@ -157,6 +161,35 @@ git push
 ```
 
 `npm run release:collect` 会从 `release/` 目录复制安装包到 `releases/`，生成 `releases/latest.json`，并自动删除每个平台超过两个版本的旧目录。后续客户端自动更新也会基于这个 `latest.json` 做版本检查和下载安装。
+
+上传到服务器后，企业网关会提供两个接口：
+
+```text
+GET http://8.216.38.213:18791/api/enterprise/releases/latest
+GET http://8.216.38.213:18791/api/enterprise/releases/download?path=<安装包相对路径>
+```
+
+客户端内入口：
+
+```text
+设置 -> 关于 -> 检查更新
+```
+
+如果服务器上有比当前客户端更新的版本，客户端会展示更新弹窗，并从企业网关下载安装包。员工不需要去 Git 仓库找安装包。
+
+服务器安装包目录：
+
+```bash
+/opt/lobsterai-gateway-manager/releases
+```
+
+从本机上传发布目录示例：
+
+```bash
+scp -r releases/* root@8.216.38.213:/opt/lobsterai-gateway-manager/releases/
+```
+
+上传新的 `openclaw-gateway-manager.cjs` 后需要重启服务；只上传新安装包通常不需要重启服务。
 
 ## 服务端部署
 

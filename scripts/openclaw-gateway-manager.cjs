@@ -8,6 +8,8 @@
  *   GET /health
  *   POST /api/enterprise/activate
  *   GET /api/enterprise/files/download
+ *   GET /api/enterprise/releases/latest
+ *   GET /api/enterprise/releases/download
  *   GET /api/openclaw/gateway-token
  *   GET /api/admin/activation-codes
  *   POST /api/admin/activation-codes
@@ -38,6 +40,7 @@ const config = {
   openclawBin: process.env.OPENCLAW_BIN || 'openclaw',
   dataRoot: process.env.LOBSTERAI_GATEWAY_MANAGER_DATA_ROOT || '/opt/lobsterai-gateway-manager',
   activationStorePath: process.env.LOBSTERAI_GATEWAY_MANAGER_ACTIVATION_STORE || '',
+  releasesRoot: process.env.LFCLAW_RELEASES_ROOT || path.join(process.env.LOBSTERAI_GATEWAY_MANAGER_DATA_ROOT || '/opt/lobsterai-gateway-manager', 'releases'),
   templateConfigPath: process.env.LOBSTERAI_OPENCLAW_TEMPLATE_CONFIG || path.join(os.homedir(), '.openclaw', 'openclaw.json'),
   templateAuthStorePath: process.env.LOBSTERAI_OPENCLAW_TEMPLATE_AUTH_STORE || path.join(os.homedir(), '.openclaw', 'agents', 'main', 'agent', 'openclaw-agent.sqlite'),
   model: process.env.LOBSTERAI_OPENCLAW_MODEL || 'zai/glm-5.2',
@@ -471,6 +474,19 @@ function resolveAllowedDownloadPath(user, rawPath) {
 
   if (!allowedRoots.some(root => isPathInside(resolved, root))) {
     throw Object.assign(new Error('File path is outside allowed workspace'), { statusCode: 403 });
+  }
+  return resolved;
+}
+
+function resolveReleaseFilePath(rawPath) {
+  const normalized = String(rawPath || '').trim().replace(/\\/g, '/');
+  if (!normalized || normalized.includes('\0') || normalized.startsWith('/') || /^[A-Za-z]:/.test(normalized)) {
+    throw Object.assign(new Error('Missing or invalid release file path'), { statusCode: 400 });
+  }
+  const releasesRoot = path.resolve(config.releasesRoot);
+  const resolved = path.resolve(path.join(releasesRoot, normalized));
+  if (!isPathInside(resolved, releasesRoot)) {
+    throw Object.assign(new Error('Release file path is outside releases root'), { statusCode: 403 });
   }
   return resolved;
 }
@@ -1264,6 +1280,60 @@ async function handleEnterpriseFileDownload(req, res, url) {
   }
 }
 
+async function handleEnterpriseReleaseLatest(req, res) {
+  try {
+    const latestPath = path.join(config.releasesRoot, 'latest.json');
+    const latest = readJsonIfExists(latestPath, null);
+    if (!latest || typeof latest !== 'object') {
+      sendJson(res, 404, { code: 404, message: 'Release manifest not found' });
+      return;
+    }
+
+    const publicLatest = {
+      ...latest,
+      channels: { ...(latest.channels || {}) },
+    };
+    for (const channel of Object.values(publicLatest.channels)) {
+      if (!channel || typeof channel !== 'object' || !Array.isArray(channel.files)) continue;
+      channel.files = channel.files.map((file) => {
+        const filePath = String(file.path || '').trim();
+        return {
+          ...file,
+          ...(filePath
+            ? { url: `${config.publicBaseUrl}/api/enterprise/releases/download?path=${encodeURIComponent(filePath)}` }
+            : {}),
+        };
+      });
+    }
+    sendJson(res, 200, publicLatest);
+  } catch (error) {
+    const status = error.statusCode || 500;
+    sendJson(res, status, { code: status, message: error.message || String(error) });
+  }
+}
+
+async function handleEnterpriseReleaseDownload(req, res, url) {
+  try {
+    const targetPath = resolveReleaseFilePath(url.searchParams.get('path') || '');
+    const stat = fs.statSync(targetPath);
+    if (!stat.isFile()) {
+      sendJson(res, 404, { code: 404, message: 'Release file not found' });
+      return;
+    }
+    const fileName = path.basename(targetPath).replace(/[\r\n"]/g, '_') || 'LfClaw-installer';
+    res.writeHead(200, {
+      'Content-Type': 'application/octet-stream',
+      'Content-Length': stat.size,
+      'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+      'Cache-Control': 'public, max-age=300',
+    });
+    fs.createReadStream(targetPath).pipe(res);
+  } catch (error) {
+    const status = error.statusCode || (error.code === 'ENOENT' ? 404 : 500);
+    sendJson(res, status, { code: status, message: error.message || String(error) });
+  }
+}
+
 async function handleEnterpriseActivationStatus(req, res) {
   try {
     const auth = req.headers.authorization || '';
@@ -1342,6 +1412,14 @@ function handleHttp(req, res) {
   }
   if (req.method === 'GET' && url.pathname === '/api/enterprise/files/download') {
     void handleEnterpriseFileDownload(req, res, url);
+    return;
+  }
+  if (req.method === 'GET' && url.pathname === '/api/enterprise/releases/latest') {
+    void handleEnterpriseReleaseLatest(req, res);
+    return;
+  }
+  if (req.method === 'GET' && url.pathname === '/api/enterprise/releases/download') {
+    void handleEnterpriseReleaseDownload(req, res, url);
     return;
   }
   if (req.method === 'GET' && url.pathname === '/api/enterprise/activation/status') {
@@ -1427,6 +1505,7 @@ server.listen(config.port, config.host, () => {
   log(`listening on http://${config.host}:${config.port}`);
   log(`public base url: ${config.publicBaseUrl}`);
   log(`data root: ${config.dataRoot}`);
+  log(`releases root: ${config.releasesRoot}`);
 });
 
 setInterval(cleanupIdleUsers, Math.min(config.idleMs, 60_000)).unref();

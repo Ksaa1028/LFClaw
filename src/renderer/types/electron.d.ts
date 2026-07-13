@@ -1442,6 +1442,11 @@ interface IElectronAPI {
     getConfig: () => Promise<{
       ui?: Record<string, 'hide' | 'disable' | 'readonly'>;
       disableUpdate?: boolean;
+      update?: {
+        enabled?: boolean;
+        latestUrl?: string;
+        downloadBaseUrl?: string;
+      };
       disableExternalLogin?: boolean;
       disableModelPicker?: boolean;
       fixedModel?: {

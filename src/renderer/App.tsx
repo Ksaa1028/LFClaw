@@ -134,6 +134,11 @@ const App: React.FC = () => {
   const [enterpriseConfig, setEnterpriseConfig] = useState<{
     ui?: Record<string, 'hide' | 'disable' | 'readonly'>;
     disableUpdate?: boolean;
+    update?: {
+      enabled?: boolean;
+      latestUrl?: string;
+      downloadBaseUrl?: string;
+    };
     disableExternalLogin?: boolean;
     disableModelPicker?: boolean;
     fixedModel?: {
@@ -930,8 +935,7 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!isInitialized) return;
 
-    // Enterprise mode: completely skip update detection
-    if (enterpriseConfig?.disableUpdate) return;
+    if (enterpriseConfig?.disableUpdate && enterpriseConfig.update?.enabled !== true) return;
 
     let cancelled = false;
     let lastCheckTime = 0;

@@ -13,6 +13,11 @@ export type EnterpriseManifest = {
   name: string;
   ui?: Record<string, EnterpriseUIAction>;
   disableUpdate?: boolean;
+  update?: {
+    enabled?: boolean;
+    latestUrl?: string;
+    downloadBaseUrl?: string;
+  };
   disableExternalLogin?: boolean;
   disableModelPicker?: boolean;
   fixedModel?: {

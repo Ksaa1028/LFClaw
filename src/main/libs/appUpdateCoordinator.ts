@@ -26,6 +26,28 @@ type PlatformDownload = {
   url?: string;
 };
 
+type EnterpriseReleaseFile = {
+  name?: string;
+  path?: string;
+  url?: string;
+  size?: number;
+  sha256?: string;
+};
+
+type EnterpriseReleaseChannel = {
+  releaseId?: string;
+  version?: string;
+  platform?: string;
+  createdAt?: string;
+  files?: EnterpriseReleaseFile[];
+};
+
+type EnterpriseReleaseManifest = {
+  product?: string;
+  generatedAt?: string;
+  channels?: Record<string, EnterpriseReleaseChannel | undefined>;
+};
+
 type UpdateApiResponse = {
   code?: number;
   data?: {
@@ -41,6 +63,12 @@ type UpdateApiResponse = {
       windowsX64?: PlatformDownload;
     };
   };
+};
+
+type EnterpriseUpdateConfig = {
+  enabled?: boolean;
+  latestUrl?: string;
+  downloadBaseUrl?: string;
 };
 
 export const INSTALLATION_UUID_KEY = 'installation_uuid';
@@ -477,6 +505,11 @@ export class AppUpdateCoordinator {
     manual: boolean,
     userId?: string | null,
   ): Promise<AppUpdateInfo | null> {
+    const enterpriseUpdate = this.getEnterpriseUpdateConfig();
+    if (enterpriseUpdate?.enabled === true) {
+      return this.fetchEnterpriseUpdateInfo(currentVersion, enterpriseUpdate);
+    }
+
     const baseUrl = manual ? getManualUpdateCheckUrl() : getUpdateCheckUrl();
     const qs = this.getUpdateQueryString(userId, currentVersion);
     const url = qs ? `${baseUrl}?${qs}` : baseUrl;
@@ -527,6 +560,113 @@ export class AppUpdateCoordinator {
     return result;
   }
 
+  private async fetchEnterpriseUpdateInfo(
+    currentVersion: string,
+    updateConfig: EnterpriseUpdateConfig,
+  ): Promise<AppUpdateInfo | null> {
+    const latestUrl = this.resolveEnterpriseLatestUrl(updateConfig);
+    if (!latestUrl) {
+      throw new Error('Enterprise update latestUrl is not configured');
+    }
+
+    console.log(`[AppUpdate] checking enterprise update, currentVersion=${currentVersion}, url=${latestUrl}`);
+    const response = await session.defaultSession.fetch(latestUrl, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Enterprise update check failed (HTTP ${response.status})`);
+    }
+
+    const payload = (await response.json()) as EnterpriseReleaseManifest;
+    const channel = this.getEnterprisePlatformChannel(payload);
+    const latestVersion = (channel?.version || channel?.releaseId || '').trim();
+    if (!channel || !latestVersion || !this.isNewerVersion(latestVersion, currentVersion)) {
+      console.log(
+        `[AppUpdate] no enterprise update available, latestVersion=${latestVersion || 'N/A'}, currentVersion=${currentVersion}`,
+      );
+      return null;
+    }
+
+    const installer = this.pickEnterpriseInstaller(channel);
+    if (!installer) {
+      throw new Error(`Enterprise update ${latestVersion} has no installer for this platform`);
+    }
+
+    const url = this.resolveEnterpriseInstallerUrl(installer, updateConfig, latestUrl);
+    const result: AppUpdateInfo = {
+      latestVersion,
+      date: channel.createdAt || payload.generatedAt || '',
+      changeLog: {
+        zh: {
+          title: `LfClaw ${latestVersion} 企业版更新`,
+          content: ['发现企业发布的新版本，可从客户端直接下载并安装。'],
+        },
+        en: {
+          title: `LfClaw ${latestVersion} enterprise update`,
+          content: ['A new enterprise version is available. You can download and install it from the client.'],
+        },
+      },
+      url,
+    };
+    console.log(`[AppUpdate] enterprise update available: ${currentVersion} -> ${latestVersion}, downloadUrl=${url}`);
+    return result;
+  }
+
+  private getEnterprisePlatformChannel(
+    manifest: EnterpriseReleaseManifest,
+  ): EnterpriseReleaseChannel | undefined {
+    const platformKey = process.platform === 'darwin'
+      ? 'mac'
+      : process.platform === 'win32'
+        ? 'windows'
+        : process.platform;
+    return manifest.channels?.[platformKey];
+  }
+
+  private pickEnterpriseInstaller(channel: EnterpriseReleaseChannel): EnterpriseReleaseFile | null {
+    const files = Array.isArray(channel.files) ? channel.files : [];
+    const candidates = files.filter((file) => {
+      const name = (file.name || file.path || file.url || '').toLowerCase();
+      if (!name) return false;
+      if (process.platform === 'darwin') {
+        if (process.arch === 'arm64' && /x64|amd64|intel/.test(name)) return false;
+        if (process.arch !== 'arm64' && /arm64|aarch64/.test(name)) return false;
+        return name.endsWith('.dmg') || name.endsWith('.pkg') || name.endsWith('.zip');
+      }
+      if (process.platform === 'win32') {
+        if (/arm64|aarch64/.test(name)) return false;
+        return name.endsWith('.exe') || name.endsWith('.msi');
+      }
+      return false;
+    });
+    return candidates[0] ?? null;
+  }
+
+  private resolveEnterpriseInstallerUrl(
+    file: EnterpriseReleaseFile,
+    updateConfig: EnterpriseUpdateConfig,
+    latestUrl: string,
+  ): string {
+    if (file.url?.trim()) return file.url.trim();
+    if (file.path?.trim()) {
+      const downloadBaseUrl = updateConfig.downloadBaseUrl?.trim();
+      if (downloadBaseUrl) {
+        const base = downloadBaseUrl.endsWith('/') ? downloadBaseUrl : `${downloadBaseUrl}/`;
+        return new URL(file.path.trim(), base).toString();
+      }
+      const latest = new URL(latestUrl);
+      if (latest.pathname.endsWith('/api/enterprise/releases/latest')) {
+        latest.pathname = '/api/enterprise/releases/download';
+        latest.search = `?path=${encodeURIComponent(file.path.trim())}`;
+        return latest.toString();
+      }
+      return new URL(file.path.trim(), latest).toString();
+    }
+    throw new Error('Enterprise installer URL is missing');
+  }
+
   private getPlatformDownloadUrl(
     value: NonNullable<NonNullable<UpdateApiResponse['data']>['value']> | undefined,
   ): string {
@@ -564,8 +704,32 @@ export class AppUpdateCoordinator {
   }
 
   private isUpdateDisabled(): boolean {
-    const enterprise = this.store.get<{ disableUpdate?: boolean }>('enterprise_config');
-    return enterprise?.disableUpdate === true;
+    const enterprise = this.store.get<{ disableUpdate?: boolean; update?: EnterpriseUpdateConfig }>('enterprise_config');
+    return enterprise?.disableUpdate === true && enterprise.update?.enabled !== true;
+  }
+
+  private getEnterpriseUpdateConfig(): EnterpriseUpdateConfig | null {
+    const enterprise = this.store.get<{
+      activation?: { managerUrl?: string };
+      update?: EnterpriseUpdateConfig;
+    }>('enterprise_config');
+    if (enterprise?.update?.enabled !== true) return null;
+    const latestUrl = enterprise.update.latestUrl?.trim()
+      || this.resolveEnterpriseManagerLatestUrl(enterprise.activation?.managerUrl);
+    return {
+      ...enterprise.update,
+      latestUrl,
+    };
+  }
+
+  private resolveEnterpriseLatestUrl(updateConfig: EnterpriseUpdateConfig): string {
+    return updateConfig.latestUrl?.trim() || '';
+  }
+
+  private resolveEnterpriseManagerLatestUrl(managerUrl?: string): string {
+    const base = managerUrl?.trim();
+    if (!base) return '';
+    return `${base.replace(/^ws:/i, 'http:').replace(/^wss:/i, 'https:').replace(/\/+$/, '')}/api/enterprise/releases/latest`;
   }
 
   private resolveCurrentVersion(): string {
