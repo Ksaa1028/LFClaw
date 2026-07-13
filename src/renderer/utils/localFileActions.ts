@@ -50,7 +50,9 @@ const logLocalFileActionFailure = (
 export const isRemoteOpenClawFilePath = (filePath: string): boolean => {
   const normalized = String(filePath || '').trim().replace(/^file:\/\//i, '');
   return /^\/root\/\.openclaw\/workspace\//i.test(normalized)
-    || /^\\root\\\.openclaw\\workspace\\/i.test(normalized);
+    || /^\\root\\\.openclaw\\workspace\\/i.test(normalized)
+    || /^\/opt\/lobsterai-gateway-manager\/users\/[^/]+\/(?:workspace|state|home)\//i.test(normalized)
+    || /^\\opt\\lobsterai-gateway-manager\\users\\[^\\]+\\(?:workspace|state|home)\\/i.test(normalized);
 };
 
 export const downloadRemoteOpenClawFile = async (filePath: string): Promise<string | null> => {

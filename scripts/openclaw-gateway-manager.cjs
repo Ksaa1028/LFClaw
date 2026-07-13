@@ -263,13 +263,21 @@ function resolveEnterpriseUserFromBearer(bearerToken) {
   const tokenHash = hashActivationToken(bearerToken);
   const tokenEntry = store.tokens[tokenHash];
   if (!tokenEntry || tokenEntry.enabled === false) return null;
+  const activationCode = findActivationCodeByHash(store, tokenEntry.activationCodeHash);
+  const activationRecord = activationCode ? store.codes?.[activationCode] : null;
+  if (!activationRecord || activationRecord.enabled === false) {
+    tokenEntry.enabled = false;
+    tokenEntry.disabledAt = new Date().toISOString();
+    saveActivationStore(store);
+    return null;
+  }
   tokenEntry.lastUsedAt = new Date().toISOString();
   saveActivationStore(store);
   return {
     id: String(tokenEntry.userId),
     displayName: String(tokenEntry.displayName || tokenEntry.userId),
     folderName: safePathSegment(tokenEntry.folderName || `${tokenEntry.userId}_${tokenEntry.displayName || ''}`),
-    activationCode: findActivationCodeByHash(store, tokenEntry.activationCodeHash),
+    activationCode,
   };
 }
 

@@ -370,6 +370,10 @@ const OpenClawKnownRuntimeError = {
   OnlyEmptySseDataFrames: 'Provider stream emitted too many empty SSE data frames.',
 } as const;
 const OPENCLAW_GENERIC_LLM_REQUEST_FAILED = 'LLM request failed.';
+const isReplySessionInitializationConflict = (error: unknown): boolean => {
+  const message = error instanceof Error ? error.message : String(error || '');
+  return /reply session initialization conflicted/i.test(message);
+};
 
 const OpenClawHistoryRole = {
   Tool: 'tool',
@@ -3922,11 +3926,29 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       assertOpenClawChatSendPayloadWithinLimit(sessionId, chatSendParams, attachments);
       const chatSendStartMs = Date.now();
       firstResponseTiming.chatSendStartedAtMs = chatSendStartMs;
-      const sendResult = await client.request<Record<string, unknown>>(
-        'chat.send',
-        chatSendParams,
-        { timeoutMs: 90_000 },
-      );
+      let sendResult: Record<string, unknown>;
+      try {
+        sendResult = await client.request<Record<string, unknown>>(
+          'chat.send',
+          chatSendParams,
+          { timeoutMs: 90_000 },
+        );
+      } catch (error) {
+        if (!isReplySessionInitializationConflict(error)) {
+          throw error;
+        }
+        console.warn(
+          '[OpenClawRuntime] chat.send hit reply session initialization conflict; retrying once.',
+          `Session ${sessionId}.`,
+          `Run ${runId}.`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        sendResult = await client.request<Record<string, unknown>>(
+          'chat.send',
+          chatSendParams,
+          { timeoutMs: 90_000 },
+        );
+      }
       const chatSendElapsedMs = Date.now() - chatSendStartMs;
       firstResponseTiming.chatSendAckAtMs = Date.now();
       console.log(
