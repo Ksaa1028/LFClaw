@@ -57,7 +57,23 @@ scripts/openclaw-gateway-manager.cjs
 
 ```text
 /opt/lobsterai-gateway-manager/users/u_luyanpeng_f373_luyanpeng
+├─ user-info.json          员工、激活码、目录信息
+├─ workspace/              该员工生成文件和任务产物
+├─ state/                  OpenClaw 会话、Agent 状态、认证库
+├─ skills/                 该员工技能相关数据
+├─ mcp/                    该员工 MCP 相关数据
+├─ lark-cli/               该员工飞书 CLI 绑定配置
+├─ cache/                  该员工缓存
+├─ tmp/                    该员工临时文件
+└─ logs/                   该员工网关日志
 ```
+
+隔离规则：
+
+- 同一个激活码在不同电脑上使用，会复用服务器上同一个用户目录。
+- 不同激活码会进入不同用户目录，飞书 CLI、工作区、会话、缓存、临时文件互相隔离。
+- 远程 OpenClaw 进程启动时会把 `HOME`、OpenClaw 状态目录、飞书 CLI 目录、缓存目录和临时目录全部指向该员工目录。
+- 任务生成的文件优先落在 `workspace/`，客户端下载文件也只允许访问该员工目录内的文件。
 
 ### 3. 激活码网页管理
 

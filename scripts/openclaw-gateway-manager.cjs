@@ -310,10 +310,21 @@ function copyTemplateConfigIfMissing(targetPath) {
 
 function enforceUserConfigIsolation(configPath, paths) {
   const openclawConfig = readJsonIfExists(configPath, {});
-  const workspaceDir = path.join(paths.stateDir, 'workspace-main');
+  const workspaceDir = paths.workspaceDir;
   ensureDir(workspaceDir);
   const nextConfig = {
     ...openclawConfig,
+    lfclaw: {
+      ...(openclawConfig.lfclaw && typeof openclawConfig.lfclaw === 'object' ? openclawConfig.lfclaw : {}),
+      enterpriseUser: {
+        root: paths.root,
+        workspace: paths.workspaceDir,
+        agent: paths.agentDir,
+        skills: paths.skillsDir,
+        mcp: paths.mcpDir,
+        larkCli: paths.larkCliDir,
+      },
+    },
     agents: {
       ...(openclawConfig.agents && typeof openclawConfig.agents === 'object' ? openclawConfig.agents : {}),
       defaults: {
@@ -340,8 +351,8 @@ function copyFileIfExistsAndMissing(sourcePath, targetPath) {
   return true;
 }
 
-function copyTemplateAuthStoreIfMissing(stateDir) {
-  const targetPath = path.join(stateDir, 'agents', 'main', 'agent', 'openclaw-agent.sqlite');
+function copyTemplateAuthStoreIfMissing(paths) {
+  const targetPath = path.join(paths.agentDir, 'openclaw-agent.sqlite');
   const copied = copyFileIfExistsAndMissing(config.templateAuthStorePath, targetPath);
   for (const suffix of ['-wal', '-shm']) {
     copyFileIfExistsAndMissing(`${config.templateAuthStorePath}${suffix}`, `${targetPath}${suffix}`);
@@ -412,13 +423,94 @@ async function resolveUserFromBearer(bearerToken) {
 
 function getUserPaths(userKey) {
   const root = path.join(config.dataRoot, 'users', userKey);
+  const homeDir = path.join(root, 'home');
+  const stateDir = path.join(root, 'state');
+  const workspaceDir = path.join(root, 'workspace');
+  const agentsDir = path.join(stateDir, 'agents');
+  const agentDir = path.join(agentsDir, 'main', 'agent');
+  const configDir = path.join(root, 'config');
+  const logsDir = path.join(root, 'logs');
   return {
     root,
-    homeDir: path.join(root, 'home'),
-    stateDir: path.join(root, 'state'),
-    configPath: path.join(root, 'state', 'openclaw.json'),
-    logPath: path.join(root, 'gateway.log'),
+    homeDir,
+    stateDir,
+    workspaceDir,
+    agentsDir,
+    agentDir,
+    skillsDir: path.join(root, 'skills'),
+    mcpDir: path.join(root, 'mcp'),
+    larkCliDir: path.join(root, 'lark-cli'),
+    configDir,
+    cacheDir: path.join(root, 'cache'),
+    tmpDir: path.join(root, 'tmp'),
+    logsDir,
+    legacyWorkspaceDir: path.join(stateDir, 'workspace-main'),
+    configPath: path.join(stateDir, 'openclaw.json'),
+    logPath: path.join(logsDir, 'gateway.log'),
     infoPath: path.join(root, 'user-info.json'),
+  };
+}
+
+function ensureUserDirectoryLayout(paths) {
+  [
+    paths.root,
+    paths.homeDir,
+    paths.stateDir,
+    paths.workspaceDir,
+    paths.agentsDir,
+    paths.agentDir,
+    paths.skillsDir,
+    paths.mcpDir,
+    paths.larkCliDir,
+    paths.configDir,
+    path.join(paths.configDir, 'xdg'),
+    path.join(paths.configDir, 'xdg-data'),
+    paths.cacheDir,
+    paths.tmpDir,
+    paths.logsDir,
+    path.join(paths.homeDir, '.openclaw', 'workspace'),
+  ].forEach(ensureDir);
+}
+
+function getPublicUserPaths(paths) {
+  return {
+    root: paths.root,
+    home: paths.homeDir,
+    state: paths.stateDir,
+    workspace: paths.workspaceDir,
+    agent: paths.agentDir,
+    skills: paths.skillsDir,
+    mcp: paths.mcpDir,
+    larkCli: paths.larkCliDir,
+    config: paths.configDir,
+    cache: paths.cacheDir,
+    tmp: paths.tmpDir,
+    logs: paths.logsDir,
+  };
+}
+
+function buildUserIsolationEnv(paths, token) {
+  return {
+    ...process.env,
+    HOME: paths.homeDir,
+    USERPROFILE: paths.homeDir,
+    XDG_CONFIG_HOME: path.join(paths.configDir, 'xdg'),
+    XDG_DATA_HOME: path.join(paths.configDir, 'xdg-data'),
+    XDG_CACHE_HOME: paths.cacheDir,
+    TMPDIR: paths.tmpDir,
+    TMP: paths.tmpDir,
+    TEMP: paths.tmpDir,
+    OPENCLAW_HOME: paths.homeDir,
+    OPENCLAW_STATE_DIR: paths.stateDir,
+    OPENCLAW_CONFIG_PATH: paths.configPath,
+    OPENCLAW_GATEWAY_TOKEN: token,
+    LARKSUITE_CLI_HOME: paths.larkCliDir,
+    LARKSUITE_CLI_CONFIG_HOME: paths.larkCliDir,
+    LARKSUITE_CLI_DATA_HOME: paths.larkCliDir,
+    LARK_CLI_HOME: paths.larkCliDir,
+    FEISHU_CLI_HOME: paths.larkCliDir,
+    LARKSUITE_CLI_NO_UPDATE_NOTIFIER: '1',
+    LARKSUITE_CLI_NO_SKILLS_NOTIFIER: '1',
   };
 }
 
@@ -454,18 +546,18 @@ function resolveAllowedDownloadPath(user, rawPath) {
     paths.root,
     paths.homeDir,
     paths.stateDir,
-    path.join(paths.stateDir, 'workspace-main'),
+    paths.workspaceDir,
+    paths.legacyWorkspaceDir,
     path.join(paths.homeDir, '.openclaw', 'workspace'),
-    path.join(os.homedir(), '.openclaw', 'workspace'),
   ].map(root => path.resolve(root));
 
   const candidates = path.isAbsolute(normalized)
     ? [path.resolve(normalized)]
     : [
-        path.resolve(path.join(paths.stateDir, 'workspace-main', normalized)),
+        path.resolve(path.join(paths.workspaceDir, normalized)),
+        path.resolve(path.join(paths.legacyWorkspaceDir, normalized)),
         path.resolve(path.join(paths.homeDir, '.openclaw', 'workspace', normalized)),
         path.resolve(path.join(paths.root, normalized)),
-        path.resolve(path.join(os.homedir(), '.openclaw', 'workspace', normalized)),
       ];
   const resolved = candidates.find(candidate => (
     allowedRoots.some(root => isPathInside(candidate, root))
@@ -496,7 +588,7 @@ function upsertUserInfo(input) {
   const paths = getUserPaths(userKey);
   const previous = readJsonIfExists(paths.infoPath, {});
   const now = new Date().toISOString();
-  ensureDir(paths.root);
+  ensureUserDirectoryLayout(paths);
   writeJsonAtomic(paths.infoPath, {
     ...previous,
     userKey,
@@ -514,6 +606,7 @@ function upsertUserInfo(input) {
     port: input.port || previous.port,
     lastActivatedAt: input.lastActivatedAt || previous.lastActivatedAt,
     lastGatewayStartedAt: input.lastGatewayStartedAt || previous.lastGatewayStartedAt,
+    paths: getPublicUserPaths(paths),
     createdAt: previous.createdAt || now,
     updatedAt: now,
   });
@@ -548,27 +641,18 @@ async function ensureUserGateway(user) {
   }
 
   const paths = getUserPaths(userKey);
-  ensureDir(paths.root);
-  ensureDir(paths.homeDir);
-  ensureDir(paths.stateDir);
+  ensureUserDirectoryLayout(paths);
   copyTemplateConfigIfMissing(paths.configPath);
   enforceUserConfigIsolation(paths.configPath, paths);
-  copyTemplateAuthStoreIfMissing(paths.stateDir);
+  copyTemplateAuthStoreIfMissing(paths);
 
   const port = entry?.port || await allocatePort();
   const token = entry?.token || randomToken();
   const logStream = fs.createWriteStream(paths.logPath, { flags: 'a' });
-  const env = {
-    ...process.env,
-    HOME: paths.homeDir,
-    OPENCLAW_HOME: paths.homeDir,
-    OPENCLAW_STATE_DIR: paths.stateDir,
-    OPENCLAW_CONFIG_PATH: paths.configPath,
-    OPENCLAW_GATEWAY_TOKEN: token,
-  };
+  const env = buildUserIsolationEnv(paths, token);
   const args = ['gateway', 'run', '--allow-unconfigured', '--bind', 'loopback', '--port', String(port), '--token', token, '--verbose'];
   const child = spawn(config.openclawBin, args, {
-    cwd: paths.root,
+    cwd: paths.workspaceDir,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
