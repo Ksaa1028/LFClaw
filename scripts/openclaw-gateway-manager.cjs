@@ -1264,6 +1264,33 @@ async function handleEnterpriseFileDownload(req, res, url) {
   }
 }
 
+async function handleEnterpriseActivationStatus(req, res) {
+  try {
+    const auth = req.headers.authorization || '';
+    const bearer = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length).trim() : '';
+    const user = await resolveUserFromBearer(bearer);
+    sendJson(res, 200, {
+      code: 0,
+      data: {
+        activated: true,
+        activation: {
+          activationCode: user.activationCode,
+          userId: user.id,
+          displayName: user.displayName,
+          folderName: user.folderName,
+        },
+      },
+    });
+  } catch (error) {
+    const status = error.statusCode || 500;
+    sendJson(res, status, {
+      code: status,
+      data: { activated: false },
+      message: error.message || String(error),
+    });
+  }
+}
+
 async function handleGatewayToken(req, res) {
   try {
     const auth = req.headers.authorization || '';
@@ -1315,6 +1342,10 @@ function handleHttp(req, res) {
   }
   if (req.method === 'GET' && url.pathname === '/api/enterprise/files/download') {
     void handleEnterpriseFileDownload(req, res, url);
+    return;
+  }
+  if (req.method === 'GET' && url.pathname === '/api/enterprise/activation/status') {
+    void handleEnterpriseActivationStatus(req, res);
     return;
   }
   if (req.method === 'GET' && url.pathname === '/api/admin/activation-codes') {

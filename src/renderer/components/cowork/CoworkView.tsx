@@ -50,6 +50,7 @@ export interface CoworkViewProps {
   onShowSkills?: () => void;
   onShowKits?: () => void;
   enterpriseActivationBlocked?: boolean;
+  onValidateEnterpriseActivation?: () => Promise<boolean>;
   isSidebarCollapsed?: boolean;
   onToggleSidebar?: () => void;
   onNewChat?: () => void;
@@ -62,6 +63,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({
   onShowSkills,
   onShowKits,
   enterpriseActivationBlocked = false,
+  onValidateEnterpriseActivation,
   isSidebarCollapsed,
   onToggleSidebar,
   onNewChat,
@@ -250,6 +252,9 @@ const CoworkView: React.FC<CoworkViewProps> = ({
   ): Promise<boolean | void> => {
     if (enterpriseActivationBlocked) {
       window.dispatchEvent(new CustomEvent('app:showToast', { detail: ENTERPRISE_ACTIVATION_BLOCKED_MESSAGE }));
+      return false;
+    }
+    if (onValidateEnterpriseActivation && !(await onValidateEnterpriseActivation())) {
       return false;
     }
     console.log('[CoworkView] handleStartSession: imageAttachments diagnosis', {
@@ -451,6 +456,9 @@ const CoworkView: React.FC<CoworkViewProps> = ({
   ) => {
     if (enterpriseActivationBlocked) {
       window.dispatchEvent(new CustomEvent('app:showToast', { detail: ENTERPRISE_ACTIVATION_BLOCKED_MESSAGE }));
+      return false;
+    }
+    if (onValidateEnterpriseActivation && !(await onValidateEnterpriseActivation())) {
       return false;
     }
     if (!currentSession) return false;

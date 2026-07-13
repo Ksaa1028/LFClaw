@@ -83,6 +83,7 @@ const SETTINGS_TAB_SHORTCUT_ACTIONS: Array<{
 /** Used for config + i18n init; longer on Windows where main-process IPC can stall during cold start. */
 const INIT_STEP_TIMEOUT_MS_WINDOWS = 24_000;
 const INIT_STEP_TIMEOUT_MS_DEFAULT = 16_000;
+const ENTERPRISE_ACTIVATION_CHECK_INTERVAL_MS = 20_000;
 
 type EnterpriseActivationView = {
   activated: boolean;
@@ -1022,6 +1023,103 @@ const App: React.FC = () => {
     });
   }, [showToast]);
 
+  useEffect(() => {
+    if (enterpriseConfig?.activation?.required !== true || enterpriseActivation?.activated !== true) {
+      return;
+    }
+
+    let cancelled = false;
+    let checking = false;
+
+    const checkActivation = async (reason: 'timer' | 'visible') => {
+      if (cancelled || checking) return;
+      checking = true;
+      try {
+        const result = await window.electron.enterprise.validateActivation();
+        if (cancelled) return;
+        if (result.activated === false) {
+          setEnterpriseActivation(null);
+          setEnterpriseActivationCode('');
+          setEnterpriseActivationError('当前激活码已失效，请重新输入新的激活码');
+          setEnterpriseActivationRequired(true);
+          showToast('当前激活码已失效，请重新激活');
+          return;
+        }
+        if (result.checked && result.activated && result.userId) {
+          setEnterpriseActivation((previous) => ({
+            activated: true,
+            activationCode: result.activationCode || previous?.activationCode,
+            userId: result.userId || previous?.userId,
+            displayName: result.displayName || previous?.displayName,
+            folderName: result.folderName || previous?.folderName,
+            activatedAt: result.activatedAt || previous?.activatedAt,
+          }));
+        }
+      } catch (error) {
+        console.warn(`[Enterprise] activation validation failed (${reason})`, error);
+      } finally {
+        checking = false;
+      }
+    };
+
+    const timer = window.setInterval(() => {
+      void checkActivation('timer');
+    }, ENTERPRISE_ACTIVATION_CHECK_INTERVAL_MS);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void checkActivation('visible');
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [enterpriseActivation?.activated, enterpriseConfig?.activation?.required, showToast]);
+
+  const validateEnterpriseActivationBeforeSubmit = useCallback(async (): Promise<boolean> => {
+    if (enterpriseConfig?.activation?.required !== true) {
+      return true;
+    }
+    if (enterpriseActivation?.activated !== true) {
+      setEnterpriseActivation(null);
+      setEnterpriseActivationCode('');
+      setEnterpriseActivationError('\u5f53\u524d\u6fc0\u6d3b\u7801\u5df2\u5931\u6548\uff0c\u8bf7\u91cd\u65b0\u8f93\u5165\u65b0\u7684\u6fc0\u6d3b\u7801');
+      setEnterpriseActivationRequired(true);
+      showToast('\u5f53\u524d\u6fc0\u6d3b\u7801\u5df2\u5931\u6548\uff0c\u8bf7\u91cd\u65b0\u6fc0\u6d3b');
+      return false;
+    }
+
+    try {
+      const result = await window.electron.enterprise.validateActivation();
+      if (result.activated === false) {
+        setEnterpriseActivation(null);
+        setEnterpriseActivationCode('');
+        setEnterpriseActivationError('\u5f53\u524d\u6fc0\u6d3b\u7801\u5df2\u5931\u6548\uff0c\u8bf7\u91cd\u65b0\u8f93\u5165\u65b0\u7684\u6fc0\u6d3b\u7801');
+        setEnterpriseActivationRequired(true);
+        showToast('\u5f53\u524d\u6fc0\u6d3b\u7801\u5df2\u5931\u6548\uff0c\u8bf7\u91cd\u65b0\u6fc0\u6d3b');
+        return false;
+      }
+      if (result.checked && result.activated && result.userId) {
+        setEnterpriseActivation((previous) => ({
+          activated: true,
+          activationCode: result.activationCode || previous?.activationCode,
+          userId: result.userId || previous?.userId,
+          displayName: result.displayName || previous?.displayName,
+          folderName: result.folderName || previous?.folderName,
+          activatedAt: result.activatedAt || previous?.activatedAt,
+        }));
+      }
+      return true;
+    } catch (error) {
+      console.warn('[Enterprise] activation validation failed before submit', error);
+      return true;
+    }
+  }, [enterpriseActivation?.activated, enterpriseConfig?.activation?.required, showToast]);
+
   const enterpriseActivationModal = enterpriseActivationRequired ? (
     <div className="fixed inset-0 z-[10060] flex items-center justify-center bg-black/35 px-4">
       <div className="relative w-full max-w-sm rounded-xl border border-border bg-surface p-5 shadow-modal">
@@ -1224,6 +1322,7 @@ const App: React.FC = () => {
                 onShowSkills={handleShowSkills}
                 onShowKits={handleShowKits}
                 enterpriseActivationBlocked={enterpriseActivationBlocked}
+                onValidateEnterpriseActivation={validateEnterpriseActivationBeforeSubmit}
                 isSidebarCollapsed={isSidebarCollapsed}
                 onToggleSidebar={handleToggleSidebar}
                 onNewChat={handleNewChat}

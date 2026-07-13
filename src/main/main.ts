@@ -3348,6 +3348,19 @@ if (!gotTheLock) {
     return { success: true };
   });
 
+  ipcMain.handle('enterprise:validateActivation', async () => {
+    const result = await validateEnterpriseActivationWithManager('ipc');
+    const identity = getEnterpriseActivationIdentity();
+    return {
+      ...result,
+      activationCode: identity?.activationCode,
+      userId: identity?.userId,
+      displayName: identity?.displayName,
+      folderName: identity?.folderName,
+      activatedAt: identity?.activatedAt,
+    };
+  });
+
   const resolveEnterpriseManagerBaseUrl = (): string => {
     const manifest = getStore().get<{
       activation?: { managerUrl?: string };
@@ -3357,6 +3370,71 @@ if (!gotTheLock) {
       || readOpenClawGatewayFileConfig()?.url?.trim()
       || '';
     return managerUrl.replace(/^ws:/i, 'http:').replace(/^wss:/i, 'https:').replace(/\/+$/, '');
+  };
+
+  const validateEnterpriseActivationWithManager = async (reason: string): Promise<{
+    activated: boolean;
+    checked: boolean;
+    error?: string;
+  }> => {
+    const identity = getEnterpriseActivationIdentity();
+    if (!identity?.activationToken) {
+      return { activated: false, checked: true, error: 'missing activation token' };
+    }
+    const managerUrl = resolveEnterpriseManagerBaseUrl();
+    if (!managerUrl) {
+      return { activated: true, checked: false, error: 'missing enterprise manager url' };
+    }
+
+    try {
+      const response = await net.fetch(`${managerUrl}/api/enterprise/activation/status`, {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Bearer ${identity.activationToken}`,
+        },
+      });
+      if (response.status === 401 || response.status === 403) {
+        clearEnterpriseActivationRuntime(`activation_status_${response.status}_${reason}`);
+        return { activated: false, checked: true, error: `HTTP ${response.status}` };
+      }
+      if (!response.ok) {
+        return { activated: true, checked: false, error: `HTTP ${response.status}` };
+      }
+      const body = await response.json() as {
+        code?: number;
+        data?: {
+          activated?: boolean;
+          activation?: {
+            activationCode?: string;
+            userId?: string;
+            displayName?: string;
+            folderName?: string;
+          };
+        };
+      };
+      if (body?.data?.activated === false) {
+        clearEnterpriseActivationRuntime(`activation_status_disabled_${reason}`);
+        return { activated: false, checked: true };
+      }
+      const activation = body?.data?.activation;
+      if (activation) {
+        saveEnterpriseActivationIdentity({
+          ...identity,
+          activationCode: activation.activationCode || identity.activationCode,
+          userId: activation.userId || identity.userId,
+          displayName: activation.displayName || identity.displayName,
+          folderName: activation.folderName || identity.folderName,
+        });
+      }
+      return { activated: true, checked: true };
+    } catch (error) {
+      return {
+        activated: true,
+        checked: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   };
 
   const normalizeRemoteOpenClawPath = (inputPath: string): string => {

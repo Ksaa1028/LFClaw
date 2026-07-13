@@ -114,6 +114,7 @@ contextBridge.exposeInMainWorld('electron', {
   enterprise: {
     getConfig: () => ipcRenderer.invoke('enterprise:getConfig'),
     getActivation: () => ipcRenderer.invoke('enterprise:getActivation'),
+    validateActivation: () => ipcRenderer.invoke('enterprise:validateActivation'),
     activate: (activationCode: string) => ipcRenderer.invoke('enterprise:activate', { activationCode }),
     clearActivation: () => ipcRenderer.invoke('enterprise:clearActivation'),
     downloadRemoteFile: (filePath: string) =>

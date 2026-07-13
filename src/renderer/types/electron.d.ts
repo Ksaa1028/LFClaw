@@ -1467,6 +1467,16 @@ interface IElectronAPI {
       folderName?: string;
       activatedAt?: string;
     }>;
+    validateActivation: () => Promise<{
+      activated: boolean;
+      checked: boolean;
+      activationCode?: string;
+      userId?: string;
+      displayName?: string;
+      folderName?: string;
+      activatedAt?: string;
+      error?: string;
+    }>;
     activate: (activationCode: string) => Promise<{
       success: boolean;
       activationCode?: string;
