@@ -18,6 +18,7 @@ import {
   type CoworkSelectedTextValidationError,
   normalizeCoworkSelectedTextSnippets,
 } from '../../../shared/cowork/selectedText';
+import lfclawLogoSrc from '../../assets/lfclaw-logo.png';
 import { dedupeArtifactsForDisplay, normalizeFilePathForDedup, normalizeLocalServiceUrlForDedup, parseFileLinksFromMessage, parseFilePathsFromText, parseLocalServiceUrlsFromText, parseMediaTokensFromText, parseRemoteImageArtifactsFromText, parseToolArtifact, parseToolResultMediaArtifacts, shouldParseFilePathsFromToolResult, stripFileLinksFromText } from '../../services/artifactParser';
 import { coworkService } from '../../services/cowork';
 import { i18nService } from '../../services/i18n';
@@ -792,7 +793,7 @@ const composeExportCanvas = async (
     const img = new Image();
     img.onload = () => resolve(img);
     img.onerror = () => reject(new Error('Failed to load logo'));
-    img.src = '/logo.png';
+    img.src = lfclawLogoSrc;
   });
 
   // Logo with rounded clipping

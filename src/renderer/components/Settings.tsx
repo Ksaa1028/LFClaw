@@ -13,6 +13,7 @@ import { DataMigrationRestoreStatus } from '../../shared/dataMigration/constants
 import { normalizeNotificationSettings } from '../../shared/notifications/constants';
 import { OpenClawEnginePhase, OpenClawGatewayRepairErrorCode } from '../../shared/openclawEngine/constants';
 import { ProviderAuthType, ProviderName, ProviderRegistry, resolveCodingPlanBaseUrl } from '../../shared/providers';
+import lfclawLogoSrc from '../assets/lfclaw-logo.png';
 import { type AppConfig, defaultConfig, getProviderDisplayName, getVisibleProviders, ShortcutAction, type ShortcutConfig } from '../config';
 import { APP_ID, EXPORT_FORMAT_TYPE, EXPORT_PASSWORD } from '../constants/app';
 import { apiService } from '../services/api';
@@ -5027,7 +5028,7 @@ const Settings: React.FC<SettingsProps> = ({
           <div className="flex min-h-full flex-col items-center pt-6 pb-3">
             {/* Logo & App Name */}
             <img
-              src="/logo.png"
+              src={lfclawLogoSrc}
               alt="LfClaw"
               className="w-16 h-16 mb-3 cursor-pointer select-none"
               onClick={(e) => {

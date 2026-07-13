@@ -3722,13 +3722,9 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
     const agentId = options.agentId || session.agentId || 'main';
     const runId = randomUUID();
-    const gatewayConfig = getOpenClawGatewayConfig();
     const baseSessionKey = this.toSessionKey(sessionId, agentId);
-    const sessionKey = gatewayConfig.mode === 'remote'
-      ? `${baseSessionKey}:run:${runId}`
-      : baseSessionKey;
+    const sessionKey = baseSessionKey;
     this.rememberSessionKey(sessionId, baseSessionKey);
-    this.rememberSessionKey(sessionId, sessionKey);
 
     this.store.updateSession(sessionId, { status: 'running' });
     this.emitSessionStatus(sessionId, 'running');
@@ -4064,7 +4060,8 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
     this.bridgedSessions.add(sessionId);
 
-    if (!hasHistory) {
+    const shouldInjectLocalBridge = !hasHistory || getOpenClawGatewayConfig().mode === 'remote';
+    if (shouldInjectLocalBridge) {
       if (session) {
         const bridgePrefix = this.buildBridgePrefix(session.messages, prompt);
         if (bridgePrefix) {

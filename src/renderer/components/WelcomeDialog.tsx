@@ -1,5 +1,6 @@
 import React from 'react';
 import { i18nService } from '@/services/i18n';
+import lfclawLogoSrc from '../assets/lfclaw-logo.png';
 
 interface WelcomeDialogProps {
   onLogin: () => void;
@@ -31,7 +32,7 @@ const WelcomeDialog: React.FC<WelcomeDialogProps> = ({ onLogin, onCustomModel, o
       <div className="relative z-10 flex flex-col items-center py-12 w-[420px]">
         {/* logo */}
         <img
-          src="/logo.png"
+          src={lfclawLogoSrc}
           alt="LfClaw"
           width={72}
           height={72}

@@ -5,6 +5,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { buildSessionTitleFromInput } from '../../../common/sessionTitle';
 import { buildCoworkImageAttachmentPreviews } from '../../../shared/cowork/imageAttachments';
 import type { CoworkSelectedTextSnippet } from '../../../shared/cowork/selectedText';
+import lfclawLogoSrc from '../../assets/lfclaw-logo.png';
 import { agentService } from '../../services/agent';
 import { coworkService } from '../../services/cowork';
 import { i18nService } from '../../services/i18n';
@@ -791,7 +792,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({
           {/* Welcome Section - staggered entrance animation */}
           <div className="w-full max-w-3xl text-center">
             <img
-              src="/logo.png"
+              src={lfclawLogoSrc}
               alt="LfClaw"
               className="mx-auto h-12 w-12 animate-fade-in-up"
             />
