@@ -1,7 +1,0 @@
-{
-  "mode": "remote",
-  "gatewayUrl": "http://8.216.38.213:18791",
-  "model": "zai/glm-5.2",
-  "fixedModelLabel": "企业 AI 助手",
-  "allowInsecurePrivateWs": true
-}

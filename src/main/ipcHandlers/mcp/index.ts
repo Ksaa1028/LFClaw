@@ -1,1 +1,0 @@
-export { registerMcpHandlers } from './handlers';
