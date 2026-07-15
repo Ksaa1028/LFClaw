@@ -3,7 +3,7 @@ import React, { useCallback,useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 
 import { AppSettingsAutoLaunchErrorCode } from '../../shared/appSettings/constants';
-import { type AppUpdateInfo,type AppUpdateRuntimeState,AppUpdateSource,AppUpdateStatus } from '../../shared/appUpdate/constants';
+import { type AppUpdateInfo } from '../../shared/appUpdate/constants';
 import {
   type BrowserWebAccessConfig,
   defaultBrowserWebAccessConfig,
@@ -25,7 +25,6 @@ import { LogReporterAction, reportYdAnalyzer } from '../services/logReporter';
 import { formatShortcutForDisplay, getShortcutConflictSignature, matchesShortcut } from '../services/shortcuts';
 import { themeService } from '../services/theme';
 import { applyTypographyPreferences } from '../services/typography';
-import type { RootState } from '../store';
 import { selectCoworkConfig } from '../store/selectors/coworkSelectors';
 import { setAvailableModels } from '../store/slices/modelSlice';
 import type {
@@ -651,21 +650,6 @@ const reportShortcutSettingChanged = (
   });
 };
 
-const reportAboutAction = (
-  actionType: string,
-  result: string,
-  options: { missingEntryCount?: number } = {},
-): void => {
-  console.debug('[Settings] reporting about action analytics');
-  void reportYdAnalyzer({
-    action: LogReporterAction.AboutAction,
-    source: SettingsAnalyticsSource.About,
-    actionType,
-    result,
-    missingEntryCount: options.missingEntryCount,
-  });
-};
-
 const reportAgentEngineSettingChanged = (
   settingKey: string,
   settingValue: SettingsAnalyticsValue,
@@ -930,11 +914,6 @@ interface ProvidersImportPayload {
   providers?: Record<string, ProvidersImportEntry>;
 }
 
-const ABOUT_CONTACT_EMAIL = 'lobsterai.project@rd.netease.com';
-const ABOUT_USER_MANUAL_URL = 'https://lobsterai.youdao.com/#/docs/lobsterai_user_manual';
-const ABOUT_USER_COMMUNITY_URL = 'https://lobsterai.youdao.com/#/about';
-const ABOUT_SERVICE_TERMS_URL = 'https://c.youdao.com/dict/hardware/lobsterai/lobsterai_service.html';
-
 // MiniMax Portal OAuth constants
 const MINIMAX_OAUTH_CLIENT_ID = '78257093-7e40-4613-99e0-527b14b39113';
 const MINIMAX_OAUTH_SCOPE = 'group_id profile model.completion';
@@ -1001,26 +980,6 @@ const copyTextToClipboard = async (text: string): Promise<boolean> => {
   } catch (fallbackError) {
     console.error('Fallback clipboard copy failed:', fallbackError);
     return false;
-  }
-};
-
-const getUpdateCheckStatusFromRuntimeStatus = (
-  state: AppUpdateRuntimeState,
-): 'idle' | 'checking' | 'upToDate' | 'error' | 'downloading' | 'ready' => {
-  if (state.source !== AppUpdateSource.Manual) {
-    return 'idle';
-  }
-  switch (state.status) {
-    case AppUpdateStatus.Checking:
-      return 'checking';
-    case AppUpdateStatus.Downloading:
-      return 'downloading';
-    case AppUpdateStatus.Ready:
-      return 'ready';
-    case AppUpdateStatus.Error:
-      return 'error';
-    default:
-      return 'idle';
   }
 };
 
@@ -1325,7 +1284,6 @@ const Settings: React.FC<SettingsProps> = ({
   notice,
   noticeI18nKey,
   noticeExtra,
-  onUpdateFound,
   enterpriseConfig,
 }) => {
   const dispatch = useDispatch();
@@ -1428,9 +1386,7 @@ const Settings: React.FC<SettingsProps> = ({
   // 内容区下方仍有未滚出的内容时，在底部按钮区上方显示渐隐遮罩
   const [footerFadeVisible, setFooterFadeVisible] = useState(false);
   const importInputRef = useRef<HTMLInputElement>(null);
-  const emailCopiedTimerRef = useRef<number | null>(null);
   const openClawGatewayCopiedTimerRef = useRef<number | null>(null);
-  const updateCheckTimerRef = useRef<number | null>(null);
 
   // 快捷键设置
   const [shortcuts, setShortcuts] = useState<ShortcutConfig>(() => ({ ...defaultConfig.shortcuts! }));
@@ -1457,13 +1413,7 @@ const Settings: React.FC<SettingsProps> = ({
 
   // About tab
   const [appVersion, setAppVersion] = useState('');
-  const [emailCopied, setEmailCopied] = useState(false);
-  const [isExportingLogs, setIsExportingLogs] = useState(false);
   const [testMode, setTestMode] = useState(false);
-  const [logoClickCount, setLogoClickCount] = useState(0);
-  const [testModeUnlocked, setTestModeUnlocked] = useState(false);
-  const [updateCheckStatus, setUpdateCheckStatus] = useState<'idle' | 'checking' | 'upToDate' | 'error' | 'downloading' | 'ready'>('idle');
-  const [appUpdateState, setAppUpdateState] = useState<AppUpdateRuntimeState | null>(null);
 
   useEffect(() => {
     window.electron.appInfo.getVersion().then(setAppVersion);
@@ -1472,181 +1422,6 @@ const Settings: React.FC<SettingsProps> = ({
   useEffect(() => {
     setShowApiKey(false);
   }, [activeProvider]);
-
-  useEffect(() => {
-    let mounted = true;
-
-    const syncUpdateStatus = async () => {
-      try {
-        const state = await window.electron.appUpdate.getState();
-        if (!mounted) {
-          return;
-        }
-        setAppUpdateState(state);
-        setUpdateCheckStatus(getUpdateCheckStatusFromRuntimeStatus(state));
-      } catch (error) {
-        console.error('Failed to load app update state in settings:', error);
-      }
-    };
-
-    void syncUpdateStatus();
-
-    const unsubscribe = window.electron.appUpdate.onStateChanged((state) => {
-      if (
-        updateCheckTimerRef.current != null &&
-        state.source === AppUpdateSource.Manual &&
-        state.status !== AppUpdateStatus.Idle
-      ) {
-        window.clearTimeout(updateCheckTimerRef.current);
-        updateCheckTimerRef.current = null;
-      }
-      setAppUpdateState(state);
-      setUpdateCheckStatus(getUpdateCheckStatusFromRuntimeStatus(state));
-    });
-
-    return () => {
-      mounted = false;
-      unsubscribe();
-    };
-  }, []);
-
-  const handleCopyContactEmail = useCallback(async () => {
-    const copied = await copyTextToClipboard(ABOUT_CONTACT_EMAIL);
-    reportAboutAction('copy_contact_email', copied ? 'success' : 'failed');
-    if (copied) {
-      setEmailCopied(true);
-      if (emailCopiedTimerRef.current != null) {
-        window.clearTimeout(emailCopiedTimerRef.current);
-      }
-      emailCopiedTimerRef.current = window.setTimeout(() => {
-        setEmailCopied(false);
-        emailCopiedTimerRef.current = null;
-      }, 1200);
-    }
-  }, []);
-
-  const authUser = useSelector((state: RootState) => state.auth.user);
-
-  const handleCheckUpdate = useCallback(async () => {
-    if (updateCheckStatus === 'checking' || !appVersion) return;
-    setUpdateCheckStatus('checking');
-    try {
-      const result = await window.electron.appUpdate.checkNow({ manual: true, userId: authUser?.yid });
-      if (!result.success) {
-        throw new Error(result.error || 'Update check failed');
-      }
-
-      if (!result.updateFound) {
-        setUpdateCheckStatus('upToDate');
-        reportAboutAction('check_update', 'up_to_date');
-        if (updateCheckTimerRef.current != null) {
-          window.clearTimeout(updateCheckTimerRef.current);
-        }
-        updateCheckTimerRef.current = window.setTimeout(() => {
-          setUpdateCheckStatus('idle');
-          updateCheckTimerRef.current = null;
-        }, 3000);
-        return;
-      }
-
-      if (result.state.status === AppUpdateStatus.Ready) {
-        setUpdateCheckStatus('ready');
-        reportAboutAction('check_update', 'ready');
-      } else if (result.state.status === AppUpdateStatus.Downloading) {
-        setUpdateCheckStatus('downloading');
-        reportAboutAction('check_update', 'downloading');
-      } else {
-        setUpdateCheckStatus('idle');
-        reportAboutAction('check_update', 'update_found');
-      }
-
-      if (result.state.info) {
-        onUpdateFound?.(result.state.info);
-      }
-    } catch {
-      reportAboutAction('check_update', 'failed');
-      setUpdateCheckStatus('error');
-      if (updateCheckTimerRef.current != null) {
-        window.clearTimeout(updateCheckTimerRef.current);
-      }
-      updateCheckTimerRef.current = window.setTimeout(() => {
-        setUpdateCheckStatus('idle');
-        updateCheckTimerRef.current = null;
-      }, 3000);
-    }
-  }, [appVersion, authUser, updateCheckStatus, onUpdateFound]);
-
-  const updateButtonLabel = useMemo(() => {
-    if (
-      updateCheckStatus === 'downloading' &&
-      appUpdateState?.progress?.percent != null &&
-      Number.isFinite(appUpdateState.progress.percent)
-    ) {
-      return `${i18nService.t('updateDownloadingBackground')} ${Math.round(appUpdateState.progress.percent * 100)}%`;
-    }
-    if (updateCheckStatus === 'checking') return i18nService.t('updateChecking');
-    if (updateCheckStatus === 'downloading') return i18nService.t('updateDownloadingBackground');
-    if (updateCheckStatus === 'ready') return i18nService.t('updateReadyTitle');
-    if (updateCheckStatus === 'upToDate') return i18nService.t('updateUpToDate');
-    if (updateCheckStatus === 'error') return i18nService.t('updateCheckFailed');
-    return i18nService.t('checkForUpdate');
-  }, [appUpdateState?.progress?.percent, updateCheckStatus]);
-
-  const handleOpenUserManual = useCallback(() => {
-    reportAboutAction('open_user_manual', 'success');
-    void window.electron.shell.openExternal(ABOUT_USER_MANUAL_URL);
-  }, []);
-
-  const handleOpenUserCommunity = useCallback(() => {
-    reportAboutAction('open_user_community', 'success');
-    void window.electron.shell.openExternal(ABOUT_USER_COMMUNITY_URL);
-  }, []);
-
-  const handleOpenServiceTerms = useCallback(() => {
-    reportAboutAction('open_service_terms', 'success');
-    void window.electron.shell.openExternal(ABOUT_SERVICE_TERMS_URL);
-  }, []);
-
-  const handleExportLogs = useCallback(async () => {
-    if (isExportingLogs) {
-      return;
-    }
-
-    setError(null);
-    setNoticeMessage(null);
-    setIsExportingLogs(true);
-    try {
-      const result = await window.electron.log.exportZip();
-      if (!result.success) {
-        setError(result.error || i18nService.t('aboutExportLogsFailed'));
-        reportAboutAction('export_logs', 'failed');
-        return;
-      }
-      if (result.canceled) {
-        reportAboutAction('export_logs', 'canceled');
-        return;
-      }
-
-      if (result.path) {
-        await window.electron.shell.showItemInFolder(result.path);
-      }
-
-      if ((result.missingEntries?.length ?? 0) > 0) {
-        const missingList = result.missingEntries?.join(', ') || '';
-        setNoticeMessage(`${i18nService.t('aboutExportLogsPartial')}: ${missingList}`);
-      } else {
-        setNoticeMessage(i18nService.t('aboutExportLogsSuccess'));
-      }
-      reportAboutAction('export_logs', 'success', {
-        missingEntryCount: result.missingEntries?.length ?? 0,
-      });
-    } catch (exportError) {
-      setError(exportError instanceof Error ? exportError.message : i18nService.t('aboutExportLogsFailed'));
-      reportAboutAction('export_logs', 'failed');
-    } finally {
-      setIsExportingLogs(false);
-    }
-  }, [isExportingLogs]);
 
   const coworkConfig = useSelector(selectCoworkConfig);
 
@@ -1730,14 +1505,8 @@ const Settings: React.FC<SettingsProps> = ({
   ]);
 
   useEffect(() => () => {
-    if (emailCopiedTimerRef.current != null) {
-      window.clearTimeout(emailCopiedTimerRef.current);
-    }
     if (openClawGatewayCopiedTimerRef.current != null) {
       window.clearTimeout(openClawGatewayCopiedTimerRef.current);
-    }
-    if (updateCheckTimerRef.current != null) {
-      window.clearTimeout(updateCheckTimerRef.current);
     }
   }, []);
 
@@ -1812,7 +1581,6 @@ const Settings: React.FC<SettingsProps> = ({
       setBrowserWebAccess(normalizeBrowserWebAccessConfig(config.browserWebAccess));
       const savedTestMode = config.app?.testMode ?? false;
       setTestMode(savedTestMode);
-      if (savedTestMode) setTestModeUnlocked(true);
 
       // Load auto-launch setting
       window.electron.autoLaunch.get().then(({ enabled }) => {
@@ -5318,154 +5086,14 @@ const Settings: React.FC<SettingsProps> = ({
 
       case 'about':
         return (
-          <div className="flex min-h-full flex-col items-center pt-6 pb-3">
-            {/* Logo & App Name */}
+          <div className="flex min-h-full flex-col items-center justify-center pb-10">
             <img
               src="logo.png"
-              alt="LobsterAI"
-              className="w-16 h-16 mb-3 cursor-pointer select-none"
-              onClick={(e) => {
-                if (!e.altKey || !e.shiftKey) return;
-
-                const next = logoClickCount + 1;
-                setLogoClickCount(next);
-                if (next >= 10 && !testModeUnlocked) {
-                  setTestModeUnlocked(true);
-                }
-              }}
+              alt="LfClaw"
+              className="mb-3 h-16 w-16 select-none"
             />
-            <h3 className="text-lg font-semibold text-foreground">LobsterAI</h3>
-            <span className="text-xs text-secondary mt-1">v{appVersion}</span>
-
-            {/* Info Card */}
-            <div className="w-full mt-8 rounded-xl border border-border overflow-hidden">
-              <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3 border-b border-border">
-                <span className="shrink-0 text-sm text-foreground">{i18nService.t('aboutVersion')}</span>
-                <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
-                  <span className="text-sm text-secondary">{appVersion}</span>
-                  {!enterpriseConfig?.disableUpdate && (
-                  <button
-                    type="button"
-                    disabled={updateCheckStatus === 'checking' || updateCheckStatus === 'downloading'}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void handleCheckUpdate();
-                    }}
-                    className="text-xs px-2 py-0.5 rounded-md border border-border text-secondary hover:text-primary dark:hover:text-primary hover:border-primary dark:hover:border-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {updateButtonLabel}
-                  </button>
-                  )}
-                  {enterpriseConfig?.disableUpdate && (
-                  <span className="text-xs text-claude-textSecondary dark:text-claude-darkTextSecondary">
-                    {i18nService.t('settings.enterprise.managed')}
-                  </span>
-                  )}
-                </div>
-              </div>
-              <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3 border-b border-border">
-                <span className="shrink-0 text-sm text-foreground">{i18nService.t('aboutContactEmail')}</span>
-                <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void handleCopyContactEmail();
-                    }}
-                    title={i18nService.t('copyToClipboard')}
-                    className="min-w-0 break-all text-right text-sm text-secondary bg-transparent border-none appearance-none p-0 m-0 cursor-pointer focus:outline-none"
-                  >
-                    {ABOUT_CONTACT_EMAIL}
-                  </button>
-                  {emailCopied && (
-                    <span className="text-[11px] leading-4 text-emerald-600 dark:text-emerald-400">
-                      {i18nService.t('copied')}
-                    </span>
-                  )}
-                </div>
-              </div>
-              <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3 border-b border-border">
-                <span className="shrink-0 text-sm text-foreground">{i18nService.t('aboutUserCommunity')}</span>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleOpenUserCommunity();
-                  }}
-                  className="min-w-0 break-all text-right text-sm text-secondary hover:text-primary dark:hover:text-primary bg-transparent border-none appearance-none px-1.5 py-0.5 -mx-1.5 -my-0.5 rounded-md cursor-pointer focus:outline-none hover:bg-surface-raised transition-colors"
-                >
-                  {ABOUT_USER_COMMUNITY_URL}
-                </button>
-              </div>
-              <div className={`flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3${testModeUnlocked ? ' border-b border-border' : ''}`}>
-                <span className="shrink-0 text-sm text-foreground">{i18nService.t('aboutUserManual')}</span>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleOpenUserManual();
-                  }}
-                  className="min-w-0 break-all text-right text-sm text-secondary hover:text-primary dark:hover:text-primary bg-transparent border-none appearance-none px-1.5 py-0.5 -mx-1.5 -my-0.5 rounded-md cursor-pointer focus:outline-none hover:bg-surface-raised transition-colors"
-                >
-                  {ABOUT_USER_MANUAL_URL}
-                </button>
-              </div>
-              {testModeUnlocked && (
-                <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3">
-                  <span className="shrink-0 text-sm text-foreground">{i18nService.t('testMode')}</span>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={testMode}
-                    onClick={() => setTestMode((prev) => !prev)}
-                    className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
-                      testMode ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'
-                    }`}
-                  >
-                    <span
-                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                        testMode ? 'translate-x-6' : 'translate-x-1'
-                      }`}
-                    />
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* Footer */}
-            <div className="mt-auto w-full pt-14 pb-2 flex flex-col items-center">
-              <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-2 text-sm text-secondary">
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleOpenServiceTerms();
-                  }}
-                  className="bg-transparent border-none appearance-none px-1.5 py-0.5 -mx-1.5 -my-0.5 rounded-md cursor-pointer hover:text-primary dark:hover:text-primary transition-colors"
-                >
-                  {i18nService.t('aboutServiceTerms')}
-                </button>
-                <span className="text-xs opacity-40">|</span>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void handleExportLogs();
-                  }}
-                  disabled={isExportingLogs}
-                  className="bg-transparent border-none appearance-none px-1.5 py-0.5 -mx-1.5 -my-0.5 rounded-md cursor-pointer hover:text-primary dark:hover:text-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {isExportingLogs ? i18nService.t('aboutExportingLogs') : i18nService.t('aboutExportLogs')}
-                </button>
-              </div>
-
-              <p className="mt-5 text-center text-xs text-secondary">
-                {i18nService.t('copyrightHolder')}
-              </p>
-              <p className="mt-1 text-center text-xs text-secondary">
-                Copyright &copy; {new Date().getFullYear()} NetEase Youdao. All Rights Reserved.
-              </p>
-            </div>
+            <h3 className="text-lg font-semibold text-foreground">LfClaw</h3>
+            <span className="mt-1 text-xs text-secondary">v{appVersion}</span>
           </div>
         );
 
