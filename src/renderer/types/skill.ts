@@ -11,6 +11,7 @@ export interface Skill {
   skillPath: string;      // Absolute path to SKILL.md
   version?: string;       // Skill version from SKILL.md frontmatter
   enterpriseAllowed?: boolean; // Whether this skill is granted by enterprise policy
+  enterpriseManaged?: boolean; // Whether this skill was installed from the enterprise server
 }
 
 export type LocalizedText = { en: string; zh: string };

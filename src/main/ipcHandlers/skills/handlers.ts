@@ -3,12 +3,13 @@ import fs from 'fs';
 import path from 'path';
 
 import { updatePluginSkillIdsFromReport } from '../../skills';
-import type { SkillManager } from '../../skills/skillManager';
+import type { SkillManager, SkillRecord } from '../../skills/skillManager';
 
 export interface SkillHandlerDeps {
   getSkillManager: () => SkillManager;
   getSkillStoreUrl: () => string;
   isSkillAllowed?: (skillId: string) => boolean;
+  isEnterpriseManagedSkill?: (skillId: string) => boolean;
   getOpenClawRuntimeAdapter: () => {
     connectGatewayIfNeeded: () => Promise<void>;
     getGatewayClient: () => {
@@ -22,17 +23,25 @@ export interface SkillHandlerDeps {
 }
 
 export function registerSkillHandlers(deps: SkillHandlerDeps): void {
-  const { getSkillManager, getSkillStoreUrl, getOpenClawRuntimeAdapter, isSkillAllowed } = deps;
+  const {
+    getSkillManager,
+    getSkillStoreUrl,
+    getOpenClawRuntimeAdapter,
+    isSkillAllowed,
+    isEnterpriseManagedSkill,
+  } = deps;
+
+  const decorateSkills = (skills: SkillRecord[]) => (
+    skills.map(skill => ({
+      ...skill,
+      enterpriseAllowed: isSkillAllowed ? isSkillAllowed(skill.id) : true,
+      enterpriseManaged: isEnterpriseManagedSkill ? isEnterpriseManagedSkill(skill.id) : false,
+    }))
+  );
 
   ipcMain.handle('skills:list', () => {
     try {
-      const skills = getSkillManager()
-        .listSkills()
-        .map(skill => ({
-          ...skill,
-          enterpriseAllowed: isSkillAllowed ? isSkillAllowed(skill.id) : true,
-        }))
-        .filter(skill => skill.enterpriseAllowed || !isSkillAllowed);
+      const skills = decorateSkills(getSkillManager().listSkills());
       return { success: true, skills };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to load skills' };
@@ -44,7 +53,7 @@ export function registerSkillHandlers(deps: SkillHandlerDeps): void {
       if (options.enabled && isSkillAllowed && !isSkillAllowed(options.id)) {
         return { success: false, error: 'This skill is not enabled for the current enterprise activation.' };
       }
-      const skills = getSkillManager().setSkillEnabled(options.id, options.enabled);
+      const skills = decorateSkills(getSkillManager().setSkillEnabled(options.id, options.enabled));
       // Best-effort sync to OpenClaw
       try {
         const adapter = getOpenClawRuntimeAdapter();
@@ -79,7 +88,7 @@ export function registerSkillHandlers(deps: SkillHandlerDeps): void {
         }
       } catch { /* best-effort */ }
 
-      const skills = await getSkillManager().deleteSkill(id);
+      const skills = decorateSkills(await getSkillManager().deleteSkill(id));
 
       // Also remove from OpenClaw workspace so the skill won't reappear on next sync
       if (openclawSourceDir && fs.existsSync(openclawSourceDir)) {
@@ -99,11 +108,17 @@ export function registerSkillHandlers(deps: SkillHandlerDeps): void {
   });
 
   ipcMain.handle('skills:download', async (_event, source: string) => {
-    return getSkillManager().downloadSkill(source);
+    const result = await getSkillManager().downloadSkill(source);
+    return result.success && result.skills
+      ? { ...result, skills: decorateSkills(result.skills) }
+      : result;
   });
 
   ipcMain.handle('skills:upgrade', async (_event, skillId: string, downloadUrl: string) => {
-    return getSkillManager().upgradeSkill(skillId, downloadUrl);
+    const result = await getSkillManager().upgradeSkill(skillId, downloadUrl);
+    return result.success && result.skills
+      ? { ...result, skills: decorateSkills(result.skills) }
+      : result;
   });
 
   ipcMain.handle('skills:confirmInstall', async (_event, pendingId: string, action: string) => {
@@ -111,10 +126,13 @@ export function registerSkillHandlers(deps: SkillHandlerDeps): void {
     if (!validActions.includes(action)) {
       return { success: false, error: 'Invalid action' };
     }
-    return getSkillManager().confirmPendingInstall(
+    const result = getSkillManager().confirmPendingInstall(
       pendingId,
       action as 'install' | 'installDisabled' | 'cancel'
     );
+    return result.success && result.skills
+      ? { ...result, skills: decorateSkills(result.skills) }
+      : result;
   });
 
   ipcMain.handle('skills:getRoot', () => {

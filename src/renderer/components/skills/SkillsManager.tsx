@@ -229,12 +229,12 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
   }, [skills, skillSearchQuery]);
 
   const filteredInstalledSkills = useMemo(
-    () => filteredSkills.filter(skill => skill.enterpriseAllowed !== true),
+    () => filteredSkills.filter(skill => skill.enterpriseManaged !== true),
     [filteredSkills],
   );
 
   const filteredEnterpriseSkills = useMemo(
-    () => filteredSkills.filter(skill => skill.enterpriseAllowed === true),
+    () => filteredSkills.filter(skill => skill.enterpriseManaged === true),
     [filteredSkills],
   );
 

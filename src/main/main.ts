@@ -1842,7 +1842,13 @@ const getOpenClawConfigSync = (): OpenClawConfigSync => {
       getSkillsList: () =>
         getSkillManager()
           .listSkills()
-          .map(s => ({ id: s.id, enabled: s.enabled })),
+          .map(s => ({
+            id: s.id,
+            enabled: s.enabled && (
+              !getLfClawEnterpriseAccess().getCurrentAccess()
+              || getLfClawEnterpriseAccess().isSkillAllowed(s.id)
+            ),
+          })),
       getTelegramInstances: () => {
         try {
           return getIMGatewayManager().getIMStore().getTelegramInstances();
@@ -3474,13 +3480,22 @@ const syncEnterpriseMcpServersToLocalStore = (access: EnterpriseCurrentAccess | 
 };
 
 const ENTERPRISE_INSTALLED_SKILLS_KEY = 'lfclaw_enterprise_installed_skills';
+type EnterpriseInstalledSkillsMap = Record<string, { packageSha256?: string; packageFileName?: string; installedAt?: string }>;
+
+const getEnterpriseInstalledSkillsMap = (): EnterpriseInstalledSkillsMap => (
+  getStore().get<EnterpriseInstalledSkillsMap>(ENTERPRISE_INSTALLED_SKILLS_KEY) ?? {}
+);
+
+const isEnterpriseManagedSkill = (skillId: string): boolean => (
+  Object.prototype.hasOwnProperty.call(getEnterpriseInstalledSkillsMap(), skillId)
+);
 
 const syncEnterpriseSkillsToLocalStore = async (access: EnterpriseCurrentAccess | null): Promise<void> => {
   const skills = access?.policy.skills ?? [];
   const store = getStore();
   const skillManagerInstance = getSkillManager();
   const enterpriseInstalled = {
-    ...(store.get<Record<string, { packageSha256?: string; packageFileName?: string; installedAt?: string }>>(ENTERPRISE_INSTALLED_SKILLS_KEY) ?? {}),
+    ...getEnterpriseInstalledSkillsMap(),
   };
   let installedIds = new Set(skillManagerInstance.listSkills().map(skill => skill.id));
   const allowedIds = new Set(skills.map(skill => skill.id).filter(Boolean));
@@ -6185,6 +6200,7 @@ if (!gotTheLock) {
     getSkillManager,
     getSkillStoreUrl,
     isSkillAllowed: skillId => getLfClawEnterpriseAccess().isSkillAllowed(skillId),
+    isEnterpriseManagedSkill,
     getOpenClawRuntimeAdapter: () => openClawRuntimeAdapter,
   });
 
