@@ -10,6 +10,7 @@ export interface Skill {
   prompt: string;         // SKILL.md body for management; do not inline into Cowork prompts
   skillPath: string;      // Absolute path to SKILL.md
   version?: string;       // Skill version from SKILL.md frontmatter
+  enterpriseAllowed?: boolean; // Whether this skill is granted by enterprise policy
 }
 
 export type LocalizedText = { en: string; zh: string };

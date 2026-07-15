@@ -46,6 +46,8 @@ type UpdateApiResponse = {
 export const INSTALLATION_UUID_KEY = 'installation_uuid';
 const APP_UPDATE_TEST_CURRENT_VERSION_ENV = 'LOBSTERAI_UPDATE_CURRENT_VERSION';
 export const APP_UPDATE_READY_FILE_KEY_PREFIX = 'app_update_ready_file';
+const ENTERPRISE_ACCESS_KEY = 'lfclaw_enterprise_access';
+const ENTERPRISE_SERVER_URL_KEY = 'lfclaw_enterprise_server_url';
 
 type StoredReadyFile = {
   version: string;
@@ -477,7 +479,7 @@ export class AppUpdateCoordinator {
     manual: boolean,
     userId?: string | null,
   ): Promise<AppUpdateInfo | null> {
-    const baseUrl = manual ? getManualUpdateCheckUrl() : getUpdateCheckUrl();
+    const baseUrl = this.getEnterpriseUpdateCheckUrl(manual) ?? (manual ? getManualUpdateCheckUrl() : getUpdateCheckUrl());
     const qs = this.getUpdateQueryString(userId, currentVersion);
     const url = qs ? `${baseUrl}?${qs}` : baseUrl;
     console.log(`[AppUpdate] checking update, currentVersion=${currentVersion}, url=${url}`);
@@ -525,6 +527,21 @@ export class AppUpdateCoordinator {
       `[AppUpdate] update available: ${currentVersion} -> ${latestVersion}, downloadUrl=${result.url}`,
     );
     return result;
+  }
+
+  private getEnterpriseUpdateCheckUrl(manual: boolean): string | null {
+    const access = this.store.get<{ serverUrl?: string }>(ENTERPRISE_ACCESS_KEY);
+    const configuredServerUrl = access?.serverUrl || this.store.get<string>(ENTERPRISE_SERVER_URL_KEY);
+    if (!configuredServerUrl || typeof configuredServerUrl !== 'string') return null;
+    const normalized = configuredServerUrl.trim().replace(/\/+$/, '');
+    if (!normalized) return null;
+    try {
+      const url = new URL(normalized);
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+      return `${url.toString().replace(/\/+$/, '')}${manual ? '/api/enterprise/update-manual' : '/api/enterprise/update'}`;
+    } catch {
+      return null;
+    }
   }
 
   private getPlatformDownloadUrl(

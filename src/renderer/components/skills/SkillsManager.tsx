@@ -32,7 +32,7 @@ import {
 } from './analytics';
 import SkillSecurityReport from './SkillSecurityReport';
 
-type SkillTab = 'installed' | 'marketplace';
+type SkillTab = 'installed' | 'enterprise' | 'marketplace';
 type ImportSourceType = 'github' | 'clawhub';
 type DirectImportSource = 'zip' | 'folder' | 'remote';
 
@@ -228,6 +228,16 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
     });
   }, [skills, skillSearchQuery]);
 
+  const filteredInstalledSkills = useMemo(
+    () => filteredSkills.filter(skill => skill.enterpriseAllowed !== true),
+    [filteredSkills],
+  );
+
+  const filteredEnterpriseSkills = useMemo(
+    () => filteredSkills.filter(skill => skill.enterpriseAllowed === true),
+    [filteredSkills],
+  );
+
   const filteredMarketplaceSkills = useMemo(() => {
     const query = skillSearchQuery.trim().replace(/\s+/g, ' ').toLowerCase();
     let results = marketplaceSkills;
@@ -248,7 +258,9 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
     if (!query) return undefined;
     const resultCount = activeTab === 'marketplace'
       ? filteredMarketplaceSkills.length
-      : filteredSkills.length;
+      : activeTab === 'enterprise'
+        ? filteredEnterpriseSkills.length
+        : filteredInstalledSkills.length;
     const timer = window.setTimeout(() => {
       reportSkillAction('search', {
         source: 'skills_manager',
@@ -262,8 +274,9 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
   }, [
     activeMarketTag,
     activeTab,
+    filteredEnterpriseSkills.length,
+    filteredInstalledSkills.length,
     filteredMarketplaceSkills.length,
-    filteredSkills.length,
     skillSearchQuery,
   ]);
 
@@ -819,6 +832,10 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
     }
   };
 
+  const visibleLocalSkills = activeTab === 'enterprise'
+    ? filteredEnterpriseSkills
+    : filteredInstalledSkills;
+
   return (
     <div className="space-y-4">
       <div>
@@ -858,7 +875,9 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                   searchKeywordLength: skillSearchQuery.trim().length,
                   resultCount: activeTab === 'marketplace'
                     ? filteredMarketplaceSkills.length
-                    : filteredSkills.length,
+                    : activeTab === 'enterprise'
+                      ? filteredEnterpriseSkills.length
+                      : filteredInstalledSkills.length,
                 });
                 setSkillSearchQuery('');
               }}
@@ -966,13 +985,39 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
             }`}
           >
             {i18nService.t('skillInstalled')}
-            {skills.length > 0 && (
+            {filteredInstalledSkills.length > 0 && (
               <span className="ml-1.5 rounded-full bg-surface-raised px-1.5 py-0.5 text-[10px] font-medium text-secondary">
-                {skills.length}
+                {filteredInstalledSkills.length}
               </span>
             )}
             <div className={`absolute bottom-[-1px] left-0 right-0 h-0.5 rounded-full transition-colors ${
               activeTab === 'installed' ? 'bg-primary' : 'bg-transparent'
+            }`} />
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              reportSkillAction('tab_change', {
+                source: 'skills_manager',
+                activeTab,
+                targetTab: 'enterprise',
+              });
+              setActiveTab('enterprise');
+            }}
+            className={`relative px-2.5 pb-2.5 pt-0.5 text-[13px] font-semibold transition-colors ${
+              activeTab === 'enterprise'
+                ? 'text-foreground'
+                : 'text-secondary hover:text-foreground'
+            }`}
+          >
+            企业技能
+            {filteredEnterpriseSkills.length > 0 && (
+              <span className="ml-1.5 rounded-full bg-surface-raised px-1.5 py-0.5 text-[10px] font-medium text-secondary">
+                {filteredEnterpriseSkills.length}
+              </span>
+            )}
+            <div className={`absolute bottom-[-1px] left-0 right-0 h-0.5 rounded-full transition-colors ${
+              activeTab === 'enterprise' ? 'bg-primary' : 'bg-transparent'
             }`} />
           </button>
           <button
@@ -1062,20 +1107,20 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
       </div>
 
       <div>
-      {activeTab === 'installed' && (
+      {activeTab !== 'marketplace' && (
       <>
       <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-3">
-        {filteredSkills.length === 0 ? (
+        {visibleLocalSkills.length === 0 ? (
           <div className="col-span-full text-center py-8 text-sm text-secondary">
             {i18nService.t('noSkillsAvailable')}
           </div>
         ) : (
-          filteredSkills.map((skill) => {
+          visibleLocalSkills.map((skill) => {
             const openInstalledDetail = () => {
               reportSkillAction('open_installed_detail', {
                 source: 'skills_manager',
                 activeTab,
-                resultCount: filteredSkills.length,
+                resultCount: visibleLocalSkills.length,
                 ...getInstalledSkillAnalyticsParams(
                   skill,
                   marketplaceSkills.find(item => item.id === skill.id),

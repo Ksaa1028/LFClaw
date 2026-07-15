@@ -3473,15 +3473,67 @@ const syncEnterpriseMcpServersToLocalStore = (access: EnterpriseCurrentAccess | 
   });
 };
 
+const ENTERPRISE_INSTALLED_SKILLS_KEY = 'lfclaw_enterprise_installed_skills';
+
 const syncEnterpriseSkillsToLocalStore = async (access: EnterpriseCurrentAccess | null): Promise<void> => {
   const skills = access?.policy.skills ?? [];
-  if (!access || skills.length === 0) return;
-
+  const store = getStore();
   const skillManagerInstance = getSkillManager();
-  const installedIds = new Set(skillManagerInstance.listSkills().map(skill => skill.id));
+  const enterpriseInstalled = {
+    ...(store.get<Record<string, { packageSha256?: string; packageFileName?: string; installedAt?: string }>>(ENTERPRISE_INSTALLED_SKILLS_KEY) ?? {}),
+  };
+  let installedIds = new Set(skillManagerInstance.listSkills().map(skill => skill.id));
+  const allowedIds = new Set(skills.map(skill => skill.id).filter(Boolean));
+
+  for (const installedId of Object.keys(enterpriseInstalled)) {
+    if (access && allowedIds.has(installedId)) continue;
+    try {
+      await skillManagerInstance.deleteSkill(installedId);
+      console.log(`[Enterprise] removed enterprise skill "${installedId}" after authorization changed`);
+    } catch (error) {
+      console.warn(`[Enterprise] failed to remove enterprise skill "${installedId}":`, error);
+      try {
+        skillManagerInstance.setSkillEnabled(installedId, false);
+      } catch (disableError) {
+        console.warn(`[Enterprise] failed to disable enterprise skill "${installedId}":`, disableError);
+      }
+    }
+    delete enterpriseInstalled[installedId];
+  }
+
+  if (!access || skills.length === 0) {
+    store.set(ENTERPRISE_INSTALLED_SKILLS_KEY, enterpriseInstalled);
+    return;
+  }
 
   for (const skill of skills) {
-    if (!skill.id || installedIds.has(skill.id) || !skill.downloadUrl) continue;
+    if (!skill.id || !skill.downloadUrl) continue;
+    const tracked = enterpriseInstalled[skill.id];
+    const packageChanged = Boolean(
+      skill.packageSha256
+      && tracked?.packageSha256
+      && tracked.packageSha256 !== skill.packageSha256,
+    );
+    if (installedIds.has(skill.id) && !packageChanged) {
+      if (!tracked) {
+        enterpriseInstalled[skill.id] = {
+          packageSha256: skill.packageSha256,
+          packageFileName: skill.packageFileName,
+          installedAt: new Date().toISOString(),
+        };
+      }
+      continue;
+    }
+
+    if (installedIds.has(skill.id) && packageChanged) {
+      try {
+        await skillManagerInstance.deleteSkill(skill.id);
+        installedIds = new Set(skillManagerInstance.listSkills().map(item => item.id));
+      } catch (error) {
+        console.warn(`[Enterprise] failed to replace enterprise skill "${skill.id}":`, error);
+        continue;
+      }
+    }
 
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lfclaw-enterprise-skill-'));
     const zipPath = path.join(tempDir, skill.packageFileName || `${skill.id}.zip`);
@@ -3505,6 +3557,11 @@ const syncEnterpriseSkillsToLocalStore = async (access: EnterpriseCurrentAccess 
         throw new Error(result.error || 'install failed');
       }
       installedIds.add(skill.id);
+      enterpriseInstalled[skill.id] = {
+        packageSha256: skill.packageSha256,
+        packageFileName: skill.packageFileName,
+        installedAt: new Date().toISOString(),
+      };
       console.log(`[Enterprise] installed enterprise skill "${skill.id}"`);
     } catch (error) {
       console.warn(`[Enterprise] failed to install enterprise skill "${skill.id}":`, error);
@@ -3512,6 +3569,8 @@ const syncEnterpriseSkillsToLocalStore = async (access: EnterpriseCurrentAccess 
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   }
+
+  store.set(ENTERPRISE_INSTALLED_SKILLS_KEY, enterpriseInstalled);
 };
 
 const resolveEnterpriseModelRef = (
