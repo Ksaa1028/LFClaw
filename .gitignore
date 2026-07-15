@@ -48,6 +48,13 @@ nul
 
 sandbox/
 
+# LfClaw enterprise runtime data
+enterprise-server/enterprise-data.json
+enterprise-server/*.log
+enterprise-server/storage/
+tmp-enterprise-skill.zip
+vite.log
+
 # Accidentally committed git hook files outside git-hooks/
 **/**/post-commit
 openspec/

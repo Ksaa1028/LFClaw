@@ -1,0 +1,593 @@
+import crypto from 'crypto';
+import fs from 'fs';
+import http from 'http';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const HOST = process.env.LFCLAW_ENTERPRISE_HOST || '127.0.0.1';
+const PORT = Number(process.env.LFCLAW_ENTERPRISE_PORT || 8787);
+const ADMIN_TOKEN = process.env.LFCLAW_ADMIN_TOKEN || 'lfclaw-admin';
+const ROOT_DIR = process.platform === 'win32' ? __dirname : '/opt/LfClaw';
+const DATA_DIR = process.env.LFCLAW_ENTERPRISE_DATA_DIR || path.join(ROOT_DIR, 'data');
+const DATA_FILE = process.env.LFCLAW_ENTERPRISE_DATA || path.join(DATA_DIR, 'enterprise-data.json');
+const STORAGE_DIR = process.env.LFCLAW_ENTERPRISE_STORAGE || path.join(ROOT_DIR, 'storage');
+const SKILL_DIR = path.join(STORAGE_DIR, 'skills');
+
+const nowIso = () => new Date().toISOString();
+const id = prefix => `${prefix}_${crypto.randomBytes(6).toString('hex')}`;
+const randomHex = len => crypto.randomBytes(len).toString('hex');
+const toNumber = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+const list = value => Array.isArray(value) ? [...new Set(value.map(v => String(v).trim()).filter(Boolean))] : [];
+const json = (res, status, payload) => {
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'access-control-allow-origin': '*',
+    'access-control-allow-headers': 'content-type,authorization,x-admin-token',
+    'access-control-allow-methods': 'GET,POST,PATCH,DELETE,OPTIONS',
+  });
+  res.end(JSON.stringify(payload));
+};
+const ok = (res, data = {}) => json(res, 200, { code: 0, data });
+const fail = (res, status, message) => json(res, status, { code: status, message });
+
+const defaultData = () => ({
+  enterpriseName: 'LfClaw Enterprise',
+  modelProviders: [],
+  mcpServers: [],
+  skills: [],
+  employees: [],
+  sessions: {},
+  usageEvents: [],
+});
+
+const ensureData = data => ({
+  ...defaultData(),
+  ...data,
+  modelProviders: Array.isArray(data.modelProviders) ? data.modelProviders : Array.isArray(data.models) ? data.models : [],
+  mcpServers: Array.isArray(data.mcpServers) ? data.mcpServers : [],
+  skills: Array.isArray(data.skills) ? data.skills : [],
+  employees: Array.isArray(data.employees) ? data.employees : Array.isArray(data.activations) ? data.activations : [],
+  sessions: data.sessions && typeof data.sessions === 'object' ? data.sessions : {},
+  usageEvents: Array.isArray(data.usageEvents) ? data.usageEvents : [],
+});
+
+const readData = () => {
+  try {
+    if (!fs.existsSync(DATA_FILE)) return defaultData();
+    return ensureData(JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')));
+  } catch {
+    return defaultData();
+  }
+};
+
+const writeData = data => {
+  fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
+  fs.writeFileSync(DATA_FILE, JSON.stringify(ensureData(data), null, 2), 'utf8');
+};
+
+const readBody = async req => {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  const text = Buffer.concat(chunks).toString('utf8');
+  return text ? JSON.parse(text) : {};
+};
+
+const readRawBody = async req => {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  return Buffer.concat(chunks);
+};
+
+const parseJson = value => {
+  if (!value) return {};
+  if (typeof value === 'object') return value;
+  try {
+    return JSON.parse(String(value));
+  } catch {
+    return {};
+  }
+};
+
+const parseMultipart = (buffer, contentType) => {
+  const boundary = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i)?.[1] || contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i)?.[2];
+  if (!boundary) throw new Error('缺少上传边界。');
+  const raw = buffer.toString('binary');
+  const parts = raw.split(`--${boundary}`).slice(1, -1);
+  const fields = {};
+  const files = {};
+  for (const part of parts) {
+    const trimmed = part.replace(/^\r\n/, '').replace(/\r\n$/, '');
+    const sep = trimmed.indexOf('\r\n\r\n');
+    if (sep < 0) continue;
+    const header = trimmed.slice(0, sep);
+    const body = Buffer.from(trimmed.slice(sep + 4), 'binary');
+    const name = header.match(/name="([^"]+)"/)?.[1];
+    if (!name) continue;
+    const filename = header.match(/filename="([^"]*)"/)?.[1];
+    if (filename) files[name] = { filename: path.basename(filename), content: body };
+    else fields[name] = body.toString('utf8');
+  }
+  return { fields, files };
+};
+
+const PINYIN_MAP = {
+  张: 'zhang',
+  三: 'san',
+  李: 'li',
+  四: 'si',
+  王: 'wang',
+  赵: 'zhao',
+  刘: 'liu',
+  陈: 'chen',
+  杨: 'yang',
+  黄: 'huang',
+  周: 'zhou',
+  吴: 'wu',
+  徐: 'xu',
+  孙: 'sun',
+  胡: 'hu',
+  朱: 'zhu',
+  高: 'gao',
+  林: 'lin',
+  何: 'he',
+  郭: 'guo',
+  马: 'ma',
+  罗: 'luo',
+  梁: 'liang',
+  宋: 'song',
+  郑: 'zheng',
+  谢: 'xie',
+  韩: 'han',
+  唐: 'tang',
+  佟: 'tong',
+  凯: 'kai',
+  俊: 'jun',
+  峰: 'feng',
+};
+
+const pinyinSlug = name => {
+  const parts = [];
+  for (const char of String(name || '').trim()) {
+    if (/[a-z0-9]/i.test(char)) parts.push(char.toLowerCase());
+    else if (PINYIN_MAP[char]) parts.push(PINYIN_MAP[char]);
+  }
+  return parts.join('') || `user${randomHex(2)}`;
+};
+
+const makeEmployeeId = name => `u_${pinyinSlug(name)}_${randomHex(2)}`;
+const makeActivationCode = name => `LFCLAW-${pinyinSlug(name).toUpperCase()}-${randomHex(3).toUpperCase()}`;
+
+const normalizeModel = (body, existing = {}) => {
+  const modelId = String(body.modelId || body.id || existing.id || '').trim();
+  const rawApiKey = body.apiKey === undefined ? undefined : String(body.apiKey || '').trim();
+  const apiKey = rawApiKey && !/^\*+$/.test(rawApiKey) ? rawApiKey : String(existing.apiKey || '').trim();
+  const billing = {
+    ...(existing.billing || {}),
+    currency: String(body.currency || existing.billing?.currency || 'USD'),
+    inputPricePerMillionTokens: toNumber(body.inputPricePerMillionTokens, toNumber(existing.billing?.inputPricePerMillionTokens)),
+    outputPricePerMillionTokens: toNumber(body.outputPricePerMillionTokens, toNumber(existing.billing?.outputPricePerMillionTokens)),
+    cacheWritePricePerMillionTokens: toNumber(body.cacheWritePricePerMillionTokens, toNumber(existing.billing?.cacheWritePricePerMillionTokens)),
+    cacheReadPricePerMillionTokens: toNumber(body.cacheReadPricePerMillionTokens, toNumber(existing.billing?.cacheReadPricePerMillionTokens)),
+    creditsPerCurrencyUnit: toNumber(body.creditsPerCurrencyUnit, toNumber(existing.billing?.creditsPerCurrencyUnit, 10)),
+    fixedCreditsPerCall: toNumber(body.fixedCreditsPerCall, toNumber(existing.billing?.fixedCreditsPerCall)),
+    minimumCreditsPerCall: toNumber(body.minimumCreditsPerCall, toNumber(existing.billing?.minimumCreditsPerCall, 1)),
+    imagePriceNote: String(body.imagePriceNote || existing.billing?.imagePriceNote || ''),
+    audioPriceNote: String(body.audioPriceNote || existing.billing?.audioPriceNote || ''),
+    videoPriceNote: String(body.videoPriceNote || existing.billing?.videoPriceNote || ''),
+    sourceUrl: String(body.priceSourceUrl || existing.billing?.sourceUrl || ''),
+  };
+  const item = {
+    ...existing,
+    id: modelId,
+    name: String(body.modelName || body.name || existing.name || modelId).trim(),
+    provider: 'custom',
+    apiFormat: ['openai', 'anthropic', 'gemini'].includes(body.apiFormat) ? body.apiFormat : existing.apiFormat || 'openai',
+    baseUrl: String(body.baseUrl || existing.baseUrl || '').trim(),
+    apiKey,
+    models: [{ id: modelId, name: String(body.modelName || body.name || modelId).trim() }],
+    billing,
+    enabled: body.enabled !== undefined ? body.enabled !== false : existing.enabled !== false,
+    createdAt: existing.createdAt || nowIso(),
+    updatedAt: nowIso(),
+  };
+  if (!item.id) throw new Error('模型 ID 必填。');
+  if (!item.baseUrl) throw new Error('模型必须配置 Base URL。');
+  if (!item.apiKey) throw new Error('模型必须配置 API Key。');
+  return item;
+};
+
+const normalizeMcp = (body, existing = {}) => {
+  const transportType = ['stdio', 'sse', 'http', 'streamable-http'].includes(body.transportType) ? body.transportType : existing.transportType || 'sse';
+  const item = {
+    ...existing,
+    id: String(body.id || existing.id || '').trim(),
+    name: String(body.name || existing.name || body.id || '').trim(),
+    description: String(body.description ?? existing.description ?? ''),
+    transportType,
+    url: String(body.url || existing.url || '').trim(),
+    headers: parseJson(body.headers ?? existing.headers),
+    command: String(body.command || existing.command || '').trim(),
+    args: list(body.args ?? existing.args),
+    env: parseJson(body.env ?? existing.env),
+    enabled: body.enabled !== undefined ? body.enabled !== false : existing.enabled !== false,
+    createdAt: existing.createdAt || nowIso(),
+    updatedAt: nowIso(),
+  };
+  if (!item.id) throw new Error('MCP ID 必填。');
+  if (item.transportType === 'stdio' && !item.command) throw new Error('stdio MCP 必须配置命令。');
+  if (item.transportType !== 'stdio' && !item.url) throw new Error('远程 MCP 必须配置 URL。');
+  return item;
+};
+
+const normalizeSkill = (body, existing = {}) => ({
+  ...existing,
+  id: String(body.id || existing.id || '').trim(),
+  name: String(body.name || existing.name || body.id || '').trim(),
+  description: String(body.description ?? existing.description ?? ''),
+  version: String(body.version ?? existing.version ?? '1.0.0'),
+  packageFileName: String(body.packageFileName ?? existing.packageFileName ?? ''),
+  packagePath: String(body.packagePath ?? existing.packagePath ?? ''),
+  packageSha256: String(body.packageSha256 ?? existing.packageSha256 ?? ''),
+  packageSize: toNumber(body.packageSize, toNumber(existing.packageSize)),
+  enabled: body.enabled !== undefined ? body.enabled !== false : existing.enabled !== false,
+  createdAt: existing.createdAt || nowIso(),
+  updatedAt: nowIso(),
+});
+
+const employeeView = employee => ({
+  ...employee,
+  creditsLimit: toNumber(employee.creditsLimit),
+  creditsUsed: toNumber(employee.creditsUsed),
+  allowedModelProviderIds: list(employee.allowedModelProviderIds ?? employee.allowedModelIds),
+  allowedMcpServerIds: list(employee.allowedMcpServerIds),
+  allowedSkillIds: list(employee.allowedSkillIds),
+});
+
+const redactModel = provider => ({ ...provider, apiKey: provider.apiKey ? '********' : '' });
+const adminState = data => ({
+  enterpriseName: data.enterpriseName,
+  modelProviders: data.modelProviders.map(redactModel),
+  models: data.modelProviders.map(redactModel),
+  mcpServers: data.mcpServers,
+  skills: data.skills.map(skill => ({ ...skill, packagePath: undefined })),
+  employees: data.employees.map(employeeView),
+  usageEvents: data.usageEvents.slice(-300),
+});
+
+const requestOrigin = req => `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers['x-forwarded-host'] || req.headers.host || `${HOST}:${PORT}`}`;
+const selectByIds = (items, ids) => {
+  const allowed = new Set(list(ids));
+  if (allowed.size === 0) return [];
+  return items.filter(item => item.enabled !== false && allowed.has(item.id));
+};
+
+const clientPayload = (data, employee, accessToken, req) => {
+  const modelProviders = selectByIds(data.modelProviders, employee.allowedModelProviderIds ?? employee.allowedModelIds);
+  const mcpServers = selectByIds(data.mcpServers, employee.allowedMcpServerIds);
+  const skills = selectByIds(data.skills, employee.allowedSkillIds).map(skill => ({
+    ...skill,
+    downloadUrl: skill.packageFileName ? `${requestOrigin(req)}/api/enterprise/skills/${encodeURIComponent(skill.id)}/download` : '',
+  }));
+  return {
+    accessToken,
+    user: { userId: employee.employeeId, yid: employee.employeeId, nickname: employee.employeeName, avatarUrl: null, status: 1 },
+    quota: {
+      planName: 'LfClaw Enterprise',
+      subscriptionStatus: 'active',
+      creditsLimit: toNumber(employee.creditsLimit),
+      creditsUsed: toNumber(employee.creditsUsed),
+      creditsRemaining: Math.max(0, toNumber(employee.creditsLimit) - toNumber(employee.creditsUsed)),
+      hasPaidCredits: true,
+    },
+    policy: {
+      enterpriseName: data.enterpriseName || 'LfClaw Enterprise',
+      allowedModelIds: modelProviders.flatMap(provider => provider.models.map(model => model.id)),
+      allowedModelProviderIds: modelProviders.map(provider => provider.id),
+      allowedMcpServerIds: mcpServers.map(server => server.id),
+      allowedSkillIds: skills.map(skill => skill.id),
+      modelProviders,
+      mcpServers,
+      skills,
+      adminUrl: `${requestOrigin(req)}/admin`,
+    },
+  };
+};
+
+const calculateUsageCredits = (provider, body) => {
+  const billing = provider?.billing || {};
+  const creditsPerCurrencyUnit = toNumber(billing.creditsPerCurrencyUnit, 100);
+  const total = (
+    toNumber(body.inputTokens) * toNumber(billing.inputPricePerMillionTokens)
+    + toNumber(body.outputTokens) * toNumber(billing.outputPricePerMillionTokens)
+    + toNumber(body.cacheWriteTokens) * toNumber(billing.cacheWritePricePerMillionTokens)
+    + toNumber(body.cacheReadTokens) * toNumber(billing.cacheReadPricePerMillionTokens)
+  ) / 1_000_000 * creditsPerCurrencyUnit + toNumber(billing.fixedCreditsPerCall);
+  return Math.max(toNumber(billing.minimumCreditsPerCall), Number(total.toFixed(4)));
+};
+
+const adminHtml = () => String.raw`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LfClaw 企业管理</title>
+<style>
+:root{font-family:Inter,"Microsoft YaHei",Arial,sans-serif;color:#0b1833;background:#f4f7fb}body{margin:0}main{max-width:1320px;margin:0 auto;padding:28px}header{display:flex;justify-content:space-between;gap:16px;align-items:flex-end;margin-bottom:16px}h1{margin:0;font-size:28px}.hint{color:#66758a;margin:6px 0 0}.token{display:flex;gap:8px;align-items:end}.token input{width:260px}nav{display:flex;gap:8px;margin:16px 0;flex-wrap:wrap}button{border:0;border-radius:6px;padding:9px 13px;font-weight:750;cursor:pointer;background:#0b1833;color:white}button.secondary,nav button{background:#e9eef5;color:#0b1833}button.danger{background:#df2626}.active-tab{background:#0b1833!important;color:#fff!important}section{display:none;background:#fff;border:1px solid #dce3ec;border-radius:8px;padding:18px;box-shadow:0 10px 30px rgba(15,23,42,.04)}section.active{display:block}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.grid-3{grid-template-columns:repeat(3,1fr)}.grid-5{grid-template-columns:repeat(5,1fr)}label{font-size:13px;font-weight:650;color:#24324a}input,textarea,select{width:100%;box-sizing:border-box;border:1px solid #c8d2df;border-radius:6px;padding:9px 10px;font:inherit;background:#fff}textarea{min-height:72px}.multi-select{position:relative}.multi-trigger{width:100%;height:40px;border:1px solid #c8d2df;border-radius:6px;background:#fff;color:#0b1833;text-align:left;font-weight:650;display:flex;align-items:center;justify-content:space-between}.multi-trigger:after{content:"▾";color:#66758a}.multi-options{display:none;max-height:220px;overflow:auto;border:1px solid #c8d2df;border-radius:8px;background:#fff;box-shadow:0 8px 18px rgba(15,23,42,.08);padding:6px;margin-top:6px}.multi-select.open .multi-options{display:block}.multi-option{display:flex;align-items:center;gap:8px;padding:8px;border-radius:6px;font-size:13px;font-weight:500;cursor:pointer}.multi-option:hover{background:#f4f7fb}.multi-option input{width:auto}.multi-empty{padding:10px;color:#66758a}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.card{border:1px solid #dce3ec;border-radius:8px;padding:14px;background:#fbfcfe}.num{font-size:24px;font-weight:800}table{width:100%;border-collapse:collapse;font-size:13px;margin-top:14px}th,td{border-bottom:1px solid #e2e8f0;padding:10px;text-align:left;vertical-align:top}code{font-family:Consolas,monospace}.formula{margin:12px 0;padding:12px;border:1px solid #dce3ec;border-radius:8px;background:#fbfcfe;color:#24324a;font-size:13px;line-height:1.7}.edit-box{display:none;margin:14px 0;padding:14px;border:1px solid #cfd9e6;border-radius:8px;background:#fbfcfe}.pill{display:inline-block;background:#eef2f7;border-radius:999px;padding:3px 8px;margin:2px}@media(max-width:960px){.grid,.grid-3,.grid-5,.cards{grid-template-columns:1fr}header{display:block}.token{margin-top:12px}}
+</style></head><body><main>
+<header><div><h1>LfClaw 企业管理</h1><p class="hint">维护模型、MCP 服务和技能包，再给员工分配激活码、积分和能力。</p></div><div class="token"><label>管理员 Token<input id="token" type="password" placeholder="LFCLAW_ADMIN_TOKEN"></label><button class="secondary" id="refreshBtn">刷新</button></div></header>
+<nav><button data-tab="overview" class="active-tab">总览</button><button data-tab="employees">员工与激活码</button><button data-tab="models">模型配置</button><button data-tab="mcp">MCP 服务</button><button data-tab="skills">技能包</button><button data-tab="usage">用量监控</button></nav>
+<section id="overview" class="active"><div class="cards"><div class="card"><div class="hint">员工数</div><div class="num" id="statEmployees">0</div></div><div class="card"><div class="hint">模型配置</div><div class="num" id="statModels">0</div></div><div class="card"><div class="hint">调用次数</div><div class="num" id="statCalls">0</div></div><div class="card"><div class="hint">已用积分</div><div class="num" id="statCredits">0</div></div></div><table><thead><tr><th>员工</th><th>积分</th><th>授权</th><th>最近使用</th></tr></thead><tbody id="overviewRows"></tbody></table></section>
+<section id="employees"><div class="grid"><label>中文姓名<input id="employeeName" placeholder="张三"></label><label>员工 ID<input id="employeeId" placeholder="自动生成"></label><label>积分额度<input id="creditsLimit" type="number" value="1000"></label><label>备注<input id="notes"></label></div><div class="grid grid-3" style="margin-top:12px"><label>可用模型<div id="employeeModels" class="multi-select"></div></label><label>可用 MCP<div id="employeeMcps" class="multi-select"></div></label><label>可用技能<div id="employeeSkills" class="multi-select"></div></label></div><p class="hint">预览：<code id="employeePreview">输入中文姓名后自动生成员工 ID 与激活码前缀</code></p><div class="row"><button id="addEmployeeBtn">添加员工并生成激活码</button><button class="secondary" id="saveEmployeeBtn" style="display:none">保存员工授权</button><button class="secondary" id="cancelEmployeeBtn" style="display:none">取消编辑</button></div><table><thead><tr><th>状态</th><th>激活码</th><th>员工</th><th>积分/使用</th><th>授权</th><th>设备</th><th>操作</th></tr></thead><tbody id="employeeRows"></tbody></table></section>
+<section id="models"><div class="grid"><label>模型 ID<input id="modelId" placeholder="glm-5.2"></label><label>模型名称<input id="modelName" placeholder="智谱 GLM-5.2"></label><label>Base URL<input id="modelBaseUrl" placeholder="https://open.bigmodel.cn/api/paas/v4"></label><label>API Key<input id="modelApiKey" type="password" placeholder="sk-..."></label></div><div class="grid" style="margin-top:12px"><label>计价货币<select id="billingCurrency"><option value="USD">USD</option><option value="CNY">CNY</option></select></label><label>输入价格 / 100万token<input id="inputPricePerMillionTokens" type="number" step="0.000001" value="0"></label><label>输出价格 / 100万token<input id="outputPricePerMillionTokens" type="number" step="0.000001" value="0"></label><label>1货币单位=企业积分<input id="creditsPerCurrencyUnit" type="number" step="0.01" value="10"></label></div><div class="grid" style="margin-top:12px"><label>缓存写入 / 100万token<input id="cacheWritePricePerMillionTokens" type="number" step="0.000001" value="0"></label><label>缓存读取 / 100万token<input id="cacheReadPricePerMillionTokens" type="number" step="0.000001" value="0"></label><label>固定积分/次<input id="fixedCreditsPerCall" type="number" step="0.01" value="0"></label><label>最低扣费积分<input id="minimumCreditsPerCall" type="number" step="0.01" value="1"></label></div><div class="grid grid-3" style="margin-top:12px"><label>图片价格备注<input id="imagePriceNote"></label><label>语音价格备注<input id="audioPriceNote"></label><label>视频价格备注<input id="videoPriceNote"></label></div><label>官方价格来源 URL<input id="priceSourceUrl" placeholder="官网 pricing 页面 URL"></label><div class="formula"><b>积分计算公式：</b>积分=max(最低扣费积分, 固定积分/次 + ((输入token×输入价格 + 输出token×输出价格 + 缓存写入token×缓存写入价格 + 缓存读取token×缓存读取价格) / 1000000) × 积分换算比例)</div><div class="row"><button id="saveModelBtn">保存模型</button><button class="secondary" id="cancelModelBtn">取消编辑</button></div><table><thead><tr><th>模型 ID</th><th>名称</th><th>Base URL / 价格</th><th>Key</th><th>操作</th></tr></thead><tbody id="modelRows"></tbody></table></section>
+<section id="mcp"><div class="grid"><label>MCP ID<input id="mcpId" placeholder="qdrant-search"></label><label>名称<input id="mcpName"></label><label>类型<select id="mcpTransport"><option value="sse">SSE</option><option value="streamable-http">Streamable HTTP</option><option value="http">HTTP</option><option value="stdio">stdio</option></select></label><label>说明<input id="mcpDesc"></label></div><div class="grid" style="margin-top:12px"><label>服务 URL<input id="mcpUrl" placeholder="https://mcp.example.com/sse 或 /mcp"></label><label>Headers(JSON)<textarea id="mcpHeaders" placeholder='{"Authorization":"Bearer xxx"}'></textarea></label><label>命令(stdio)<input id="mcpCommand" placeholder="npx"></label><label>参数/环境变量<textarea id="mcpArgs" placeholder="参数每行一个；环境变量可后续补"></textarea></label></div><div class="row" style="margin-top:12px"><button id="saveMcpBtn">保存 MCP</button><button class="secondary" id="cancelMcpBtn">取消编辑</button></div><table><thead><tr><th>ID</th><th>名称</th><th>类型</th><th>连接</th><th>操作</th></tr></thead><tbody id="mcpRows"></tbody></table></section>
+<section id="skills"><div class="grid"><label>技能 ID<input id="skillId" placeholder="sales-report"></label><label>名称<input id="skillName"></label><label>版本<input id="skillVersion" value="1.0.0"></label><label>说明<input id="skillDesc"></label></div><div class="grid" style="margin-top:12px"><label>技能压缩包(.zip)<input id="skillZip" type="file" accept=".zip,application/zip"></label><div><p class="hint">上传后服务端保存 zip，客户端按员工权限下载。</p><button id="uploadSkillBtn">上传/保存技能包</button><button class="secondary" id="cancelSkillBtn">取消编辑</button></div></div><table><thead><tr><th>ID</th><th>名称</th><th>版本</th><th>包</th><th>操作</th></tr></thead><tbody id="skillRows"></tbody></table></section>
+<section id="usage"><div class="formula"><b>用量扣费说明：</b>客户端上报模型调用后，服务端按模型价格计算积分，并按天汇总展示。</div><div class="grid grid-5"><label>员工筛选<select id="usageEmployeeFilter"><option value="">全部员工</option></select></label><label>模型筛选<select id="usageModelFilter"><option value="">全部模型</option></select></label><div class="card"><div class="hint">调用次数</div><div class="num" id="usageCalls">0</div></div><div class="card"><div class="hint">消耗积分</div><div class="num" id="usageCredits">0</div></div><div class="card"><div class="hint">折算金额</div><div class="num" id="usageMoney">-</div></div></div><table><thead><tr><th>时间（天）</th><th>员工</th><th>模型</th><th>使用 token</th><th>积分</th><th>折算金额</th></tr></thead><tbody id="usageRows"></tbody></table></section>
+</main><script>
+var state={modelProviders:[],mcpServers:[],skills:[],employees:[],usageEvents:[]};var editingEmployee='';var $=function(id){return document.getElementById(id);};var esc=function(v){return String(v==null?'':v).replace(/[&<>"']/g,function(s){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s];});};var headers=function(json){localStorage.setItem('lfclaw_admin_token',$('token').value);var h={authorization:'Bearer '+$('token').value};if(json!==false)h['content-type']='application/json';return h;};var api=async function(path,opt){opt=opt||{};var res=await fetch(path,Object.assign({},opt,{headers:Object.assign({},headers(),opt.headers||{})}));var text=await res.text();var body=text?JSON.parse(text):{};if(!res.ok||body.code!==0)throw new Error(body.message||'请求失败');return body.data;};var run=async function(fn){try{await fn();}catch(e){alert(e.message||String(e));}};var multiItems={employeeModels:[],employeeMcps:[],employeeSkills:[]};var multiValues={employeeModels:[],employeeMcps:[],employeeSkills:[]};var selected=function(id){return multiValues[id]||[];};var setSelected=function(id,values){multiValues[id]=Array.from(new Set(values||[]));renderMultiSelect(id);};var set=function(id,v){$(id).value=v==null?'':v;};
+function showTab(tab){document.querySelectorAll('section').forEach(function(s){s.classList.toggle('active',s.id===tab);});document.querySelectorAll('nav button').forEach(function(b){b.classList.toggle('active-tab',b.dataset.tab===tab);});}
+function renderMultiSelect(id){var items=multiItems[id]||[];var values=new Set(multiValues[id]||[]);var selectedItems=items.filter(function(x){return values.has(x.id);});var title=selectedItems.length?selectedItems.map(function(x){return x.name||x.id;}).join(', '):'未选择';$(id).innerHTML='<button type="button" class="multi-trigger" data-multi-toggle="'+id+'">'+esc(title)+'</button><div class="multi-options">'+(items.length?items.map(function(x){return '<label class="multi-option"><input type="checkbox" data-multi-id="'+id+'" data-multi-value="'+esc(x.id)+'" '+(values.has(x.id)?'checked':'')+'> <span>'+esc(x.name||x.id)+' ('+esc(x.id)+')</span></label>';}).join(''):'<div class="multi-empty">暂无可选项</div>')+'</div>';}function fillSelect(id,items){multiItems[id]=(items||[]).filter(function(x){return x.enabled!==false;});multiValues[id]=(multiValues[id]||[]).filter(function(value){return multiItems[id].some(function(item){return item.id===value;});});renderMultiSelect(id);}
+async function loadAll(){state=await api('/api/admin/state');state.modelProviders=state.modelProviders||state.models||[];renderAll();}
+function renderAll(){fillSelect('employeeModels',state.modelProviders);fillSelect('employeeMcps',state.mcpServers);fillSelect('employeeSkills',state.skills);renderOverview();renderEmployees();renderModels();renderMcp();renderSkills();renderUsageFilters();renderUsage();}
+function authText(v){return (v&&v.length)?v.join(', '):'未授权';}
+function renderOverview(){$('statEmployees').textContent=state.employees.length;$('statModels').textContent=state.modelProviders.length;$('statCalls').textContent=state.usageEvents.length;$('statCredits').textContent=state.usageEvents.reduce(function(s,e){return s+Number(e.credits||0);},0).toFixed(2);$('overviewRows').innerHTML=state.employees.map(function(e){return '<tr><td>'+esc(e.employeeName)+'<br><code>'+esc(e.employeeId)+'</code></td><td>'+esc(e.creditsUsed||0)+'/'+esc(e.creditsLimit||0)+'</td><td>模型: '+esc(authText(e.allowedModelProviderIds))+'<br>MCP: '+esc(authText(e.allowedMcpServerIds))+'<br>技能: '+esc(authText(e.allowedSkillIds))+'</td><td>'+esc(e.lastUsedAt||'-')+'</td></tr>';}).join('');}
+function renderEmployees(){$('employeeRows').innerHTML=state.employees.map(function(e){return '<tr><td>'+esc(e.status)+'</td><td><code>'+esc(e.activationCode)+'</code></td><td>'+esc(e.employeeName)+'<br><code>'+esc(e.employeeId)+'</code></td><td>'+esc(Math.max(0,(e.creditsLimit||0)-(e.creditsUsed||0)))+'/'+esc(e.creditsLimit||0)+'<br><button class="secondary" data-act="credits" data-code="'+esc(e.activationCode)+'">改积分</button></td><td>模型: '+esc(authText(e.allowedModelProviderIds))+'<br>MCP: '+esc(authText(e.allowedMcpServerIds))+'<br>技能: '+esc(authText(e.allowedSkillIds))+'</td><td><code>'+esc(e.deviceToken||'-')+'</code><br>'+esc(e.lastUsedAt||'-')+'</td><td><div class="row"><button class="secondary" data-act="editEmployee" data-code="'+esc(e.activationCode)+'">编辑</button><button class="secondary" data-act="copy" data-code="'+esc(e.activationCode)+'">复制</button><button class="secondary" data-act="toggle" data-code="'+esc(e.activationCode)+'" data-status="'+esc(e.status)+'">'+(e.status==='active'?'禁用':'启用')+'</button><button class="danger" data-act="deleteEmployee" data-code="'+esc(e.activationCode)+'">删除</button></div></td></tr>';}).join('');}
+function renderModels(){$('modelRows').innerHTML=state.modelProviders.map(function(x){var m=(x.models||[])[0]||{};var b=x.billing||{};return '<tr><td><code>'+esc(m.id||x.id)+'</code></td><td>'+esc(m.name||x.name)+'</td><td>'+esc(x.baseUrl)+'<br><span class="hint">'+esc(b.currency||'')+' 输入 '+esc(b.inputPricePerMillionTokens||0)+'/M，输出 '+esc(b.outputPricePerMillionTokens||0)+'/M</span></td><td>'+esc(x.apiKey?'********':'-')+'</td><td><div class="row"><button class="secondary" data-act="editModel" data-id="'+esc(x.id)+'">编辑</button><button class="danger" data-act="delete" data-path="/api/admin/model-providers" data-id="'+esc(x.id)+'">删除</button></div></td></tr>';}).join('');}
+function renderMcp(){$('mcpRows').innerHTML=state.mcpServers.map(function(x){var link=x.transportType==='stdio'?(x.command+' '+(x.args||[]).join(' ')):x.url;return '<tr><td><code>'+esc(x.id)+'</code></td><td>'+esc(x.name)+'</td><td>'+esc(x.transportType)+'</td><td>'+esc(link)+'</td><td><div class="row"><button class="secondary" data-act="editMcp" data-id="'+esc(x.id)+'">编辑</button><button class="danger" data-act="delete" data-path="/api/admin/mcp" data-id="'+esc(x.id)+'">删除</button></div></td></tr>';}).join('');}
+function renderSkills(){$('skillRows').innerHTML=state.skills.map(function(x){return '<tr><td><code>'+esc(x.id)+'</code></td><td>'+esc(x.name)+'</td><td>'+esc(x.version||'-')+'</td><td>'+esc(x.packageFileName||'-')+'</td><td><div class="row"><button class="secondary" data-act="editSkill" data-id="'+esc(x.id)+'">编辑</button><button class="danger" data-act="delete" data-path="/api/admin/skills" data-id="'+esc(x.id)+'">删除</button></div></td></tr>';}).join('');}
+function modelPayload(){var mid=$('modelId').value.trim();return{id:mid,modelId:mid,name:$('modelName').value||mid,modelName:$('modelName').value||mid,baseUrl:$('modelBaseUrl').value,apiKey:$('modelApiKey').value,apiFormat:'openai',currency:$('billingCurrency').value,inputPricePerMillionTokens:Number($('inputPricePerMillionTokens').value),outputPricePerMillionTokens:Number($('outputPricePerMillionTokens').value),cacheWritePricePerMillionTokens:Number($('cacheWritePricePerMillionTokens').value),cacheReadPricePerMillionTokens:Number($('cacheReadPricePerMillionTokens').value),creditsPerCurrencyUnit:Number($('creditsPerCurrencyUnit').value),fixedCreditsPerCall:Number($('fixedCreditsPerCall').value),minimumCreditsPerCall:Number($('minimumCreditsPerCall').value),imagePriceNote:$('imagePriceNote').value,audioPriceNote:$('audioPriceNote').value,videoPriceNote:$('videoPriceNote').value,priceSourceUrl:$('priceSourceUrl').value};}
+function editModel(id){var x=state.modelProviders.find(function(i){return i.id===id;});if(!x)return;var m=(x.models||[])[0]||{};var b=x.billing||{};set('modelId',m.id||x.id);$('modelId').readOnly=true;set('modelName',m.name||x.name);set('modelBaseUrl',x.baseUrl);set('modelApiKey','');$('modelApiKey').placeholder=x.apiKey?'已保存，留空则不修改':'sk-...';set('billingCurrency',b.currency||'USD');set('inputPricePerMillionTokens',b.inputPricePerMillionTokens||0);set('outputPricePerMillionTokens',b.outputPricePerMillionTokens||0);set('cacheWritePricePerMillionTokens',b.cacheWritePricePerMillionTokens||0);set('cacheReadPricePerMillionTokens',b.cacheReadPricePerMillionTokens||0);set('creditsPerCurrencyUnit',b.creditsPerCurrencyUnit||10);set('fixedCreditsPerCall',b.fixedCreditsPerCall||0);set('minimumCreditsPerCall',b.minimumCreditsPerCall==null?1:b.minimumCreditsPerCall);set('imagePriceNote',b.imagePriceNote||'');set('audioPriceNote',b.audioPriceNote||'');set('videoPriceNote',b.videoPriceNote||'');set('priceSourceUrl',b.sourceUrl||'');showTab('models');}
+function clearModel(){$('modelId').readOnly=false;$('modelApiKey').placeholder='sk-...';['modelId','modelName','modelBaseUrl','modelApiKey','imagePriceNote','audioPriceNote','videoPriceNote','priceSourceUrl'].forEach(function(id){set(id,'');});set('billingCurrency','USD');set('inputPricePerMillionTokens',0);set('outputPricePerMillionTokens',0);set('cacheWritePricePerMillionTokens',0);set('cacheReadPricePerMillionTokens',0);set('creditsPerCurrencyUnit',10);set('fixedCreditsPerCall',0);set('minimumCreditsPerCall',1);}
+function editMcp(id){var x=state.mcpServers.find(function(i){return i.id===id;});if(!x)return;set('mcpId',x.id);$('mcpId').readOnly=true;set('mcpName',x.name);set('mcpDesc',x.description);set('mcpTransport',x.transportType||'sse');set('mcpUrl',x.url);set('mcpHeaders',JSON.stringify(x.headers||{},null,2));set('mcpCommand',x.command);set('mcpArgs',(x.args||[]).join('\n'));showTab('mcp');}
+function clearMcp(){$('mcpId').readOnly=false;['mcpId','mcpName','mcpDesc','mcpUrl','mcpHeaders','mcpCommand','mcpArgs'].forEach(function(id){set(id,'');});set('mcpTransport','sse');}
+function editSkill(id){var x=state.skills.find(function(i){return i.id===id;});if(!x)return;set('skillId',x.id);$('skillId').readOnly=true;set('skillName',x.name);set('skillVersion',x.version||'1.0.0');set('skillDesc',x.description);$('skillZip').value='';showTab('skills');}
+function clearSkill(){$('skillId').readOnly=false;['skillId','skillName','skillDesc'].forEach(function(id){set(id,'');});set('skillVersion','1.0.0');$('skillZip').value='';}
+function editEmployee(code){var e=state.employees.find(function(x){return x.activationCode===code;});if(!e)return;editingEmployee=code;set('employeeName',e.employeeName);set('employeeId',e.employeeId);set('creditsLimit',e.creditsLimit);set('notes',e.notes);setSelected('employeeModels',e.allowedModelProviderIds);setSelected('employeeMcps',e.allowedMcpServerIds);setSelected('employeeSkills',e.allowedSkillIds);$('saveEmployeeBtn').style.display='inline-block';$('cancelEmployeeBtn').style.display='inline-block';showTab('employees');}
+function clearEmployee(){editingEmployee='';['employeeName','employeeId','notes'].forEach(function(id){set(id,'');});set('creditsLimit',1000);setSelected('employeeModels',[]);setSelected('employeeMcps',[]);setSelected('employeeSkills',[]);$('saveEmployeeBtn').style.display='none';$('cancelEmployeeBtn').style.display='none';}
+async function copyCode(code){var done=false;try{var input=document.createElement('textarea');input.value=code;input.setAttribute('readonly','');input.style.position='fixed';input.style.left='-9999px';input.style.top='0';document.body.appendChild(input);input.focus();input.select();input.setSelectionRange(0,input.value.length);done=document.execCommand('copy');document.body.removeChild(input);}catch(e){}if(!done&&navigator.clipboard){try{await navigator.clipboard.writeText(code);done=true;}catch(e){}}if(done){alert('已复制激活码：'+code);}else{prompt('自动复制失败，请手动复制激活码',code);}}
+function renderUsageFilters(){$('usageEmployeeFilter').innerHTML='<option value="">全部员工</option>'+state.employees.map(function(e){return '<option value="'+esc(e.employeeId)+'">'+esc(e.employeeName)+' ('+esc(e.employeeId)+')</option>';}).join('');var models=[].concat.apply([],state.modelProviders.map(function(p){return (p.models||[]).map(function(m){return m.id;});}));models=Array.from(new Set(models));$('usageModelFilter').innerHTML='<option value="">全部模型</option>'+models.map(function(m){return '<option value="'+esc(m)+'">'+esc(m)+'</option>';}).join('');}
+function providerByModel(modelId){return state.modelProviders.find(function(p){return (p.models||[]).some(function(m){return m.id===modelId;});});}function money(credits,modelId){var b=(providerByModel(modelId)||{}).billing||{};var rate=Number(b.creditsPerCurrencyUnit||0);return rate?(b.currency||'USD')+' '+(Number(credits||0)/rate).toFixed(4):'-';}
+function renderUsage(){var eid=$('usageEmployeeFilter').value;var mid=$('usageModelFilter').value;var rows={};var events=state.usageEvents.filter(function(e){return (!eid||e.employeeId===eid)&&(!mid||e.modelId===mid);});events.forEach(function(e){var day=String(e.createdAt||'').slice(0,10)||'-';var key=day+'|'+e.employeeId+'|'+e.modelId;rows[key]=rows[key]||{day:day,employeeId:e.employeeId,modelId:e.modelId,tokens:0,credits:0};rows[key].tokens+=Number(e.inputTokens||0)+Number(e.outputTokens||0)+Number(e.cacheWriteTokens||0)+Number(e.cacheReadTokens||0);rows[key].credits+=Number(e.credits||0);});$('usageCalls').textContent=events.length;$('usageCredits').textContent=events.reduce(function(s,e){return s+Number(e.credits||0);},0).toFixed(4);$('usageMoney').textContent='-';$('usageRows').innerHTML=Object.values(rows).map(function(r){var emp=state.employees.find(function(e){return e.employeeId===r.employeeId;});return '<tr><td>'+esc(r.day)+'</td><td>'+esc(emp?emp.employeeName:r.employeeId)+'<br><code>'+esc(r.employeeId)+'</code></td><td>'+esc(r.modelId)+'</td><td>'+r.tokens+'</td><td>'+r.credits.toFixed(4)+'</td><td>'+esc(money(r.credits,r.modelId))+'</td></tr>';}).join('');}
+document.querySelector('nav').onclick=function(e){if(e.target.dataset.tab)showTab(e.target.dataset.tab);};$('refreshBtn').onclick=function(){run(loadAll);};$('token').value=localStorage.getItem('lfclaw_admin_token')||'lfclaw-admin';$('employeeName').oninput=function(){run(async function(){var d=await api('/api/admin/pinyin?name='+encodeURIComponent($('employeeName').value));$('employeePreview').textContent=d.employeeId+' / '+d.activationPrefix;if(!$('employeeId').value)$('employeeId').placeholder=d.employeeId;});};$('addEmployeeBtn').onclick=function(){run(async function(){await api('/api/admin/employees',{method:'POST',body:JSON.stringify({employeeName:$('employeeName').value,employeeId:$('employeeId').value,creditsLimit:Number($('creditsLimit').value),notes:$('notes').value,allowedModelProviderIds:selected('employeeModels'),allowedMcpServerIds:selected('employeeMcps'),allowedSkillIds:selected('employeeSkills')})});clearEmployee();await loadAll();});};$('saveEmployeeBtn').onclick=function(){run(async function(){await api('/api/admin/employees/'+encodeURIComponent(editingEmployee),{method:'PATCH',body:JSON.stringify({employeeName:$('employeeName').value,employeeId:$('employeeId').value,creditsLimit:Number($('creditsLimit').value),notes:$('notes').value,allowedModelProviderIds:selected('employeeModels'),allowedMcpServerIds:selected('employeeMcps'),allowedSkillIds:selected('employeeSkills')})});clearEmployee();await loadAll();});};$('cancelEmployeeBtn').onclick=clearEmployee;$('saveModelBtn').onclick=function(){run(async function(){await api('/api/admin/model-providers',{method:'POST',body:JSON.stringify(modelPayload())});clearModel();await loadAll();});};$('cancelModelBtn').onclick=clearModel;$('saveMcpBtn').onclick=function(){run(async function(){await api('/api/admin/mcp',{method:'POST',body:JSON.stringify({id:$('mcpId').value.trim(),name:$('mcpName').value,description:$('mcpDesc').value,transportType:$('mcpTransport').value,url:$('mcpUrl').value,headers:$('mcpHeaders').value,command:$('mcpCommand').value,args:$('mcpArgs').value.split(/\r?\n|,/).map(function(x){return x.trim();}).filter(Boolean)} )});clearMcp();await loadAll();});};$('cancelMcpBtn').onclick=clearMcp;$('uploadSkillBtn').onclick=function(){run(async function(){var fd=new FormData();fd.set('id',$('skillId').value.trim());fd.set('name',$('skillName').value);fd.set('version',$('skillVersion').value);fd.set('description',$('skillDesc').value);if($('skillZip').files[0])fd.set('package',$('skillZip').files[0]);var res=await fetch('/api/admin/skills/upload',{method:'POST',headers:headers(false),body:fd});var text=await res.text();var body=text?JSON.parse(text):{};if(!res.ok||body.code!==0)throw new Error(body.message||'上传失败');clearSkill();await loadAll();});};$('cancelSkillBtn').onclick=clearSkill;$('usageEmployeeFilter').onchange=renderUsage;$('usageModelFilter').onchange=renderUsage;
+document.body.onchange=function(e){var t=e.target;if(!t.dataset.multiId)return;var id=t.dataset.multiId;var value=t.dataset.multiValue;var set=new Set(multiValues[id]||[]);if(t.checked)set.add(value);else set.delete(value);multiValues[id]=Array.from(set);renderMultiSelect(id);$(id).classList.add('open');};
+document.body.onclick=function(e){var t=e.target;if(t.dataset.multiToggle){$(t.dataset.multiToggle).classList.toggle('open');return;}var a=t.dataset.act;if(!a)return;run(async function(){if(a==='editEmployee')editEmployee(t.dataset.code);if(a==='copy')await copyCode(t.dataset.code);if(a==='toggle'){await api('/api/admin/employees/'+encodeURIComponent(t.dataset.code),{method:'PATCH',body:JSON.stringify({status:t.dataset.status==='active'?'disabled':'active'})});await loadAll();}if(a==='credits'){var v=prompt('新积分额度');if(v!==null){await api('/api/admin/employees/'+encodeURIComponent(t.dataset.code),{method:'PATCH',body:JSON.stringify({creditsLimit:Number(v)})});await loadAll();}}if(a==='deleteEmployee'){if(confirm('确定删除？')){await api('/api/admin/employees/'+encodeURIComponent(t.dataset.code),{method:'DELETE'});await loadAll();}}if(a==='editModel')editModel(t.dataset.id);if(a==='editMcp')editMcp(t.dataset.id);if(a==='editSkill')editSkill(t.dataset.id);if(a==='delete'){if(confirm('确定删除？')){await api(t.dataset.path+'/'+encodeURIComponent(t.dataset.id),{method:'DELETE'});await loadAll();}}});};
+loadAll().catch(function(e){alert(e.message);});
+</script></body></html>`;
+
+const requireAdmin = (req, res) => {
+  const token = req.headers['x-admin-token'] || req.headers.authorization?.replace(/^Bearer\s+/i, '');
+  if (token !== ADMIN_TOKEN) {
+    fail(res, 401, 'Unauthorized.');
+    return false;
+  }
+  return true;
+};
+
+const deleteById = (items, itemId) => {
+  const index = items.findIndex(item => item.id === itemId);
+  if (index >= 0) items.splice(index, 1);
+  return index >= 0;
+};
+
+const removeEmployeeGrant = (employees, grantKey, itemId) => {
+  for (const employee of employees) {
+    employee[grantKey] = list(employee[grantKey]).filter(id => id !== itemId);
+  }
+};
+
+const handleAdmin = async (req, res, url, data) => {
+  if (url.pathname === '/admin') {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    res.end(adminHtml());
+    return true;
+  }
+  if (!url.pathname.startsWith('/api/admin/')) return false;
+  if (!requireAdmin(req, res)) return true;
+  if (url.pathname === '/api/admin/state' && req.method === 'GET') return ok(res, adminState(data)), true;
+  if (url.pathname === '/api/admin/pinyin' && req.method === 'GET') {
+    const name = url.searchParams.get('name') || '';
+    return ok(res, { pinyin: pinyinSlug(name), employeeId: makeEmployeeId(name), activationPrefix: `LFCLAW-${pinyinSlug(name).toUpperCase()}` }), true;
+  }
+  if (url.pathname === '/api/admin/model-providers' && req.method === 'POST') {
+    const body = await readBody(req);
+    const existing = data.modelProviders.find(item => item.id === body.id);
+    const item = normalizeModel(body, existing);
+    existing ? Object.assign(existing, item) : data.modelProviders.unshift(item);
+    writeData(data);
+    return ok(res, redactModel(item)), true;
+  }
+  if (url.pathname === '/api/admin/mcp' && req.method === 'POST') {
+    const body = await readBody(req);
+    const existing = data.mcpServers.find(item => item.id === body.id);
+    const item = normalizeMcp(body, existing);
+    existing ? Object.assign(existing, item) : data.mcpServers.unshift(item);
+    writeData(data);
+    return ok(res, item), true;
+  }
+  if (url.pathname === '/api/admin/skills/upload' && req.method === 'POST') {
+    const { fields, files } = parseMultipart(await readRawBody(req), req.headers['content-type'] || '');
+    const existing = data.skills.find(item => item.id === fields.id);
+    let packageMeta = {};
+    const file = files.package;
+    if (file?.content?.length) {
+      fs.mkdirSync(SKILL_DIR, { recursive: true });
+      const skillId = String(fields.id || existing?.id || id('skill')).trim();
+      const storedName = `${skillId}-${Date.now()}-${file.filename}`;
+      const packagePath = path.join(SKILL_DIR, storedName);
+      fs.writeFileSync(packagePath, file.content);
+      packageMeta = {
+        packageFileName: file.filename,
+        packagePath,
+        packageSize: file.content.length,
+        packageSha256: crypto.createHash('sha256').update(file.content).digest('hex'),
+      };
+    }
+    const item = normalizeSkill({ ...fields, ...packageMeta }, existing);
+    if (!item.id) throw new Error('技能 ID 必填。');
+    existing ? Object.assign(existing, item) : data.skills.unshift(item);
+    writeData(data);
+    return ok(res, { ...item, packagePath: undefined }), true;
+  }
+  if (url.pathname === '/api/admin/skills' && req.method === 'POST') {
+    const body = await readBody(req);
+    const existing = data.skills.find(item => item.id === body.id);
+    const item = normalizeSkill(body, existing);
+    if (!item.id) throw new Error('技能 ID 必填。');
+    existing ? Object.assign(existing, item) : data.skills.unshift(item);
+    writeData(data);
+    return ok(res, { ...item, packagePath: undefined }), true;
+  }
+  for (const [route, collection, grantKey] of [
+    ['/api/admin/model-providers', data.modelProviders, 'allowedModelProviderIds'],
+    ['/api/admin/mcp', data.mcpServers, 'allowedMcpServerIds'],
+    ['/api/admin/skills', data.skills, 'allowedSkillIds'],
+  ]) {
+    const match = url.pathname.match(new RegExp(`^${route}/([^/]+)$`));
+    if (match && req.method === 'DELETE') {
+      const itemId = decodeURIComponent(match[1]);
+      deleteById(collection, itemId);
+      removeEmployeeGrant(data.employees, grantKey, itemId);
+      writeData(data);
+      return ok(res, { deleted: true }), true;
+    }
+  }
+  if (url.pathname === '/api/admin/employees' && req.method === 'POST') {
+    const body = await readBody(req);
+    const employeeName = String(body.employeeName || '').trim();
+    if (!employeeName) return fail(res, 400, '员工姓名必填。'), true;
+    let activationCode = makeActivationCode(employeeName);
+    while (data.employees.some(employee => employee.activationCode === activationCode)) activationCode = makeActivationCode(employeeName);
+    const employee = {
+      id: id('employee'),
+      activationCode,
+      employeeName,
+      employeeId: String(body.employeeId || '').trim() || makeEmployeeId(employeeName),
+      status: 'active',
+      deviceToken: null,
+      lastUsedAt: null,
+      creditsLimit: toNumber(body.creditsLimit),
+      creditsUsed: 0,
+      allowedModelProviderIds: list(body.allowedModelProviderIds ?? body.allowedModelIds),
+      allowedMcpServerIds: list(body.allowedMcpServerIds),
+      allowedSkillIds: list(body.allowedSkillIds),
+      notes: String(body.notes || ''),
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    };
+    data.employees.unshift(employee);
+    writeData(data);
+    return ok(res, employeeView(employee)), true;
+  }
+  const employeeMatch = url.pathname.match(/^\/api\/admin\/employees\/([^/]+)$/);
+  if (employeeMatch && req.method === 'PATCH') {
+    const employee = data.employees.find(item => item.activationCode === decodeURIComponent(employeeMatch[1]));
+    if (!employee) return fail(res, 404, '员工不存在。'), true;
+    const body = await readBody(req);
+    if (body.status === 'active' || body.status === 'disabled') employee.status = body.status;
+    if (body.employeeName !== undefined) employee.employeeName = String(body.employeeName || employee.employeeName).trim();
+    if (body.employeeId !== undefined) employee.employeeId = String(body.employeeId || employee.employeeId).trim();
+    if (body.creditsLimit !== undefined) employee.creditsLimit = toNumber(body.creditsLimit);
+    if (body.creditsUsed !== undefined) employee.creditsUsed = toNumber(body.creditsUsed);
+    if (body.allowedModelProviderIds !== undefined || body.allowedModelIds !== undefined) employee.allowedModelProviderIds = list(body.allowedModelProviderIds ?? body.allowedModelIds);
+    if (body.allowedMcpServerIds !== undefined) employee.allowedMcpServerIds = list(body.allowedMcpServerIds);
+    if (body.allowedSkillIds !== undefined) employee.allowedSkillIds = list(body.allowedSkillIds);
+    if (body.notes !== undefined) employee.notes = String(body.notes || '');
+    employee.updatedAt = nowIso();
+    writeData(data);
+    return ok(res, employeeView(employee)), true;
+  }
+  if (employeeMatch && req.method === 'DELETE') {
+    data.employees = data.employees.filter(item => item.activationCode !== decodeURIComponent(employeeMatch[1]));
+    writeData(data);
+    return ok(res, { deleted: true }), true;
+  }
+  return false;
+};
+
+const findEmployeeByToken = (data, token) => {
+  const session = data.sessions[token];
+  if (!session) return null;
+  return data.employees.find(employee => employee.activationCode === session.activationCode) || null;
+};
+
+const server = http.createServer(async (req, res) => {
+  if (req.method === 'OPTIONS') return json(res, 204, {});
+  const url = new URL(req.url || '/', `http://${req.headers.host}`);
+  const data = readData();
+  try {
+    if (await handleAdmin(req, res, url, data)) return;
+    if (url.pathname === '/api/enterprise/activate' && req.method === 'POST') {
+      const body = await readBody(req);
+      const activationCode = String(body.activationCode || '').trim().toUpperCase();
+      const employee = data.employees.find(item => item.activationCode === activationCode);
+      if (!employee) return fail(res, 404, 'Activation code not found.');
+      if (employee.status !== 'active') return fail(res, 403, 'Activation code is disabled.');
+      employee.deviceToken = String(body.deviceToken || '');
+      employee.lastUsedAt = nowIso();
+      employee.updatedAt = nowIso();
+      const accessToken = randomHex(24);
+      data.sessions[accessToken] = { activationCode, createdAt: nowIso() };
+      writeData(data);
+      return ok(res, clientPayload(data, employee, accessToken, req));
+    }
+    if (url.pathname === '/api/enterprise/me' && req.method === 'GET') {
+      const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
+      const employee = findEmployeeByToken(data, token);
+      if (!employee) return fail(res, 401, 'Enterprise session is invalid.');
+      if (employee.status !== 'active') return fail(res, 403, 'Activation code is disabled.');
+      return ok(res, clientPayload(data, employee, token, req));
+    }
+    const skillMatch = url.pathname.match(/^\/api\/enterprise\/skills\/([^/]+)\/download$/);
+    if (skillMatch && req.method === 'GET') {
+      const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
+      const employee = findEmployeeByToken(data, token);
+      if (!employee) return fail(res, 401, 'Enterprise session is invalid.');
+      if (employee.status !== 'active') return fail(res, 403, 'Activation code is disabled.');
+      const skillId = decodeURIComponent(skillMatch[1]);
+      if (!list(employee.allowedSkillIds).includes(skillId)) return fail(res, 403, 'Skill is not allowed.');
+      const skill = data.skills.find(item => item.id === skillId);
+      if (!skill?.packagePath || !fs.existsSync(skill.packagePath)) return fail(res, 404, 'Skill package not found.');
+      res.writeHead(200, { 'content-type': 'application/zip', 'content-disposition': `attachment; filename="${encodeURIComponent(skill.packageFileName || `${skill.id}.zip`)}"` });
+      fs.createReadStream(skill.packagePath).pipe(res);
+      return;
+    }
+    if (url.pathname === '/api/enterprise/usage' && req.method === 'POST') {
+      const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
+      const employee = findEmployeeByToken(data, token);
+      if (!employee) return fail(res, 401, 'Enterprise session is invalid.');
+      if (employee.status !== 'active') return fail(res, 403, 'Activation code is disabled.');
+      const body = await readBody(req);
+      const modelId = String(body.modelId || 'unknown');
+      const provider = data.modelProviders.find(item => item.models?.some(model => model.id === modelId));
+      const credits = body.credits === undefined ? calculateUsageCredits(provider, body) : toNumber(body.credits);
+      const creditsRemaining = Math.max(0, toNumber(employee.creditsLimit) - toNumber(employee.creditsUsed));
+      if (creditsRemaining <= 0 || credits > creditsRemaining) {
+        return fail(res, 402, 'Enterprise credits exhausted.');
+      }
+      const event = {
+        id: id('usage'),
+        employeeId: employee.employeeId,
+        modelId,
+        credits,
+        inputTokens: toNumber(body.inputTokens),
+        outputTokens: toNumber(body.outputTokens),
+        cacheWriteTokens: toNumber(body.cacheWriteTokens),
+        cacheReadTokens: toNumber(body.cacheReadTokens),
+        currency: provider?.billing?.currency || '',
+        priceSourceUrl: provider?.billing?.sourceUrl || '',
+        createdAt: nowIso(),
+      };
+      data.usageEvents.push(event);
+      employee.creditsUsed = Number((toNumber(employee.creditsUsed) + credits).toFixed(4));
+      employee.lastUsedAt = nowIso();
+      writeData(data);
+      return ok(res, { credits, event });
+    }
+    fail(res, 404, 'Not found.');
+  } catch (error) {
+    fail(res, 500, error instanceof Error ? error.message : String(error));
+  }
+});
+
+fs.mkdirSync(SKILL_DIR, { recursive: true });
+server.listen(PORT, HOST, () => {
+  console.log(`[LfClaw Enterprise] listening at http://${HOST}:${PORT}`);
+});
+
+
+

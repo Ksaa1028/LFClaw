@@ -66,7 +66,7 @@ const WindowsAppTitleBar: React.FC<WindowsAppTitleBarProps> = ({
             className="h-4 w-4 max-w-none shrink-0"
           />
           <span className={`${isSidebarCollapsed ? 'hidden' : 'truncate'} text-sm font-medium text-foreground`}>
-            LobsterAI
+            LfClaw
           </span>
         </div>
         {(onToggleSidebar || onNewChat || updateBadge) && (

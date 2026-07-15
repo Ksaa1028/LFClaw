@@ -122,9 +122,11 @@ const CoworkView: React.FC<CoworkViewProps> = ({
   const selectedActionId = useSelector((state: RootState) => state.quickAction.selectedActionId);
   const currentAgentId = useSelector((state: RootState) => state.agent.currentAgentId);
   const agents = useSelector((state: RootState) => state.agent.agents);
+  const hasAvailableModels = useSelector((state: RootState) => state.model.availableModels.length > 0);
   const currentAgent = agents.find((agent) => agent.id === currentAgentId);
   const currentAgentWorkingDirectory = currentAgent?.workingDirectory?.trim() || config.workingDirectory || '';
-  const currentAgentSelectedModel = useAgentSelectedModel(currentAgentId, currentAgent?.model ?? '');
+  const resolvedCurrentAgentSelectedModel = useAgentSelectedModel(currentAgentId, currentAgent?.model ?? '');
+  const currentAgentSelectedModel = hasAvailableModels ? resolvedCurrentAgentSelectedModel : null;
   const homeDraftCollaborationMode = useSelector((state: RootState) => (
     state.cowork.draftCollaborationModes.__home__ || CoworkCollaborationMode.Default
   ));
@@ -291,6 +293,12 @@ const CoworkView: React.FC<CoworkViewProps> = ({
         }
       } catch (error) {
         console.error('Failed to check cowork API config:', error);
+      }
+
+      if (!hasAvailableModels || !currentAgentSelectedModel) {
+        window.dispatchEvent(new CustomEvent('app:showToast', { detail: i18nService.t('modelSelectorNoModels') }));
+        isStartingRef.current = false;
+        return false;
       }
 
       // Create a temporary session with user message to show immediately
@@ -487,6 +495,10 @@ const CoworkView: React.FC<CoworkViewProps> = ({
     if (isContinuingRef.current) return false;
     if (openClawStatus && !isOpenClawReadyForSession(openClawStatus)) {
       window.dispatchEvent(new CustomEvent('app:showToast', { detail: i18nService.t('coworkErrorEngineNotReady') }));
+      return false;
+    }
+    if (!hasAvailableModels) {
+      window.dispatchEvent(new CustomEvent('app:showToast', { detail: i18nService.t('modelSelectorNoModels') }));
       return false;
     }
 
@@ -691,6 +703,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({
   const shouldShowEngineStatus = Boolean(openClawStatus && openClawStatus.phase !== 'running');
   const isEngineError = openClawStatus?.phase === 'error';
   const isEngineReady = isOpenClawReadyForSession(openClawStatus);
+  const isOpenClawRuntimeMissing = openClawStatus?.phase === 'not_installed';
 
   const homeHeader = (
     <div className="draggable flex h-12 items-center justify-between px-4 shrink-0">
@@ -755,17 +768,19 @@ const CoworkView: React.FC<CoworkViewProps> = ({
           >
             {i18nService.t('coworkOpenClawGoToSettingsInstall')}
           </button>
-          <button
-            type="button"
-            onClick={handleRestartGateway}
-            disabled={isRestartingGateway}
-            className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-border bg-surface px-3 text-xs font-medium text-foreground transition-colors hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-60 active:scale-[0.98]"
-          >
-            {isRestartingGateway && (
-              <ArrowPathIcon className="h-3.5 w-3.5 animate-spin" />
-            )}
-            {i18nService.t('coworkOpenClawRestartGateway')}
-          </button>
+          {!isOpenClawRuntimeMissing && (
+            <button
+              type="button"
+              onClick={handleRestartGateway}
+              disabled={isRestartingGateway}
+              className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-border bg-surface px-3 text-xs font-medium text-foreground transition-colors hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-60 active:scale-[0.98]"
+            >
+              {isRestartingGateway && (
+                <ArrowPathIcon className="h-3.5 w-3.5 animate-spin" />
+              )}
+              {i18nService.t('coworkOpenClawRestartGateway')}
+            </button>
+          )}
         </div>
       </div>
     </div>

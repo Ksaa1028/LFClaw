@@ -1,4 +1,4 @@
-import { ChatBubbleLeftRightIcon } from '@heroicons/react/24/outline';
+﻿import { ChatBubbleLeftRightIcon } from '@heroicons/react/24/outline';
 import React, { useCallback, useEffect, useMemo,useRef, useState } from 'react';
 import { useDispatch,useSelector } from 'react-redux';
 
@@ -17,6 +17,7 @@ import CoworkPermissionModal from './components/cowork/CoworkPermissionModal';
 import CoworkQuestionWizard from './components/cowork/CoworkQuestionWizard';
 import EngineFailureOverlay from './components/cowork/EngineFailureOverlay';
 import EngineStartupOverlay from './components/cowork/EngineStartupOverlay';
+import EnterpriseActivationView from './components/enterprise/EnterpriseActivationView';
 import KitsView from './components/kits/KitsView';
 import { McpView } from './components/mcp';
 import PrivacyDialog from './components/PrivacyDialog';
@@ -40,6 +41,7 @@ import { i18nService } from './services/i18n';
 import { LogReporterAction, reportYdAnalyzer } from './services/logReporter';
 import { scheduledTaskService } from './services/scheduledTask';
 import { matchesShortcut } from './services/shortcuts';
+import { skillService } from './services/skill';
 import { themeService } from './services/theme';
 import { applyTypographyPreferences } from './services/typography';
 import { RootState, store } from './store';
@@ -52,6 +54,7 @@ import { setDraftCollaborationMode, setDraftKitIds, setDraftPrompt } from './sto
 import { setActiveKitIds } from './store/slices/kitSlice';
 import { setAvailableModels, setDefaultSelectedModel } from './store/slices/modelSlice';
 import { clearSelection } from './store/slices/quickActionSlice';
+import { setSkills } from './store/slices/skillSlice';
 import { CoworkCollaborationMode, type CoworkPermissionResult } from './types/cowork';
 
 const AGENT_TASK_SLOT_SHORTCUT_ACTIONS = [
@@ -87,11 +90,12 @@ const SETTINGS_TAB_SHORTCUT_ACTIONS: Array<{
 /** Used for config + i18n init; longer on Windows where main-process IPC can stall during cold start. */
 const INIT_STEP_TIMEOUT_MS_WINDOWS = 24_000;
 const INIT_STEP_TIMEOUT_MS_DEFAULT = 16_000;
+const ENTERPRISE_POLICY_SYNC_INTERVAL_MS = 30_000;
 
 const App: React.FC = () => {
   const [showSettings, setShowSettings] = useState(false);
   const [settingsOptions, setSettingsOptions] = useState<SettingsOpenOptions & { requestId: number }>({ requestId: 0 });
-  const [mainView, setMainView] = useState<'cowork' | 'skills' | 'scheduledTasks' | 'kits' | 'mcp'>('cowork');
+  const [mainView, setMainView] = useState<'cowork' | 'skills' | 'scheduledTasks' | 'kits' | 'mcp' | 'enterprise'>('cowork');
   const [isInitialized, setIsInitialized] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -155,7 +159,7 @@ const App: React.FC = () => {
     []
   );
 
-  // 初始化应用
+  // 鍒濆鍖栧簲鐢?
   useEffect(() => {
     if (hasInitialized.current) {
       return;
@@ -240,6 +244,9 @@ const App: React.FC = () => {
 
         const agreed = await window.electron.store.get('privacy_agreed');
         setPrivacyAgreed(agreed === true);
+        if (agreed === true && !store.getState().auth.isLoggedIn) {
+          setShowWelcome(true);
+        }
         mark('privacy check done');
 
         setIsInitialized(true);
@@ -368,6 +375,21 @@ const App: React.FC = () => {
     setMainView('kits');
   }, []);
 
+  const handleShowEnterprise = useCallback(() => {
+    setMainView('enterprise');
+  }, []);
+
+  const handleShowEnterpriseLogin = useCallback(() => {
+    setShowWelcome(true);
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener('lfclaw:show-enterprise-login', handleShowEnterpriseLogin);
+    return () => {
+      window.removeEventListener('lfclaw:show-enterprise-login', handleShowEnterpriseLogin);
+    };
+  }, [handleShowEnterpriseLogin]);
+
   const openHomeWithKit = useCallback((kitId: string, text?: string) => {
     dispatch(setActiveKitIds([kitId]));
     coworkService.clearSession({ restoreAgentSkills: true });
@@ -419,7 +441,7 @@ const App: React.FC = () => {
   }, [isSidebarCollapsed, mainView]);
 
   const handleNewChat = useCallback(() => {
-    // Only clear when already on home (no session) — preserve __home__ draft when returning from a session
+    // Only clear when already on home (no session) 鈥?preserve __home__ draft when returning from a session
     const shouldClearInput = mainView === 'cowork' && !currentSessionId;
     coworkService.clearSession({ restoreAgentSkills: true });
     dispatch(clearSelection());
@@ -467,7 +489,7 @@ const App: React.FC = () => {
           setAppUpdateState(state);
           previousUpdateStatusRef.current = state.status;
           // A previous install attempt quit the app without completing
-          // (e.g. the installer never launched) — re-prompt the user.
+          // (e.g. the installer never launched) 鈥?re-prompt the user.
           if (state.status === AppUpdateStatus.Ready && state.installIncomplete) {
             setShowUpdateModal(true);
           }
@@ -503,8 +525,8 @@ const App: React.FC = () => {
   }, [showToast]);
 
   const handleShowLogin = useCallback(() => {
-    showToast(i18nService.t('featureInDevelopment'));
-  }, [showToast]);
+    handleShowEnterprise();
+  }, [handleShowEnterprise]);
 
   const runUpdateCheck = useCallback(async () => {
     try {
@@ -603,18 +625,28 @@ const App: React.FC = () => {
   }, []);
 
   const handlePrivacyReject = useCallback(() => {
-    // 立刻隐藏窗口，让用户感觉立即关闭
+    // 绔嬪埢闅愯棌绐楀彛锛岃鐢ㄦ埛鎰熻绔嬪嵆鍏抽棴
     window.electron.window.close();
   }, []);
 
-  const handleWelcomeLogin = useCallback(async () => {
-    setShowWelcome(false);
-    await authService.login();
-  }, []);
-  const handleWelcomeCustomModel = useCallback(() => {
-    setShowWelcome(false);
-    handleShowSettings({ initialTab: 'model' });
-  }, [handleShowSettings]);
+  const handleWelcomeEnterpriseActivate = useCallback(async (input: { serverUrl: string; activationCode: string }) => {
+    try {
+      const result = await window.electron.enterprise.activate(input);
+      if (!result.success) {
+        return { success: false, error: result.error };
+      }
+      await authService.refreshAuthState({ clearOnFailure: true });
+      setShowWelcome(false);
+      const nickname = result.access?.user?.nickname;
+      showToast(nickname ? `已激活：${nickname}` : '企业账号已激活');
+      return { success: true, access: result.access };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : '企业激活失败',
+      };
+    }
+  }, [showToast]);
 
   const handlePermissionResponse = useCallback(async (result: CoworkPermissionResult) => {
     if (!pendingPermission) return;
@@ -858,6 +890,7 @@ const App: React.FC = () => {
     handleShowScheduledTasks,
     handleShowSettings,
     handleShowSkills,
+    handleShowEnterprise,
     handleToggleSidebar,
     mainView,
     isPermissionModalOpen,
@@ -883,6 +916,53 @@ const App: React.FC = () => {
     return () => window.removeEventListener('app:showToast', handler);
   }, [showToast]);
 
+  useEffect(() => {
+    if (!isInitialized || showWelcome) return undefined;
+
+    let syncing = false;
+    const syncEnterprisePolicy = async () => {
+      if (syncing) return;
+      syncing = true;
+      try {
+        const statusResult = await window.electron.enterprise.getStatus();
+        if (statusResult.success && statusResult.status?.access) {
+          const syncResult = await window.electron.enterprise.syncPolicy();
+          if (syncResult.success) {
+            await authService.refreshAuthState({ clearOnFailure: false });
+            const loadedSkills = await skillService.loadSkills();
+            dispatch(setSkills(loadedSkills));
+          }
+        }
+      } catch {
+        // Keep the last cached enterprise policy. The next preflight still blocks stale or disabled access.
+      } finally {
+        syncing = false;
+      }
+    };
+
+    const interval = window.setInterval(() => {
+      void syncEnterprisePolicy();
+    }, ENTERPRISE_POLICY_SYNC_INTERVAL_MS);
+
+    const handleFocus = () => {
+      void syncEnterprisePolicy();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void syncEnterprisePolicy();
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [dispatch, isInitialized, showWelcome]);
+
   // Listen for ask-ai events: close settings, navigate to cowork, pre-fill input
   useEffect(() => {
     const handler = (e: Event) => {
@@ -901,7 +981,7 @@ const App: React.FC = () => {
     return () => window.removeEventListener('app:ask-ai', handler);
   }, []);
 
-  // 监听托盘菜单打开设置的 IPC 事件
+  // 鐩戝惉鎵樼洏鑿滃崟鎵撳紑璁剧疆鐨?IPC 浜嬩欢
   useEffect(() => {
     const unsubscribe = window.electron.ipcRenderer.on('app:openSettings', () => {
       handleShowSettings();
@@ -909,7 +989,7 @@ const App: React.FC = () => {
     return unsubscribe;
   }, [handleShowSettings]);
 
-  // 监听托盘菜单新建任务的 IPC 事件
+  // 鐩戝惉鎵樼洏鑿滃崟鏂板缓浠诲姟鐨?IPC 浜嬩欢
   useEffect(() => {
     const unsubscribe = window.electron.ipcRenderer.on('app:newTask', () => {
       handleNewChat();
@@ -945,15 +1025,15 @@ const App: React.FC = () => {
       await runUpdateCheck();
     };
 
-    // 启动时立即检查
+    // 鍚姩鏃剁珛鍗虫鏌?
     void maybeCheck('startup');
 
-    // 心跳：每 30 分钟检测是否距上次检查已超过 12 小时
+    // 蹇冭烦锛氭瘡 30 鍒嗛挓妫€娴嬫槸鍚﹁窛涓婃妫€鏌ュ凡瓒呰繃 12 灏忔椂
     const timer = window.setInterval(() => {
       void maybeCheck('heartbeat');
     }, APP_UPDATE_HEARTBEAT_INTERVAL_MS);
 
-    // 窗口恢复可见时检测（覆盖休眠唤醒场景）
+    // 绐楀彛鎭㈠鍙鏃舵娴嬶紙瑕嗙洊浼戠湢鍞ら啋鍦烘櫙锛?
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         void maybeCheck('visibility');
@@ -968,12 +1048,12 @@ const App: React.FC = () => {
     };
   }, [isInitialized, runUpdateCheck, enterpriseConfig]);
 
-  // 根据场景选择使用哪个权限组件。最小化时保持组件挂载（仅视觉隐藏），
-  // 避免重新展开后丢失用户已选择/已输入的内容；key 按 requestId 隔离不同请求的状态。
+  // 鏍规嵁鍦烘櫙閫夋嫨浣跨敤鍝釜鏉冮檺缁勪欢銆傛渶灏忓寲鏃朵繚鎸佺粍浠舵寕杞斤紙浠呰瑙夐殣钘忥級锛?
+  // 閬垮厤閲嶆柊灞曞紑鍚庝涪澶辩敤鎴峰凡閫夋嫨/宸茶緭鍏ョ殑鍐呭锛沰ey 鎸?requestId 闅旂涓嶅悓璇锋眰鐨勭姸鎬併€?
   const permissionModal = useMemo(() => {
     if (!pendingPermission) return null;
 
-    // 检查是否为 AskUserQuestion 且有多个问题 -> 使用向导式组件
+    // 妫€鏌ユ槸鍚︿负 AskUserQuestion 涓旀湁澶氫釜闂 -> 浣跨敤鍚戝寮忕粍浠?
     const isQuestionTool = pendingPermission.toolName === 'AskUserQuestion';
     if (isQuestionTool && pendingPermission.toolInput) {
       const rawQuestions = (pendingPermission.toolInput as Record<string, unknown>).questions;
@@ -992,7 +1072,7 @@ const App: React.FC = () => {
       }
     }
 
-    // 其他情况使用原有的权限模态框
+    // 鍏朵粬鎯呭喌浣跨敤鍘熸湁鐨勬潈闄愭ā鎬佹
     return (
       <CoworkPermissionModal
         key={pendingPermission.requestId}
@@ -1110,6 +1190,7 @@ const App: React.FC = () => {
           onShowScheduledTasks={handleShowScheduledTasks}
           onShowKits={handleShowKits}
           onShowMcp={handleShowMcp}
+          onShowEnterprise={handleShowEnterprise}
           onNewChat={handleNewChat}
           isCollapsed={isSidebarCollapsed}
           onToggleCollapse={handleToggleSidebar}
@@ -1153,6 +1234,13 @@ const App: React.FC = () => {
                 onNewChat={handleNewChat}
                 updateBadge={collapsedHeaderUpdateBadge}
               />
+            ) : mainView === 'enterprise' ? (
+              <EnterpriseActivationView
+                isSidebarCollapsed={isSidebarCollapsed}
+                onToggleSidebar={handleToggleSidebar}
+                onNewChat={handleNewChat}
+                updateBadge={collapsedHeaderUpdateBadge}
+              />
             ) : (
               <CoworkView
                 onRequestAppSettings={privacyAgreed === true && !showWelcome ? handleShowSettings : undefined}
@@ -1176,7 +1264,7 @@ const App: React.FC = () => {
         suspended={showSettings || showUpdateModal || isPermissionModalOpen || privacyAgreed === false || showWelcome}
       />
 
-      {/* 设置窗口显示在所有主内容之上，但不影响主界面的交互 */}
+      {/* 璁剧疆绐楀彛鏄剧ず鍦ㄦ墍鏈変富鍐呭涔嬩笂锛屼絾涓嶅奖鍝嶄富鐣岄潰鐨勪氦浜?*/}
       {showSettings && (
         <Settings
           onClose={handleCloseSettings}
@@ -1209,8 +1297,7 @@ const App: React.FC = () => {
       )}
       {showWelcome && (
         <WelcomeDialog
-          onLogin={handleWelcomeLogin}
-          onCustomModel={handleWelcomeCustomModel}
+          onEnterpriseActivate={handleWelcomeEnterpriseActivate}
         />
       )}
     </div>
@@ -1218,3 +1305,4 @@ const App: React.FC = () => {
 };
 
 export default App; 
+

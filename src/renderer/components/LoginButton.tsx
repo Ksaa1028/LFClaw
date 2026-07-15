@@ -1,18 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useSelector } from 'react-redux';
 
-import inviteCreditsIconUrl from '../assets/icons/invite-credits.svg';
 import logoutIconUrl from '../assets/icons/logout.svg';
-import promoSubscriptionIconUrl from '../assets/icons/promo-subscription.svg';
-import rechargeIconUrl from '../assets/icons/recharge.svg';
-import usageOverviewIconUrl from '../assets/icons/usage-overview.svg';
 import { authService } from '../services/auth';
-import {
-  getPortalCreditsResetActivityUrl,
-  getPortalInvitationUrl,
-  getPortalProfileUrl,
-  getPortalRechargeUrl,
-} from '../services/endpoints';
 import { i18nService } from '../services/i18n';
 import { LogReporterAction, reportYdAnalyzer } from '../services/logReporter';
 import { RootState } from '../store';
@@ -169,19 +159,26 @@ const PortalMenuIcon: React.FC<{ src: string; darkInvert?: boolean }> = ({
 );
 
 const UserMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
-  const user = useSelector((state: RootState) => state.auth.user);
-  const profileSummary = useSelector((state: RootState) => state.auth.profileSummary);
+  const { profileSummary, quota, user } = useSelector((state: RootState) => state.auth);
   const [creditsExpanded, setCreditsExpanded] = useState(false);
   const isEn = i18nService.getLanguage() === 'en';
+  const totalCredits = quota?.creditsRemaining ?? profileSummary?.totalCreditsRemaining ?? 0;
+  const creditItems = profileSummary?.creditItems?.length
+    ? profileSummary.creditItems
+    : quota
+      ? [{
+          type: 'free' as const,
+          label: quota.planName || i18nService.t('authCreditsRemaining'),
+          labelEn: quota.planName || i18nService.t('authCreditsRemaining'),
+          creditsRemaining: quota.creditsRemaining,
+          expiresAt: null,
+        }]
+      : [];
+  const phoneSuffix = user?.phone?.slice(-4);
 
   useEffect(() => {
     authService.fetchProfileSummary();
   }, []);
-
-  const openPortalUrl = async (url: string) => {
-    await window.electron.shell.openExternal(url);
-    onClose();
-  };
 
   const handleLogout = async () => {
     try {
@@ -200,92 +197,7 @@ const UserMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
       });
       throw error;
     }
-  };
-
-  const handleUsageOverview = async () => {
-    try {
-      await openPortalUrl(getPortalProfileUrl());
-      reportAccountMenuAction('open_usage_overview', {
-        creditItemCount: creditItems.length,
-        hasCredits,
-        result: 'success',
-      });
-    } catch (error) {
-      reportAccountMenuAction('open_usage_overview', {
-        creditItemCount: creditItems.length,
-        hasCredits,
-        result: 'failed',
-      });
-      throw error;
-    }
-  };
-
-  const handleRecharge = async () => {
-    try {
-      await openPortalUrl(getPortalRechargeUrl());
-      reportAccountMenuAction('open_recharge', {
-        creditItemCount: creditItems.length,
-        hasCredits,
-        result: 'success',
-      });
-    } catch (error) {
-      reportAccountMenuAction('open_recharge', {
-        creditItemCount: creditItems.length,
-        hasCredits,
-        result: 'failed',
-      });
-      throw error;
-    }
-  };
-
-  const handleInvite = async () => {
-    try {
-      await openPortalUrl(getPortalInvitationUrl());
-      reportAccountMenuAction('open_invitation', {
-        creditItemCount: creditItems.length,
-        hasCredits,
-        result: 'success',
-      });
-    } catch (error) {
-      reportAccountMenuAction('open_invitation', {
-        creditItemCount: creditItems.length,
-        hasCredits,
-        result: 'failed',
-      });
-      throw error;
-    }
-  };
-
-  const handleCreditsResetActivity = async () => {
-    try {
-      await openPortalUrl(getPortalCreditsResetActivityUrl());
-      reportAccountMenuAction('open_credits_reset_campaign', {
-        creditItemCount: creditItems.length,
-        hasCredits,
-        result: 'success',
-      });
-    } catch (error) {
-      reportAccountMenuAction('open_credits_reset_campaign', {
-        creditItemCount: creditItems.length,
-        hasCredits,
-        result: 'failed',
-      });
-      throw error;
-    }
-  };
-
-  const phoneSuffix = user?.phone ? user.phone.slice(-4) : '';
-
-  const totalCredits = profileSummary?.totalCreditsRemaining ?? 0;
-  const creditItems = profileSummary?.creditItems ?? [];
-  const hasCredits = creditItems.length > 0;
-  const availableResetCount = profileSummary?.availableResetCount ?? 0;
-  const availablePromoSubscriptionCount = profileSummary?.availablePromoSubscriptionCount ?? 0;
-  const campaignActionLabel = availableResetCount > 0
-    ? i18nService.t('authCreditsResetAction')
-    : availablePromoSubscriptionCount > 0
-      ? i18nService.t('authPromoSubscriptionAction')
-      : null;
+  };  const hasCredits = creditItems.length > 0;
 
   return (
     <div className="absolute bottom-full left-[-0.5rem] mb-1 w-[14.5rem] bg-surface rounded-xl shadow-popover border border-border overflow-hidden z-50 popover-enter">
@@ -359,28 +271,6 @@ const UserMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 
       {/* Actions */}
       <div className="py-1">
-        {campaignActionLabel && (
-          <AccountMenuAction
-            icon={<PortalMenuIcon src={promoSubscriptionIconUrl} darkInvert />}
-            label={campaignActionLabel}
-            onClick={handleCreditsResetActivity}
-          />
-        )}
-        <AccountMenuAction
-          icon={<PortalMenuIcon src={usageOverviewIconUrl} darkInvert />}
-          label={i18nService.t('authUsageOverview')}
-          onClick={handleUsageOverview}
-        />
-        <AccountMenuAction
-          icon={<PortalMenuIcon src={rechargeIconUrl} darkInvert />}
-          label={i18nService.t('authGoRecharge')}
-          onClick={handleRecharge}
-        />
-        <AccountMenuAction
-          icon={<PortalMenuIcon src={inviteCreditsIconUrl} darkInvert />}
-          label={i18nService.t('authInviteFriendsForCredits')}
-          onClick={handleInvite}
-        />
         <AccountMenuAction
           icon={<PortalMenuIcon src={logoutIconUrl} darkInvert />}
           label={i18nService.t('authLogout')}
@@ -391,7 +281,11 @@ const UserMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   );
 };
 
-const LoginButton: React.FC = () => {
+interface LoginButtonProps {
+  onEnterpriseLogin?: () => void;
+}
+
+const LoginButton: React.FC<LoginButtonProps> = ({ onEnterpriseLogin }) => {
   const { isLoggedIn, isLoading, profileSummary, user } = useSelector((state: RootState) => state.auth);
   const [showMenu, setShowMenu] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -427,7 +321,11 @@ const LoginButton: React.FC = () => {
       return;
     }
     try {
-      await authService.login();
+      if (onEnterpriseLogin) {
+        onEnterpriseLogin();
+      } else {
+        await authService.login();
+      }
       reportAccountMenuAction('login', {
         isLoggedIn: false,
         result: 'success',
@@ -440,6 +338,7 @@ const LoginButton: React.FC = () => {
       throw error;
     }
   };
+  const displayName = user?.nickname?.trim() || user?.userId || user?.yid || i18nService.t('myAccount');
 
   return (
     <div ref={containerRef} className="relative">
@@ -455,12 +354,12 @@ const LoginButton: React.FC = () => {
             ) : (
               <UserAvatarIcon className="h-4 w-4 shrink-0" />
             )}
-            <span className="truncate max-w-[80px]">{i18nService.t('myAccount')}</span>
+            <span className="truncate max-w-[96px]">{displayName}</span>
           </>
         ) : (
           <>
             <UserAvatarIcon className="h-4 w-4 shrink-0" />
-            {i18nService.t('login')}
+            企业激活
           </>
         )}
       </button>

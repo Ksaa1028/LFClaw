@@ -1,4 +1,4 @@
-import { ExclamationTriangleIcon } from '@heroicons/react/24/outline';
+import { BuildingOffice2Icon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
 import { AgentId } from '@shared/agent';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSelector } from 'react-redux';
@@ -38,12 +38,13 @@ import SidebarAdBanner from './SidebarAdBanner';
 interface SidebarProps {
   onShowSettings: () => void;
   onShowLogin?: () => void;
-  activeView: 'cowork' | 'skills' | 'scheduledTasks' | 'kits' | 'mcp';
+  activeView: 'cowork' | 'skills' | 'scheduledTasks' | 'kits' | 'mcp' | 'enterprise';
   onShowSkills: () => void;
   onShowCowork: () => void;
   onShowScheduledTasks: () => void;
   onShowKits: () => void;
   onShowMcp: () => void;
+  onShowEnterprise: () => void;
   onNewChat: () => void;
   isCollapsed: boolean;
   onToggleCollapse: () => void;
@@ -135,6 +136,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   onShowScheduledTasks,
   onShowKits,
   onShowMcp,
+  onShowEnterprise,
   onNewChat,
   isCollapsed,
   onToggleCollapse,
@@ -614,6 +616,19 @@ const Sidebar: React.FC<SidebarProps> = ({
             <SidebarMcpIcon className="h-4 w-4 shrink-0" />
             {i18nService.t('mcpServers')}
           </button>
+          <button
+            type="button"
+            onClick={() => {
+              reportSidebarAction('open_enterprise_activation', { activeView, isCollapsed });
+              setIsSearchOpen(false);
+              onShowEnterprise();
+            }}
+            className={activeView === 'enterprise' ? activeSidebarNavItemClassName : sidebarNavItemClassName}
+            aria-current={activeView === 'enterprise' ? 'page' : undefined}
+          >
+            <BuildingOffice2Icon className="h-4 w-4 shrink-0" />
+            企业激活
+          </button>
         </div>
       </div>
       <div className="relative min-h-0 flex-1">
@@ -729,7 +744,7 @@ const Sidebar: React.FC<SidebarProps> = ({
           <div className="flex items-center gap-1 pl-3 pr-2 pt-1">
             {!hideLogin && (
               <div className="flex-1 min-w-0">
-                <LoginButton />
+                <LoginButton onEnterpriseLogin={onShowEnterprise} />
               </div>
             )}
             <button

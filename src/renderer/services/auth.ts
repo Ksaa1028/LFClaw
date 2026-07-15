@@ -13,6 +13,7 @@ import {
 import type { Model } from '../store/slices/modelSlice';
 import {
   clearServerModels,
+  setAvailableModels,
   setServerModels,
 } from '../store/slices/modelSlice';
 
@@ -27,6 +28,8 @@ export interface PricingCatalogTextModel {
   modelName?: string;
   provider?: string;
   providerLabel?: string;
+  providerKey?: string;
+  openClawProviderId?: string;
   description?: string;
   supportsImage?: boolean;
   supportsThinking?: boolean;
@@ -145,39 +148,10 @@ class AuthService {
   }
 
   /**
-   * Initiate login (opens system browser).
+   * Initiate login.
    */
   async login() {
-    const loginUrl = await this.fetchLoginUrl();
-    await window.electron.auth.login(loginUrl);
-  }
-
-  /**
-   * Fetch login URL from overmind, fallback to Portal login page.
-   */
-  private async fetchLoginUrl(): Promise<string> {
-    const { getLoginOvermindUrl } = await import('./endpoints');
-    const url = getLoginOvermindUrl();
-    try {
-      const response = await window.electron.api.fetch({
-        url,
-        method: 'GET',
-        headers: { Accept: 'application/json' },
-      });
-      if (response.ok && typeof response.data === 'object' && response.data !== null) {
-        const value = (response.data as any)?.data?.value;
-        if (typeof value === 'string' && value.trim()) {
-          console.log('[Auth] fetched login URL from overmind');
-          return value.trim();
-        }
-      }
-    } catch (e) {
-      console.error('[Auth] Failed to fetch login URL from overmind:', e);
-    }
-    // Fallback: use Portal login page directly
-    const { getPortalLoginUrl } = await import('./endpoints');
-    console.log('[Auth] using fallback portal login URL');
-    return getPortalLoginUrl();
+    window.dispatchEvent(new CustomEvent('lfclaw:show-enterprise-login'));
   }
 
   /**
@@ -295,12 +269,15 @@ class AuthService {
   private async loadServerModels() {
     try {
       const modelsResult = await window.electron.auth.getModels();
+      const enterpriseStatus = await window.electron.enterprise.getStatus().catch(() => null);
+      const enterpriseManaged = enterpriseStatus?.success === true && !!enterpriseStatus.status?.access;
       if (modelsResult.success && modelsResult.models) {
-        const serverModels: Model[] = modelsResult.models.map((m: { modelId: string; modelName: string; provider: string; apiFormat: string; supportsImage?: boolean; supportsThinking?: boolean; contextWindow?: number; explicitContextCache?: boolean; costMultiplier?: number; description?: string; accessible?: boolean; restrictionHint?: string }) => ({
+        const serverModels: Model[] = modelsResult.models.map((m: { modelId: string; modelName: string; provider: string; providerKey?: string; openClawProviderId?: string; apiFormat: string; supportsImage?: boolean; supportsThinking?: boolean; contextWindow?: number; explicitContextCache?: boolean; costMultiplier?: number; description?: string; accessible?: boolean; restrictionHint?: string }) => ({
           id: m.modelId,
           name: m.modelName,
           provider: m.provider,
-          providerKey: 'lobsterai-server',
+          providerKey: m.providerKey || 'lobsterai-server',
+          openClawProviderId: m.openClawProviderId,
           isServerModel: true,
           serverApiFormat: m.apiFormat,
           supportsImage: m.supportsImage ?? false,
@@ -312,9 +289,16 @@ class AuthService {
           accessible: m.accessible ?? true,
           restrictionHint: m.restrictionHint ?? undefined,
         }));
+        if (enterpriseManaged) {
+          store.dispatch(setAvailableModels([]));
+        }
         store.dispatch(setServerModels(serverModels));
         console.debug(`[Auth] loaded ${serverModels.length} server model(s) into renderer state`);
       } else {
+        if (enterpriseManaged) {
+          store.dispatch(setAvailableModels([]));
+        }
+        store.dispatch(clearServerModels());
         console.debug('[Auth] server model load returned no models');
       }
     } catch (error) {

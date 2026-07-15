@@ -20,6 +20,11 @@ import type {
   DataMigrationRestoreScheduleResult,
 } from '../../shared/dataMigration/constants';
 import type {
+  EnterpriseCurrentAccess,
+  EnterpriseActivateInput,
+  EnterpriseStatus,
+} from '../../shared/enterprise/constants';
+import type {
   HtmlShareAccessMode,
   HtmlShareConfigurableStatus,
   HtmlShareDisabledSource,
@@ -1615,6 +1620,11 @@ interface IElectronAPI {
       version: string;
       name: string;
     } | null>;
+    getStatus: () => Promise<{ success: boolean; status?: EnterpriseStatus; error?: string }>;
+    setServerUrl: (serverUrl: string) => Promise<{ success: boolean; status?: EnterpriseStatus; error?: string }>;
+    activate: (input: EnterpriseActivateInput) => Promise<{ success: boolean; access?: EnterpriseCurrentAccess; error?: string }>;
+    syncPolicy: () => Promise<{ success: boolean; access?: EnterpriseCurrentAccess | null; error?: string }>;
+    deactivateCurrent: () => Promise<{ success: boolean; error?: string }>;
   };
   networkStatus: {
     send: (status: 'online' | 'offline') => void;

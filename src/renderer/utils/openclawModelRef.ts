@@ -5,6 +5,9 @@ import type { Model } from '../store/slices/modelSlice';
 type ModelRefInput = Pick<Model, 'id' | 'providerKey' | 'openClawProviderId' | 'isServerModel'>;
 
 function resolveModelOpenClawProviderId(model: ModelRefInput): string {
+  if (model.openClawProviderId) {
+    return model.openClawProviderId;
+  }
   if (model.isServerModel) {
     return OpenClawProviderId.LobsteraiServer;
   }

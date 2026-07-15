@@ -10,6 +10,7 @@ import { startQichachaMcpApiKeyLogin } from '../../mcp/qichachaMcpAuth';
 
 export interface McpHandlerDeps {
   getMcpRuntime: () => McpRuntime;
+  isMcpAllowed?: (server: { id: string; registryId?: string | null; name?: string | null }) => boolean;
   syncOpenClawConfig: (options: {
     reason: string;
     restartGatewayIfRunning?: boolean;
@@ -124,11 +125,18 @@ function buildQichachaServerData(
 }
 
 export function registerMcpHandlers(deps: McpHandlerDeps): void {
-  const { getMcpRuntime, syncOpenClawConfig } = deps;
+  const { getMcpRuntime, isMcpAllowed, syncOpenClawConfig } = deps;
 
   ipcMain.handle(McpIpcChannel.List, () => {
     try {
-      const servers = getMcpRuntime().getStore().listServers();
+      const servers = getMcpRuntime()
+        .getStore()
+        .listServers()
+        .map(server => ({
+          ...server,
+          enterpriseAllowed: isMcpAllowed ? isMcpAllowed(server) : true,
+        }))
+        .filter(server => server.enterpriseAllowed || !isMcpAllowed);
       return { success: true, servers };
     } catch (error) {
       return {
@@ -250,6 +258,13 @@ export function registerMcpHandlers(deps: McpHandlerDeps): void {
   ipcMain.handle(McpIpcChannel.SetEnabled, async (_event, options: { id: string; enabled: boolean }) => {
     try {
       const mcpRuntime = getMcpRuntime();
+      const existing = mcpRuntime.getStore().listServers().find(server => server.id === options.id);
+      if (options.enabled && existing && isMcpAllowed && !isMcpAllowed(existing)) {
+        return {
+          success: false,
+          error: 'This MCP server is not enabled for the current enterprise activation.',
+        };
+      }
       mcpRuntime.getStore().setEnabled(options.id, options.enabled);
       if (options.enabled) {
         mcpRuntime.ensureLaunchResolution(options.id, 'mcp-server-enabled');

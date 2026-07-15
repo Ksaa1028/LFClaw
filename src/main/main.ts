@@ -78,6 +78,7 @@ import {
   DataMigrationRestoreStatus,
 } from '../shared/dataMigration/constants';
 import { DialogIpc } from '../shared/dialog/constants';
+import { type EnterpriseActivateInput, type EnterpriseCurrentAccess, EnterpriseIpcChannel } from '../shared/enterprise/constants';
 import {
   HtmlShareAccessMode,
   type HtmlShareAccessMode as HtmlShareAccessModeValue,
@@ -245,6 +246,7 @@ import {
 } from './libs/htmlShare/htmlShareClient';
 import { packageHtmlFile } from './libs/htmlShare/htmlSharePackager';
 import { getKeyfromAttribution, initializeKeyfromAttribution } from './libs/keyfromAttribution';
+import { LfClawEnterpriseAccess } from './libs/lfclawEnterpriseAccess';
 import { exportLogsZip } from './libs/logExport';
 import { inferImageMimeTypeFromDataUrl, type PersistedGeneratedImageAsset, persistGeneratedImageAssets, type PersistGeneratedImageAssetsResult, persistGeneratedVideoAssets, type RemoteGeneratedMediaAsset } from './libs/mediaAssetPersistence';
 import { migrateAgentModelRefs, parsePrimaryModelRef, resolveQualifiedAgentModelRef } from './libs/openclawAgentModels';
@@ -1520,6 +1522,7 @@ let storeInitPromise: Promise<SqliteStore> | null = null;
 let sqliteBackupManager: SqliteBackupManager | null = null;
 let openClawEngineManager: OpenClawEngineManager | null = null;
 let openClawConfigSync: OpenClawConfigSync | null = null;
+let lfClawEnterpriseAccess: LfClawEnterpriseAccess | null = null;
 let openClawBootstrapPromise: Promise<OpenClawEngineStatus> | null = null;
 let cachedSubscriptionStatus: string = AuthSubscriptionStatus.Free;
 let cachedMediaGenerationEntitled = false;
@@ -1530,6 +1533,13 @@ let preventSleepBlockerId: number | null = null;
 let appUpdateCoordinator: AppUpdateCoordinator | null = null;
 
 const AUTH_USER_STORE_KEY = 'auth_user';
+
+const getLfClawEnterpriseAccess = (): LfClawEnterpriseAccess => {
+  if (!lfClawEnterpriseAccess) {
+    lfClawEnterpriseAccess = new LfClawEnterpriseAccess(getStore());
+  }
+  return lfClawEnterpriseAccess;
+};
 
 function setPreventSleepBlockerEnabled(enabled: boolean): void {
   if (enabled) {
@@ -2437,9 +2447,52 @@ const bindCoworkRuntimeForwarder = (): void => {
     });
   });
 
+  const enterpriseReportedUsageMessageIds = new Set<string>();
+  const readUsageNumber = (value: unknown): number | undefined => (
+    typeof value === 'number' && Number.isFinite(value) ? value : undefined
+  );
+  const reportEnterpriseUsageFromMessageMetadata = (
+    sessionId: string,
+    messageId: string,
+    metadata?: Record<string, unknown>,
+  ): void => {
+    if (enterpriseReportedUsageMessageIds.has(messageId)) return;
+    const usage = isRecordValue(metadata?.usage) ? metadata.usage : null;
+    if (!usage) return;
+    const inputTokens = readUsageNumber(usage.inputTokens);
+    const outputTokens = readUsageNumber(usage.outputTokens);
+    const cacheWriteTokens = readUsageNumber(usage.cacheWriteTokens);
+    const cacheReadTokens = readUsageNumber(usage.cacheReadTokens);
+    if (
+      inputTokens === undefined
+      && outputTokens === undefined
+      && cacheWriteTokens === undefined
+      && cacheReadTokens === undefined
+    ) {
+      return;
+    }
+    enterpriseReportedUsageMessageIds.add(messageId);
+    const session = getCoworkStore().getSession(sessionId);
+    const modelId = typeof metadata?.model === 'string' && metadata.model.trim()
+      ? metadata.model.trim()
+      : session?.modelOverride || undefined;
+    getLfClawEnterpriseAccess().reportUsage({
+      modelId,
+      inputTokens,
+      outputTokens,
+      cacheWriteTokens,
+      cacheReadTokens,
+    }).then(() => {
+      BrowserWindow.getAllWindows().forEach(win => {
+        if (!win.isDestroyed()) win.webContents.send('auth:quotaChanged');
+      });
+    }).catch(error => console.warn('[Enterprise] failed to report token usage:', error));
+  };
+
   runtime.on(
     'messageUpdate',
     (sessionId: string, messageId: string, content: string, metadata?: Record<string, unknown>) => {
+      reportEnterpriseUsageFromMessageMetadata(sessionId, messageId, metadata);
       const safeContent = truncateIpcString(content, IPC_UPDATE_CONTENT_MAX_CHARS);
       const windows = BrowserWindow.getAllWindows();
       windows.forEach(win => {
@@ -3288,7 +3341,11 @@ const MIN_RELOAD_INTERVAL_MS = 5000;
 type AppConfigSettings = {
   api?: unknown;
   app?: Record<string, unknown>;
-  model?: unknown;
+  model?: {
+    defaultModel?: string;
+    defaultModelProvider?: string;
+    availableModels?: unknown[];
+  } | unknown;
   providers?: Record<string, unknown>;
   shortcuts?: Record<string, unknown>;
   theme?: string;
@@ -3300,8 +3357,158 @@ type AppConfigSettings = {
   browserWebAccess?: Partial<BrowserWebAccessConfig>;
 };
 
+const isRecordValue = (value: unknown): value is Record<string, unknown> => (
+  !!value && typeof value === 'object' && !Array.isArray(value)
+);
+
 const getUseSystemProxyFromConfig = (config?: { useSystemProxy?: boolean }): boolean => {
   return config?.useSystemProxy === true;
+};
+
+const syncEnterpriseModelProvidersToAppConfig = (
+  access: EnterpriseCurrentAccess | null,
+): void => {
+  const providers = access?.policy.modelProviders ?? [];
+  if (providers.length === 0) return;
+
+  const store = getStore();
+  const current = store.get<AppConfigSettings>('app_config') ?? {};
+  const currentProviders = isRecordValue(current.providers) ? current.providers : {};
+  const nextProviders: Record<string, unknown> = { ...currentProviders };
+  const availableModels = providers.flatMap(provider => provider.models.map(model => ({
+    id: model.id,
+    name: model.name || model.id,
+    supportsImage: model.supportsImage === true,
+  })));
+  const currentModel = isRecordValue(current.model) ? current.model : {};
+
+  providers.forEach((provider, index) => {
+    const providerKey = `custom_${index}`;
+    nextProviders[providerKey] = {
+      enabled: true,
+      displayName: provider.name,
+      apiKey: provider.apiKey,
+      baseUrl: provider.baseUrl,
+      apiFormat: provider.apiFormat,
+      models: provider.models.map(model => ({
+        id: model.id,
+        name: model.name || model.id,
+        supportsImage: model.supportsImage === true,
+        supportsThinking: model.supportsThinking === true,
+        ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
+      })),
+    };
+  });
+
+  store.set('app_config', {
+    ...current,
+    providers: nextProviders,
+    model: {
+      ...currentModel,
+      availableModels,
+      defaultModel: typeof currentModel.defaultModel === 'string' && currentModel.defaultModel
+        ? currentModel.defaultModel
+        : availableModels[0]?.id || '',
+      defaultModelProvider: typeof currentModel.defaultModelProvider === 'string' && currentModel.defaultModelProvider
+        ? currentModel.defaultModelProvider
+        : 'custom_0',
+    },
+  });
+};
+
+const syncEnterpriseMcpServersToLocalStore = (access: EnterpriseCurrentAccess | null): void => {
+  const servers = access?.policy.mcpServers ?? [];
+  if (servers.length === 0) return;
+
+  const mcpRuntimeInstance = getMcpRuntime();
+  const store = mcpRuntimeInstance.getStore();
+  const existingServers = store.listServers();
+
+  servers.forEach(server => {
+    const registryId = server.id;
+    const transportType: 'stdio' | 'sse' | 'http' = server.transportType === 'stdio' || server.transportType === 'sse'
+      ? server.transportType
+      : 'http';
+    const data = {
+      name: server.name || server.id,
+      description: server.description || 'LfClaw enterprise MCP',
+      transportType,
+      command: server.command,
+      args: server.args,
+      env: server.env,
+      url: server.url,
+      headers: server.headers,
+      isBuiltIn: true,
+      registryId,
+    };
+    const existing = existingServers.find(item => item.registryId === registryId || item.name === server.name);
+    if (existing) {
+      store.updateServer(existing.id, data);
+      store.setEnabled(existing.id, true);
+      mcpRuntimeInstance.ensureLaunchResolution(existing.id, 'enterprise-mcp-synced');
+      return;
+    }
+    const created = store.createServer(data);
+    mcpRuntimeInstance.ensureLaunchResolution(created.id, 'enterprise-mcp-synced');
+  });
+};
+
+const syncEnterpriseSkillsToLocalStore = async (access: EnterpriseCurrentAccess | null): Promise<void> => {
+  const skills = access?.policy.skills ?? [];
+  if (!access || skills.length === 0) return;
+
+  const skillManagerInstance = getSkillManager();
+  const installedIds = new Set(skillManagerInstance.listSkills().map(skill => skill.id));
+
+  for (const skill of skills) {
+    if (!skill.id || installedIds.has(skill.id) || !skill.downloadUrl) continue;
+
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lfclaw-enterprise-skill-'));
+    const zipPath = path.join(tempDir, skill.packageFileName || `${skill.id}.zip`);
+    try {
+      const response = await net.fetch(skill.downloadUrl, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${access.accessToken}`,
+          Accept: 'application/zip',
+        },
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      fs.writeFileSync(zipPath, Buffer.from(await response.arrayBuffer()));
+      const result = await skillManagerInstance.downloadSkill(zipPath);
+      if (result.pendingInstallId) {
+        skillManagerInstance.confirmPendingInstall(result.pendingInstallId, 'install');
+      }
+      if (!result.success) {
+        throw new Error(result.error || 'install failed');
+      }
+      installedIds.add(skill.id);
+      console.log(`[Enterprise] installed enterprise skill "${skill.id}"`);
+    } catch (error) {
+      console.warn(`[Enterprise] failed to install enterprise skill "${skill.id}":`, error);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  }
+};
+
+const resolveEnterpriseModelRef = (
+  access: EnterpriseCurrentAccess | null,
+  modelRef?: string | null,
+): string | undefined => {
+  const trimmed = modelRef?.trim();
+  if (!access || !trimmed) return trimmed || undefined;
+  const slashIndex = trimmed.indexOf('/');
+  const providerId = slashIndex >= 0 ? trimmed.slice(0, slashIndex) : '';
+  const modelId = slashIndex >= 0 ? trimmed.slice(slashIndex + 1) : trimmed;
+  if (!modelId) return trimmed;
+  if (providerId.startsWith('custom_')) return trimmed;
+  const providerIndex = (access.policy.modelProviders ?? []).findIndex(provider => (
+    provider.models.some(model => model.id === modelId)
+  ));
+  return providerIndex >= 0 ? `custom_${providerIndex}/${modelId}` : trimmed;
 };
 
 const hasBrowserWebAccessConfigChanged = (
@@ -3610,6 +3817,90 @@ if (!gotTheLock) {
       return getStore().get('enterprise_config') ?? null;
     } catch {
       return null;
+    }
+  });
+
+  const notifyEnterprisePolicyChanged = () => {
+    syncOpenClawConfig({
+      reason: 'enterprise-policy-updated',
+      restartGatewayIfRunning: false,
+    }).catch(error => console.warn('[Enterprise] failed to sync config after policy update:', error));
+    BrowserWindow.getAllWindows().forEach(win => {
+      if (!win.isDestroyed()) {
+        win.webContents.send('auth:quotaChanged');
+      }
+    });
+  };
+
+  const ensureEnterpriseAccessForCowork = async (): Promise<LfClawEnterpriseAccess> => {
+    const enterpriseAccess = getLfClawEnterpriseAccess();
+    const access = await enterpriseAccess.requireActiveAccess();
+    if (access.quota.creditsRemaining <= 0) {
+      throw new Error('企业积分已用完，请联系管理员分配积分。');
+    }
+    syncEnterpriseModelProvidersToAppConfig(access);
+    syncEnterpriseMcpServersToLocalStore(access);
+    await syncEnterpriseSkillsToLocalStore(access);
+    await syncOpenClawConfig({
+      reason: 'enterprise-preflight',
+      restartGatewayIfRunning: false,
+    }).catch(error => console.warn('[Enterprise] failed to sync config during preflight:', error));
+    BrowserWindow.getAllWindows().forEach(win => {
+      if (!win.isDestroyed()) {
+        win.webContents.send('auth:quotaChanged');
+      }
+    });
+    return enterpriseAccess;
+  };
+
+  ipcMain.handle(EnterpriseIpcChannel.GetStatus, async () => {
+    try {
+      return { success: true, status: getLfClawEnterpriseAccess().getStatus() };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Failed to load enterprise status' };
+    }
+  });
+
+  ipcMain.handle(EnterpriseIpcChannel.SetServerUrl, async (_event, serverUrl: string) => {
+    try {
+      return { success: true, status: getLfClawEnterpriseAccess().setServerUrl(serverUrl) };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Failed to save enterprise server URL' };
+    }
+  });
+
+  ipcMain.handle(EnterpriseIpcChannel.Activate, async (_event, input: EnterpriseActivateInput) => {
+    try {
+      const access = await getLfClawEnterpriseAccess().activate(input);
+      syncEnterpriseModelProvidersToAppConfig(access);
+      syncEnterpriseMcpServersToLocalStore(access);
+      await syncEnterpriseSkillsToLocalStore(access);
+      notifyEnterprisePolicyChanged();
+      return { success: true, access };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Failed to activate' };
+    }
+  });
+
+  ipcMain.handle(EnterpriseIpcChannel.SyncPolicy, async () => {
+    try {
+      const access = await getLfClawEnterpriseAccess().syncPolicy();
+      syncEnterpriseModelProvidersToAppConfig(access);
+      syncEnterpriseMcpServersToLocalStore(access);
+      await syncEnterpriseSkillsToLocalStore(access);
+      notifyEnterprisePolicyChanged();
+      return { success: true, access };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Failed to sync enterprise policy' };
+    }
+  });
+
+  ipcMain.handle(EnterpriseIpcChannel.DeactivateCurrent, async () => {
+    try {
+      getLfClawEnterpriseAccess().deactivateCurrent();
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Failed to deactivate' };
     }
   });
 
@@ -4984,34 +5275,13 @@ if (!gotTheLock) {
 
   ipcMain.handle('auth:getUser', async () => {
     try {
-      const tokens = getAuthTokens();
-      if (!tokens) return { success: false };
-      const serverBaseUrl = getServerApiBaseUrl();
-      // Fetch user profile
-      const profileResp = await fetchWithAuth(`${serverBaseUrl}/api/user/profile`);
-      if (!profileResp.ok) return { success: false };
-      const profileBody = (await profileResp.json()) as {
-        code: number;
-        data: Record<string, unknown>;
-      };
-      if (profileBody.code !== 0 || !profileBody.data) return { success: false };
-      saveAuthUser(profileBody.data);
-      // Fetch quota separately
-      const quotaResp = await fetchWithAuth(`${serverBaseUrl}/api/user/quota`);
-      let quota = null;
-      if (quotaResp.ok) {
-        const quotaBody = (await quotaResp.json()) as {
-          code: number;
-          data: Record<string, unknown>;
-        };
-        if (quotaBody.code === 0 && quotaBody.data) {
-          const previousQuotaGateState = getAuthQuotaGateState();
-          quota = normalizeQuota(quotaBody.data);
-          syncOpenClawConfigIfAuthQuotaGateChanged(previousQuotaGateState);
-        }
+      const enterpriseAccess = getLfClawEnterpriseAccess().getCurrentAccess()
+        ? await getLfClawEnterpriseAccess().syncPolicy()
+        : null;
+      if (enterpriseAccess) {
+        return { success: true, user: enterpriseAccess.user, quota: enterpriseAccess.quota };
       }
-      console.log('[Auth] getUser profile data:', JSON.stringify(profileBody.data));
-      return { success: true, user: profileBody.data, quota };
+      return { success: false };
     } catch {
       return { success: false };
     }
@@ -5019,17 +5289,13 @@ if (!gotTheLock) {
 
   ipcMain.handle('auth:getQuota', async () => {
     try {
-      const tokens = getAuthTokens();
-      if (!tokens) return { success: false };
-      const serverBaseUrl = getServerApiBaseUrl();
-      const resp = await fetchWithAuth(`${serverBaseUrl}/api/user/quota`);
-      if (!resp.ok) return { success: false };
-      const body = (await resp.json()) as { code: number; data: Record<string, unknown> };
-      if (body.code !== 0 || !body.data) return { success: false };
-      const previousQuotaGateState = getAuthQuotaGateState();
-      const quota = normalizeQuota(body.data);
-      syncOpenClawConfigIfAuthQuotaGateChanged(previousQuotaGateState);
-      return { success: true, quota };
+      const enterpriseAccess = getLfClawEnterpriseAccess().getCurrentAccess()
+        ? await getLfClawEnterpriseAccess().syncPolicy()
+        : null;
+      if (enterpriseAccess) {
+        return { success: true, quota: enterpriseAccess.quota };
+      }
+      return { success: false };
     } catch {
       return { success: false };
     }
@@ -5037,16 +5303,28 @@ if (!gotTheLock) {
 
   ipcMain.handle('auth:getProfileSummary', async () => {
     try {
-      const tokens = getAuthTokens();
-      if (!tokens) return { success: false };
-      const serverBaseUrl = getServerApiBaseUrl();
-      const profileSummaryUrl = appendKeyfromQuery(`${serverBaseUrl}/api/user/profile-summary`);
-      console.log(`[Auth] requesting profile summary at ${profileSummaryUrl}`);
-      const resp = await fetchWithAuth(profileSummaryUrl);
-      if (!resp.ok) return { success: false };
-      const body = (await resp.json()) as { code: number; data: Record<string, unknown> };
-      if (body.code !== 0 || !body.data) return { success: false };
-      return { success: true, data: body.data };
+      const enterpriseAccess = getLfClawEnterpriseAccess().getCurrentAccess()
+        ? await getLfClawEnterpriseAccess().syncPolicy()
+        : null;
+      if (enterpriseAccess) {
+        return {
+          success: true,
+          data: {
+            id: 0,
+            nickname: enterpriseAccess.user.nickname,
+            avatarUrl: null,
+            totalCreditsRemaining: enterpriseAccess.quota.creditsRemaining,
+            creditItems: [{
+              type: 'subscription',
+              label: 'LfClaw 企业积分',
+              labelEn: 'LfClaw Enterprise Credits',
+              creditsRemaining: enterpriseAccess.quota.creditsRemaining,
+              expiresAt: null,
+            }],
+          },
+        };
+      }
+      return { success: false };
     } catch {
       return { success: false };
     }
@@ -5082,6 +5360,7 @@ if (!gotTheLock) {
 
   ipcMain.handle('auth:logout', async () => {
     try {
+      getLfClawEnterpriseAccess().deactivateCurrent();
       const tokens = getAuthTokens();
       if (tokens) {
         const serverBaseUrl = getServerApiBaseUrl();
@@ -5193,6 +5472,29 @@ if (!gotTheLock) {
 
   ipcMain.handle('auth:getModels', async () => {
     try {
+      const enterpriseAccess = await getLfClawEnterpriseAccess().syncPolicy()
+        .catch(() => getLfClawEnterpriseAccess().getCurrentAccess());
+      if (enterpriseAccess) {
+        syncEnterpriseModelProvidersToAppConfig(enterpriseAccess);
+        const enterpriseModels = (enterpriseAccess.policy.modelProviders ?? []).flatMap((provider, index) => (
+          provider.models
+            .filter(model => getLfClawEnterpriseAccess().isModelAllowed(model.id))
+            .map(model => ({
+              modelId: model.id,
+              modelName: model.name || model.id,
+              provider: provider.name || provider.provider,
+              providerKey: `custom_${index}`,
+              openClawProviderId: `custom_${index}`,
+              apiFormat: provider.apiFormat,
+              supportsImage: model.supportsImage === true,
+              supportsThinking: model.supportsThinking === true,
+              contextWindow: model.contextWindow,
+              costMultiplier: provider.costPerCall,
+              accessible: true,
+            }))
+        ));
+        return { success: true, models: enterpriseModels };
+      }
       const tokens = getAuthTokens();
       if (!tokens) {
         console.log('[Auth:getModels] No auth tokens available');
@@ -5803,6 +6105,7 @@ if (!gotTheLock) {
   registerSkillHandlers({
     getSkillManager,
     getSkillStoreUrl,
+    isSkillAllowed: skillId => getLfClawEnterpriseAccess().isSkillAllowed(skillId),
     getOpenClawRuntimeAdapter: () => openClawRuntimeAdapter,
   });
 
@@ -6237,7 +6540,11 @@ if (!gotTheLock) {
     }
   });
 
-  registerMcpHandlers({ getMcpRuntime, syncOpenClawConfig });
+  registerMcpHandlers({
+    getMcpRuntime,
+    isMcpAllowed: server => getLfClawEnterpriseAccess().isMcpAllowed(server.id, server.registryId, server.name),
+    syncOpenClawConfig,
+  });
 
   // Cowork IPC handlers
   ipcMain.handle(
@@ -6316,6 +6623,22 @@ if (!gotTheLock) {
         const title = options.title?.trim() || fallbackTitle;
         const taskWorkingDirectory = resolveTaskWorkingDirectory(selectedTaskDirectory);
         const runtimeSkillIds = options.runtimeSkillIds ?? options.activeSkillIds;
+        const enterpriseAccess = await ensureEnterpriseAccessForCowork();
+        const enterpriseCurrentAccess = enterpriseAccess.getCurrentAccess();
+        const modelOverride = resolveEnterpriseModelRef(enterpriseCurrentAccess, options.modelOverride) || '';
+        if (modelOverride && !enterpriseAccess.isModelAllowed(modelOverride)) {
+          return {
+            success: false,
+            error: 'This model is not enabled for the current enterprise activation.',
+          };
+        }
+        const blockedSkillId = (runtimeSkillIds ?? []).find(skillId => !enterpriseAccess.isSkillAllowed(skillId));
+        if (blockedSkillId) {
+          return {
+            success: false,
+            error: `Skill "${blockedSkillId}" is not enabled for the current enterprise activation.`,
+          };
+        }
         const selectedTextSnippets = normalizeSelectedTextSnippetsForIpc(options.selectedTextSnippets);
         if (selectedTextSnippets.length > 0) {
           console.log(
@@ -6331,14 +6654,14 @@ if (!gotTheLock) {
           config.executionMode || 'local',
           runtimeSkillIds || [],
           options.agentId || 'main',
-          options.modelOverride || '',
+          modelOverride,
         );
 
-        if (options.modelOverride) {
+        if (modelOverride) {
           console.log(
             '[Cowork:StartSession] session created with modelOverride:',
             session.id,
-            options.modelOverride,
+            modelOverride,
           );
         }
 
@@ -6483,6 +6806,26 @@ if (!gotTheLock) {
         const runtime = getCoworkEngineRouter();
         const coworkStoreInstance = getCoworkStore();
         const existingSession = coworkStoreInstance.getSession(options.sessionId);
+        const enterpriseAccess = await ensureEnterpriseAccessForCowork();
+        const enterpriseCurrentAccess = enterpriseAccess.getCurrentAccess();
+        const sessionModel = resolveEnterpriseModelRef(enterpriseCurrentAccess, existingSession?.modelOverride)?.trim();
+        if (sessionModel && sessionModel !== existingSession?.modelOverride?.trim()) {
+          coworkStoreInstance.updateSession(options.sessionId, { modelOverride: sessionModel });
+        }
+        if (sessionModel && !enterpriseAccess.isModelAllowed(sessionModel)) {
+          return {
+            success: false,
+            error: 'This model is not enabled for the current enterprise activation.',
+          };
+        }
+        const runtimeSkillIds = options.runtimeSkillIds ?? options.activeSkillIds;
+        const blockedSkillId = (runtimeSkillIds ?? []).find(skillId => !enterpriseAccess.isSkillAllowed(skillId));
+        if (blockedSkillId) {
+          return {
+            success: false,
+            error: `Skill "${blockedSkillId}" is not enabled for the current enterprise activation.`,
+          };
+        }
         const config = coworkStoreInstance.getConfig();
         const hasLegacyPersistedPlanMode = containsPlanModePrompt(existingSession?.systemPrompt);
         const continuationSystemPrompt = mergeCoworkSystemPrompt(

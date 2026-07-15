@@ -8,6 +8,7 @@ import type { SkillManager } from '../../skills/skillManager';
 export interface SkillHandlerDeps {
   getSkillManager: () => SkillManager;
   getSkillStoreUrl: () => string;
+  isSkillAllowed?: (skillId: string) => boolean;
   getOpenClawRuntimeAdapter: () => {
     connectGatewayIfNeeded: () => Promise<void>;
     getGatewayClient: () => {
@@ -21,11 +22,17 @@ export interface SkillHandlerDeps {
 }
 
 export function registerSkillHandlers(deps: SkillHandlerDeps): void {
-  const { getSkillManager, getSkillStoreUrl, getOpenClawRuntimeAdapter } = deps;
+  const { getSkillManager, getSkillStoreUrl, getOpenClawRuntimeAdapter, isSkillAllowed } = deps;
 
   ipcMain.handle('skills:list', () => {
     try {
-      const skills = getSkillManager().listSkills();
+      const skills = getSkillManager()
+        .listSkills()
+        .map(skill => ({
+          ...skill,
+          enterpriseAllowed: isSkillAllowed ? isSkillAllowed(skill.id) : true,
+        }))
+        .filter(skill => skill.enterpriseAllowed || !isSkillAllowed);
       return { success: true, skills };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to load skills' };
@@ -34,6 +41,9 @@ export function registerSkillHandlers(deps: SkillHandlerDeps): void {
 
   ipcMain.handle('skills:setEnabled', async (_event, options: { id: string; enabled: boolean }) => {
     try {
+      if (options.enabled && isSkillAllowed && !isSkillAllowed(options.id)) {
+        return { success: false, error: 'This skill is not enabled for the current enterprise activation.' };
+      }
       const skills = getSkillManager().setSkillEnabled(options.id, options.enabled);
       // Best-effort sync to OpenClaw
       try {
