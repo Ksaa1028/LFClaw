@@ -1,113 +1,111 @@
-/**
- * Generate a multi-size .ico file from a source PNG.
- *
- * ICO format with embedded PNGs:
- *   ICONDIR  (6 bytes)  – reserved(2) + type(2)=1 + count(2)
- *   ICONDIRENTRY * N (16 bytes each)
- *   PNG data blobs
- *
- * We use System.Drawing via PowerShell to resize the source image into
- * several sizes, save them as temporary PNGs, then pack them into .ico
- * purely with Node buffers.
- */
+#!/usr/bin/env node
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 
-const SOURCE = path.join(__dirname, '..', 'public', 'logo.png');
-const OUT_DIR = path.join(__dirname, '..', 'build', 'icons', 'win');
-const OUT_ICO = path.join(OUT_DIR, 'icon.ico');
-const SIZES = [256, 128, 64, 48, 32, 16];
+const projectRoot = path.resolve(__dirname, '..');
+const source = path.resolve(projectRoot, process.argv[2] || 'public/logo.png');
+const pngDir = path.join(projectRoot, 'build', 'icons', 'png');
+const winDir = path.join(projectRoot, 'build', 'icons', 'win');
+const outIco = path.join(winDir, 'icon.ico');
+const pngSizes = [1024, 512, 256, 128, 64, 48, 32, 24, 16];
+const icoSizes = [256, 128, 64, 48, 32, 16];
 
-// Ensure output directory exists
-fs.mkdirSync(OUT_DIR, { recursive: true });
+function assertSource() {
+  if (!fs.existsSync(source)) {
+    throw new Error(`Icon source not found: ${source}`);
+  }
+}
 
-// Step 1: Use PowerShell + System.Drawing to resize the source PNG
-const tmpDir = path.join(__dirname, '..', 'build', 'icons', '_tmp');
-fs.mkdirSync(tmpDir, { recursive: true });
+function psLiteral(value) {
+  return `'${value.replace(/'/g, "''")}'`;
+}
 
-const psScript = `
+function resizePngs() {
+  fs.mkdirSync(pngDir, { recursive: true });
+  fs.mkdirSync(winDir, { recursive: true });
+
+  const script = `
 Add-Type -AssemblyName System.Drawing
-
-$src = [System.Drawing.Image]::FromFile("${SOURCE.replace(/\\/g, '\\\\')}")
-$sizes = @(${SIZES.join(',')})
-
-foreach ($s in $sizes) {
-    $bmp = New-Object System.Drawing.Bitmap($s, $s)
+$src = [System.Drawing.Image]::FromFile(${psLiteral(source)})
+try {
+  $sizes = @(${pngSizes.join(',')})
+  foreach ($s in $sizes) {
+    $bmp = New-Object System.Drawing.Bitmap($s, $s, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     $g = [System.Drawing.Graphics]::FromImage($bmp)
     $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
     $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
     $g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
     $g.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
+    $g.Clear([System.Drawing.Color]::Transparent)
     $g.DrawImage($src, 0, 0, $s, $s)
     $g.Dispose()
-    $outPath = "${tmpDir.replace(/\\/g, '\\\\')}\\\\icon_$s.png"
+    $outPath = Join-Path ${psLiteral(pngDir)} "$($s)x$($s).png"
     $bmp.Save($outPath, [System.Drawing.Imaging.ImageFormat]::Png)
     $bmp.Dispose()
+  }
+} finally {
+  $src.Dispose()
 }
-
-$src.Dispose()
 `;
 
-const psFile = path.join(tmpDir, 'resize.ps1');
-fs.writeFileSync(psFile, psScript, 'utf8');
-execSync(`powershell -ExecutionPolicy Bypass -File "${psFile}"`, { stdio: 'inherit' });
+  const scriptPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lfclaw-icons-')), 'resize.ps1');
+  fs.writeFileSync(scriptPath, script, 'utf8');
+  execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], { stdio: 'inherit' });
+  fs.rmSync(path.dirname(scriptPath), { recursive: true, force: true });
+}
 
-// Step 2: Read resized PNGs and pack into ICO
-const pngBuffers = SIZES.map(s => {
-  const p = path.join(tmpDir, `icon_${s}.png`);
-  return { size: s, data: fs.readFileSync(p) };
-});
+function buildIco(entries, outputPath) {
+  let offset = 6 + entries.length * 16;
+  const directoryEntries = entries.map((entry) => {
+    const current = { ...entry, offset };
+    offset += entry.data.length;
+    return current;
+  });
 
-const count = pngBuffers.length;
-const headerSize = 6;
-const entrySize = 16;
-const dataOffset0 = headerSize + entrySize * count;
+  const ico = Buffer.alloc(offset);
+  ico.writeUInt16LE(0, 0);
+  ico.writeUInt16LE(1, 2);
+  ico.writeUInt16LE(directoryEntries.length, 4);
 
-// Calculate offsets
-let currentOffset = dataOffset0;
-const entries = pngBuffers.map(({ size, data }) => {
-  const entry = {
-    width: size >= 256 ? 0 : size,   // 0 means 256 in ICO format
-    height: size >= 256 ? 0 : size,
-    dataSize: data.length,
-    offset: currentOffset,
-    data,
-  };
-  currentOffset += data.length;
-  return entry;
-});
+  directoryEntries.forEach((entry, index) => {
+    const base = 6 + index * 16;
+    ico.writeUInt8(entry.size >= 256 ? 0 : entry.size, base);
+    ico.writeUInt8(entry.size >= 256 ? 0 : entry.size, base + 1);
+    ico.writeUInt8(0, base + 2);
+    ico.writeUInt8(0, base + 3);
+    ico.writeUInt16LE(1, base + 4);
+    ico.writeUInt16LE(32, base + 6);
+    ico.writeUInt32LE(entry.data.length, base + 8);
+    ico.writeUInt32LE(entry.offset, base + 12);
+    entry.data.copy(ico, entry.offset);
+  });
 
-// Build ICO buffer
-const totalSize = currentOffset;
-const ico = Buffer.alloc(totalSize);
+  fs.writeFileSync(outputPath, ico);
+}
 
-// ICONDIR
-ico.writeUInt16LE(0, 0);        // reserved
-ico.writeUInt16LE(1, 2);        // type = ICO
-ico.writeUInt16LE(count, 4);    // image count
+function writeWindowsIco() {
+  const entries = icoSizes.map((size) => ({
+    size,
+    data: fs.readFileSync(path.join(pngDir, `${size}x${size}.png`)),
+  }));
+  buildIco(entries, outIco);
+}
 
-// ICONDIRENTRY for each image
-entries.forEach((e, i) => {
-  const off = headerSize + i * entrySize;
-  ico.writeUInt8(e.width, off + 0);       // width
-  ico.writeUInt8(e.height, off + 1);      // height
-  ico.writeUInt8(0, off + 2);             // color palette
-  ico.writeUInt8(0, off + 3);             // reserved
-  ico.writeUInt16LE(1, off + 4);          // color planes
-  ico.writeUInt16LE(32, off + 6);         // bits per pixel
-  ico.writeUInt32LE(e.dataSize, off + 8); // image data size
-  ico.writeUInt32LE(e.offset, off + 12);  // image data offset
-});
+function main() {
+  assertSource();
+  resizePngs();
+  writeWindowsIco();
+  console.log(`Generated app icons from ${source}`);
+  console.log(`- ${pngDir}`);
+  console.log(`- ${outIco}`);
+}
 
-// Image data
-entries.forEach(e => {
-  e.data.copy(ico, e.offset);
-});
-
-fs.writeFileSync(OUT_ICO, ico);
-console.log(`Generated ${OUT_ICO} (${SIZES.join(', ')}px) — ${ico.length} bytes`);
-
-// Cleanup temp files
-fs.rmSync(tmpDir, { recursive: true, force: true });
+try {
+  main();
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
