@@ -2058,11 +2058,9 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
     // Sync MCP servers into OpenClaw's native mcp.servers config field.
     // OpenClaw handles connection, tool discovery, and execution natively.
     const resolvedMcpServers = this.getResolvedMcpServers?.() ?? [];
-    if (resolvedMcpServers.length > 0) {
-      (managedConfig as Record<string, unknown>).mcp = {
-        servers: buildOpenClawMcpServers(resolvedMcpServers),
-      };
-    }
+    (managedConfig as Record<string, unknown>).mcp = {
+      servers: buildOpenClawMcpServers(resolvedMcpServers),
+    };
     console.log(`[OpenClawConfigSync] mcp.servers: ${resolvedMcpServers.length} server(s)`);
 
     // Sync AskUserQuestion plugin config

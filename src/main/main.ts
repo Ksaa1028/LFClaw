@@ -1930,7 +1930,17 @@ const getOpenClawConfigSync = (): OpenClawConfigSync => {
       getResolvedMcpServers: () => {
         // Synchronous wrapper: returns last resolved servers from cache.
         // The async resolution happens during syncOpenClawConfig via McpRuntime.
-        return getMcpRuntime().getResolvedServersCache();
+        const enterpriseAccess = getLfClawEnterpriseAccess();
+        if (!enterpriseAccess.getCurrentAccess()) {
+          return getMcpRuntime().getResolvedServersCache();
+        }
+        const mcpServers = getMcpRuntime().getStore().listServers();
+        return getMcpRuntime().getResolvedServersCache().filter(server => (
+          mcpServers.some(storedServer => (
+            storedServer.name === server.name
+            && enterpriseAccess.isMcpAllowed(storedServer.id, storedServer.registryId, storedServer.name)
+          ))
+        ));
       },
       getAskUserCallbackUrl: () => getMcpRuntime().getAskUserCallbackUrl(),
       getMediaCallbackUrl: () => getMcpRuntime().getMediaCallbackUrl(),
@@ -3418,11 +3428,21 @@ const syncEnterpriseModelProvidersToAppConfig = (
 
 const syncEnterpriseMcpServersToLocalStore = (access: EnterpriseCurrentAccess | null): void => {
   const servers = access?.policy.mcpServers ?? [];
-  if (servers.length === 0) return;
-
   const mcpRuntimeInstance = getMcpRuntime();
   const store = mcpRuntimeInstance.getStore();
   const existingServers = store.listServers();
+  const allowedRegistryIds = new Set(servers.map(server => server.id).filter(Boolean));
+
+  existingServers
+    .filter(server => server.description === 'LfClaw enterprise MCP')
+    .filter(server => server.registryId && !allowedRegistryIds.has(server.registryId))
+    .forEach(server => {
+      store.setEnabled(server.id, false);
+    });
+
+  if (servers.length === 0) {
+    return;
+  }
 
   servers.forEach(server => {
     const registryId = server.id;
@@ -3823,7 +3843,8 @@ if (!gotTheLock) {
   const notifyEnterprisePolicyChanged = () => {
     syncOpenClawConfig({
       reason: 'enterprise-policy-updated',
-      restartGatewayIfRunning: false,
+      restartGatewayIfRunning: true,
+      expectedImpact: OpenClawConfigImpact.Restart,
     }).catch(error => console.warn('[Enterprise] failed to sync config after policy update:', error));
     BrowserWindow.getAllWindows().forEach(win => {
       if (!win.isDestroyed()) {
