@@ -44,7 +44,7 @@ const SkillsPopover: React.FC<SkillsPopoverProps> = ({
 
   // Filter enabled skills based on search query
   const filteredSkills = skills
-    .filter(s => s.enabled && s.enterpriseAllowed !== false)
+    .filter(s => s.enabled && !(s.enterpriseManaged === true && s.enterpriseAllowed === false))
     .filter(s => {
       const query = searchQuery.toLowerCase();
       const description = shouldUseFallbackDescription

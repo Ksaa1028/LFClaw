@@ -50,7 +50,13 @@ export function registerSkillHandlers(deps: SkillHandlerDeps): void {
 
   ipcMain.handle('skills:setEnabled', async (_event, options: { id: string; enabled: boolean }) => {
     try {
-      if (options.enabled && isSkillAllowed && !isSkillAllowed(options.id)) {
+      if (
+        options.enabled
+        && isSkillAllowed
+        && isEnterpriseManagedSkill
+        && isEnterpriseManagedSkill(options.id)
+        && !isSkillAllowed(options.id)
+      ) {
         return { success: false, error: 'This skill is not enabled for the current enterprise activation.' };
       }
       const skills = decorateSkills(getSkillManager().setSkillEnabled(options.id, options.enabled));

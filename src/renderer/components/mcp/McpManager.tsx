@@ -42,7 +42,7 @@ const LAUNCH_STATUS_COLORS: Record<string, string> = {
   unsupported: 'bg-gray-500/10 text-gray-600 dark:text-gray-300',
 };
 
-type McpTab = 'installed' | 'marketplace' | 'custom';
+type McpTab = 'installed' | 'marketplace' | 'custom' | 'enterprise';
 
 const isQichachaRegistryEntry = (entry: McpRegistryEntry): boolean =>
   entry.oauthProvider === 'qichacha';
@@ -243,9 +243,27 @@ const McpManager: React.FC = () => {
     return getTransportSummary(server);
   }, [getRegistryEntryDescription, getRegistryEntryForServer]);
 
+  const localMcpServers = useMemo(
+    () => servers.filter(server => server.enterpriseManaged !== true),
+    [servers],
+  );
+
+  const enterpriseMcpServers = useMemo(
+    () => servers.filter(server =>
+      server.enterpriseManaged === true
+      && server.enterpriseAllowed !== false,
+    ),
+    [servers],
+  );
+
   const installedItems = useMemo(
-    () => buildInstalledMcpItems(servers, dynamicRegistry),
-    [dynamicRegistry, servers],
+    () => buildInstalledMcpItems(localMcpServers, dynamicRegistry),
+    [dynamicRegistry, localMcpServers],
+  );
+
+  const enterpriseItems = useMemo(
+    () => buildInstalledMcpItems(enterpriseMcpServers, dynamicRegistry),
+    [dynamicRegistry, enterpriseMcpServers],
   );
 
   const getRegistryGroupName = useCallback((item: RegistryGroupItem): string => {
@@ -300,15 +318,38 @@ const McpManager: React.FC = () => {
     searchQuery,
   ]);
 
+  const filteredEnterprise = useMemo(() => {
+    const query = searchQuery.trim().replace(/\s+/g, ' ').toLowerCase();
+    if (!query) return enterpriseItems;
+    return enterpriseItems.filter(item => {
+      if (item.kind === 'server') {
+        return item.server.name.toLowerCase().includes(query)
+          || getInstalledDescription(item.server).toLowerCase().includes(query);
+      }
+      return getRegistryGroupName(item).toLowerCase().includes(query)
+        || getRegistryGroupDescription(item).toLowerCase().includes(query)
+        || item.servers.some(server =>
+          server.name.toLowerCase().includes(query)
+          || getInstalledDescription(server).toLowerCase().includes(query),
+        );
+    });
+  }, [
+    enterpriseItems,
+    getInstalledDescription,
+    getRegistryGroupDescription,
+    getRegistryGroupName,
+    searchQuery,
+  ]);
+
   const filteredCustom = useMemo(() => {
-    const custom = servers.filter(s => !s.isBuiltIn);
+    const custom = localMcpServers.filter(s => !s.isBuiltIn);
     const query = searchQuery.trim().replace(/\s+/g, ' ').toLowerCase();
     if (!query) return custom;
     return custom.filter(s =>
       s.name.toLowerCase().includes(query)
-      || s.description.toLowerCase().includes(query)
+      || s.description.toLowerCase().includes(query),
     );
-  }, [servers, searchQuery]);
+  }, [localMcpServers, searchQuery]);
 
   const filteredMarketplace = useMemo(() => {
     const query = searchQuery.trim().replace(/\s+/g, ' ').toLowerCase();
@@ -330,9 +371,11 @@ const McpManager: React.FC = () => {
     if (!query) return undefined;
     const resultCount = activeTab === 'marketplace'
       ? filteredMarketplace.length
-      : activeTab === 'custom'
-        ? filteredCustom.length
-        : filteredInstalled.length;
+      : activeTab === 'enterprise'
+        ? filteredEnterprise.length
+        : activeTab === 'custom'
+          ? filteredCustom.length
+          : filteredInstalled.length;
     const timer = window.setTimeout(() => {
       reportMcpAction('search', {
         source: 'mcp_manager',
@@ -347,6 +390,7 @@ const McpManager: React.FC = () => {
     activeCategory,
     activeTab,
     filteredCustom.length,
+    filteredEnterprise.length,
     filteredInstalled.length,
     filteredMarketplace.length,
     searchQuery,
@@ -601,6 +645,7 @@ const McpManager: React.FC = () => {
           result: 'success',
           ...getRegistryAnalyticsParams(entry),
         });
+        setActiveTab('installed');
       }).catch(error => {
         setActionError(error instanceof Error ? error.message : i18nService.t('mcpQichachaConnectFailed'));
       }).finally(() => {
@@ -654,6 +699,7 @@ const McpManager: React.FC = () => {
       if (result.servers) {
         dispatch(setMcpServers(result.servers));
       }
+      setActiveTab('installed');
       reportMcpAction('edit_success', {
         source: 'mcp_manager',
         activeTab,
@@ -682,6 +728,7 @@ const McpManager: React.FC = () => {
       if (result.servers) {
         dispatch(setMcpServers(result.servers));
       }
+      setActiveTab('installed');
       reportMcpAction('create_success', {
         source: 'mcp_manager',
         activeTab,
@@ -722,6 +769,7 @@ const McpManager: React.FC = () => {
       latestServers = result.servers ?? latestServers;
     }
     if (latestServers) dispatch(setMcpServers(latestServers));
+    setActiveTab('installed');
     reportMcpAction('json_import_success', {
       source: 'mcp_manager',
       activeTab,
@@ -753,10 +801,18 @@ const McpManager: React.FC = () => {
     [dynamicRegistry]
   );
 
-  const customCount = useMemo(
-    () => servers.filter(s => !s.isBuiltIn).length,
-    [servers]
+  const enterpriseCount = useMemo(
+    () => enterpriseItems.length,
+    [enterpriseItems]
   );
+
+  const customCount = useMemo(
+    () => filteredCustom.length,
+    [filteredCustom.length],
+  );
+
+  const visibleInstalledItems = activeTab === 'enterprise' ? filteredEnterprise : filteredInstalled;
+  const isEnterpriseTab = activeTab === 'enterprise';
 
   const tabClass = (tab: McpTab) =>
     `relative px-2.5 pb-2.5 pt-0.5 text-[13px] font-semibold transition-colors ${
@@ -808,9 +864,11 @@ const McpManager: React.FC = () => {
                     searchKeywordLength: searchQuery.trim().length,
                     resultCount: activeTab === 'marketplace'
                       ? filteredMarketplace.length
-                      : activeTab === 'custom'
-                        ? filteredCustom.length
-                        : filteredInstalled.length,
+                      : activeTab === 'enterprise'
+                        ? filteredEnterprise.length
+                        : activeTab === 'custom'
+                          ? filteredCustom.length
+                          : filteredInstalled.length,
                   });
                   setSearchQuery('');
                 }}
@@ -884,6 +942,26 @@ const McpManager: React.FC = () => {
             )}
             <div className={tabIndicatorClass('custom')} />
           </button>
+          <button
+            type="button"
+            onClick={() => {
+              reportMcpAction('tab_change', {
+                source: 'mcp_manager',
+                activeTab,
+                targetTab: 'enterprise',
+              });
+              setActiveTab('enterprise');
+            }}
+            className={tabClass('enterprise')}
+          >
+            {i18nService.t('mcpEnterprise')}
+            {enterpriseCount > 0 && (
+              <span className="ml-1.5 rounded-full bg-surface-raised px-1.5 py-0.5 text-[10px] font-medium text-secondary">
+                {enterpriseCount}
+              </span>
+            )}
+            <div className={tabIndicatorClass('enterprise')} />
+          </button>
         </div>
 
         {/* Category filter pills (Marketplace only) */}
@@ -918,14 +996,14 @@ const McpManager: React.FC = () => {
 
       <div>
       {/* ── Tab: Installed ──────────────────────────────── */}
-      {activeTab === 'installed' && (
+      {(activeTab === 'installed' || activeTab === 'enterprise') && (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-3">
-          {filteredInstalled.length === 0 ? (
+          {visibleInstalledItems.length === 0 ? (
             <div className="col-span-full text-center py-12 text-sm text-secondary">
               {i18nService.t('mcpNoInstalledServers')}
             </div>
           ) : (
-            filteredInstalled.map((item) => {
+            visibleInstalledItems.map((item) => {
               if (item.kind === 'registryGroup') {
                 const groupName = getRegistryGroupName(item);
                 const groupDescription = getRegistryGroupDescription(item);
@@ -946,37 +1024,39 @@ const McpManager: React.FC = () => {
                           {groupName}
                         </span>
                       </div>
-                      <div className="flex items-center gap-1.5 flex-shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => handleRequestDeleteRegistry(
-                            item.registryId,
-                            groupName,
-                            item.servers,
-                            item.registryEntry,
-                          )}
-                          className="p-1 rounded-lg text-secondary hover:text-red-500 dark:hover:text-red-400 transition-colors"
-                          title={i18nService.t('mcpUninstall')}
-                        >
-                          <TrashIcon className="h-3.5 w-3.5" />
-                        </button>
-                        <div
-                          className={`w-9 h-5 rounded-full flex items-center transition-colors cursor-pointer flex-shrink-0 ${
-                            groupEnabled ? 'bg-primary' : 'bg-gray-400 dark:bg-gray-600'
-                          }`}
-                          onClick={() => handleToggleRegistryEnabled(
-                            item.registryId,
-                            item.servers,
-                            item.registryEntry,
-                          )}
-                        >
+                      {!isEnterpriseTab && (
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleRequestDeleteRegistry(
+                              item.registryId,
+                              groupName,
+                              item.servers,
+                              item.registryEntry,
+                            )}
+                            className="p-1 rounded-lg text-secondary hover:text-red-500 dark:hover:text-red-400 transition-colors"
+                            title={i18nService.t('mcpUninstall')}
+                          >
+                            <TrashIcon className="h-3.5 w-3.5" />
+                          </button>
                           <div
-                            className={`w-3.5 h-3.5 rounded-full bg-white shadow-md transform transition-transform ${
-                              groupEnabled ? 'translate-x-[18px]' : 'translate-x-[3px]'
+                            className={`w-9 h-5 rounded-full flex items-center transition-colors cursor-pointer flex-shrink-0 ${
+                              groupEnabled ? 'bg-primary' : 'bg-gray-400 dark:bg-gray-600'
                             }`}
-                          />
+                            onClick={() => handleToggleRegistryEnabled(
+                              item.registryId,
+                              item.servers,
+                              item.registryEntry,
+                            )}
+                          >
+                            <div
+                              className={`w-3.5 h-3.5 rounded-full bg-white shadow-md transform transition-transform ${
+                                groupEnabled ? 'translate-x-[18px]' : 'translate-x-[3px]'
+                              }`}
+                            />
+                          </div>
                         </div>
-                      </div>
+                      )}
                     </div>
 
                     <ClampedText text={groupDescription} className="text-xs text-secondary mb-2" />
@@ -1018,36 +1098,38 @@ const McpManager: React.FC = () => {
                         {server.name}
                       </span>
                     </div>
-                    <div className="flex items-center gap-1.5 flex-shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => handleOpenEditForm(server)}
-                        className="p-1 rounded-lg text-secondary hover:text-primary dark:hover:text-primary transition-colors"
-                        title={i18nService.t('editMcpServer')}
-                      >
-                        <EditIcon className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleRequestDelete(server)}
-                        className="p-1 rounded-lg text-secondary hover:text-red-500 dark:hover:text-red-400 transition-colors"
-                        title={i18nService.t('deleteMcpServer')}
-                      >
-                        <TrashIcon className="h-3.5 w-3.5" />
-                      </button>
-                      <div
-                        className={`w-9 h-5 rounded-full flex items-center transition-colors cursor-pointer flex-shrink-0 ${
-                          server.enabled ? 'bg-primary' : 'bg-gray-400 dark:bg-gray-600'
-                        }`}
-                        onClick={() => handleToggleEnabled(server.id)}
-                      >
+                    {!isEnterpriseTab && (
+                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleOpenEditForm(server)}
+                          className="p-1 rounded-lg text-secondary hover:text-primary dark:hover:text-primary transition-colors"
+                          title={i18nService.t('editMcpServer')}
+                        >
+                          <EditIcon className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleRequestDelete(server)}
+                          className="p-1 rounded-lg text-secondary hover:text-red-500 dark:hover:text-red-400 transition-colors"
+                          title={i18nService.t('deleteMcpServer')}
+                        >
+                          <TrashIcon className="h-3.5 w-3.5" />
+                        </button>
                         <div
-                          className={`w-3.5 h-3.5 rounded-full bg-white shadow-md transform transition-transform ${
-                            server.enabled ? 'translate-x-[18px]' : 'translate-x-[3px]'
+                          className={`w-9 h-5 rounded-full flex items-center transition-colors cursor-pointer flex-shrink-0 ${
+                            server.enabled ? 'bg-primary' : 'bg-gray-400 dark:bg-gray-600'
                           }`}
-                        />
+                          onClick={() => handleToggleEnabled(server.id)}
+                        >
+                          <div
+                            className={`w-3.5 h-3.5 rounded-full bg-white shadow-md transform transition-transform ${
+                              server.enabled ? 'translate-x-[18px]' : 'translate-x-[3px]'
+                            }`}
+                          />
+                        </div>
                       </div>
-                    </div>
+                    )}
                   </div>
 
                   <ClampedText text={installedDescription} className="text-xs text-secondary mb-2" />

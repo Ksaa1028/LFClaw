@@ -20,7 +20,9 @@ const ActiveSkillBadge: React.FC = () => {
 
   const activeSkills = activeSkillIds
     .map(id => skills.find(s => s.id === id))
-    .filter((s): s is NonNullable<typeof s> => s !== undefined && s.enterpriseAllowed !== false);
+    .filter((s): s is NonNullable<typeof s> => (
+      s !== undefined && !(s.enterpriseManaged === true && s.enterpriseAllowed === false)
+    ));
 
   if (activeSkills.length === 0) return null;
 

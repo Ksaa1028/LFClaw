@@ -21,6 +21,8 @@ export interface McpServerConfig {
   isBuiltIn: boolean;            // installed from built-in registry
   githubUrl?: string;            // GitHub repository URL
   registryId?: string;           // matching registry entry ID
+  enterpriseAllowed?: boolean;    // Whether this MCP server is granted by enterprise policy
+  enterpriseManaged?: boolean;    // Whether this MCP server is managed by enterprise policy
   launchResolution?: McpLaunchResolution;
   createdAt: number;
   updatedAt: number;

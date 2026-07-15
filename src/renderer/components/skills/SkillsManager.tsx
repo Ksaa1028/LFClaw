@@ -663,6 +663,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
       }
       if (result.skills) {
         dispatch(setSkills(result.skills));
+        setActiveTab('installed');
       }
       reportSkillAction('upgrade_success', {
         source: 'skills_manager',
@@ -775,6 +776,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
       }
       if (result.skills) {
         dispatch(setSkills(result.skills));
+        setActiveTab('installed');
       }
       reportSkillAction('marketplace_install_success', {
         source: 'skills_manager',
@@ -813,6 +815,9 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
         dispatch(setSkills(result.skills));
         if (action !== 'cancel' && pendingImportSource) {
           showToast(i18nService.t('skillImportSuccess'));
+        }
+        if (action !== 'cancel') {
+          setActiveTab('installed');
         }
       }
       if (!result.success && result.error) {
@@ -1000,6 +1005,27 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
               reportSkillAction('tab_change', {
                 source: 'skills_manager',
                 activeTab,
+                targetTab: 'marketplace',
+              });
+              setActiveTab('marketplace');
+            }}
+            className={`relative px-2.5 pb-2.5 pt-0.5 text-[13px] font-semibold transition-colors ${
+              activeTab === 'marketplace'
+                ? 'text-foreground'
+                : 'text-secondary hover:text-foreground'
+            }`}
+          >
+            {i18nService.t('skillMarketplace')}
+            <div className={`absolute bottom-[-1px] left-0 right-0 h-0.5 rounded-full transition-colors ${
+              activeTab === 'marketplace' ? 'bg-primary' : 'bg-transparent'
+            }`} />
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              reportSkillAction('tab_change', {
+                source: 'skills_manager',
+                activeTab,
                 targetTab: 'enterprise',
               });
               setActiveTab('enterprise');
@@ -1018,27 +1044,6 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
             )}
             <div className={`absolute bottom-[-1px] left-0 right-0 h-0.5 rounded-full transition-colors ${
               activeTab === 'enterprise' ? 'bg-primary' : 'bg-transparent'
-            }`} />
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              reportSkillAction('tab_change', {
-                source: 'skills_manager',
-                activeTab,
-                targetTab: 'marketplace',
-              });
-              setActiveTab('marketplace');
-            }}
-            className={`relative px-2.5 pb-2.5 pt-0.5 text-[13px] font-semibold transition-colors ${
-              activeTab === 'marketplace'
-                ? 'text-foreground'
-                : 'text-secondary hover:text-foreground'
-            }`}
-          >
-            {i18nService.t('skillMarketplace')}
-            <div className={`absolute bottom-[-1px] left-0 right-0 h-0.5 rounded-full transition-colors ${
-              activeTab === 'marketplace' ? 'bg-primary' : 'bg-transparent'
             }`} />
           </button>
           {updatableSkills.length > 0 && (
@@ -1153,7 +1158,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                   </span>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
-                  {!readOnly && !skill.isBuiltIn && (
+                  {activeTab !== 'enterprise' && !readOnly && !skill.isBuiltIn && (
                     <button
                       type="button"
                       onClick={(e) => { e.stopPropagation(); handleRequestDeleteSkill(skill); }}
@@ -1163,20 +1168,22 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                       <TrashIcon className="h-4 w-4" />
                     </button>
                   )}
-                  <div
-                    className={`w-9 h-5 rounded-full flex items-center transition-colors flex-shrink-0 ${
-                      readOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
-                    } ${
-                      skill.enabled ? 'bg-primary' : 'bg-gray-400 dark:bg-gray-600'
-                    }`}
-                    onClick={(e) => { e.stopPropagation(); if (!readOnly) handleToggleSkill(skill.id); }}
-                  >
+                  {activeTab !== 'enterprise' && (
                     <div
-                      className={`w-3.5 h-3.5 rounded-full bg-white shadow-md transform transition-transform ${
-                        skill.enabled ? 'translate-x-[18px]' : 'translate-x-[3px]'
+                      className={`w-9 h-5 rounded-full flex items-center transition-colors flex-shrink-0 ${
+                        readOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
+                      } ${
+                        skill.enabled ? 'bg-primary' : 'bg-gray-400 dark:bg-gray-600'
                       }`}
-                    />
-                  </div>
+                      onClick={(e) => { e.stopPropagation(); if (!readOnly) handleToggleSkill(skill.id); }}
+                    >
+                      <div
+                        className={`w-3.5 h-3.5 rounded-full bg-white shadow-md transform transition-transform ${
+                          skill.enabled ? 'translate-x-[18px]' : 'translate-x-[3px]'
+                        }`}
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
 

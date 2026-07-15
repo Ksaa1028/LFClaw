@@ -1846,6 +1846,7 @@ const getOpenClawConfigSync = (): OpenClawConfigSync => {
             id: s.id,
             enabled: s.enabled && (
               !getLfClawEnterpriseAccess().getCurrentAccess()
+              || !isEnterpriseManagedSkill(s.id)
               || getLfClawEnterpriseAccess().isSkillAllowed(s.id)
             ),
           })),
@@ -1944,7 +1945,10 @@ const getOpenClawConfigSync = (): OpenClawConfigSync => {
         return getMcpRuntime().getResolvedServersCache().filter(server => (
           mcpServers.some(storedServer => (
             storedServer.name === server.name
-            && enterpriseAccess.isMcpAllowed(storedServer.id, storedServer.registryId, storedServer.name)
+            && (
+              !isEnterpriseManagedMcpServer(storedServer)
+              || enterpriseAccess.isMcpAllowed(storedServer.id, storedServer.registryId, storedServer.name)
+            )
           ))
         ));
       },
@@ -3437,11 +3441,12 @@ const syncEnterpriseMcpServersToLocalStore = (access: EnterpriseCurrentAccess | 
   const mcpRuntimeInstance = getMcpRuntime();
   const store = mcpRuntimeInstance.getStore();
   const existingServers = store.listServers();
-  const allowedRegistryIds = new Set(servers.map(server => server.id).filter(Boolean));
+  const allowedRegistryIds = new Set(servers.map(server => `enterprise:${server.id}`).filter(Boolean));
+  const legacyAllowedRegistryIds = new Set(servers.map(server => server.id).filter(Boolean));
 
   existingServers
-    .filter(server => server.description === 'LfClaw enterprise MCP')
-    .filter(server => server.registryId && !allowedRegistryIds.has(server.registryId))
+    .filter(server => isEnterpriseManagedMcpServer(server) || legacyAllowedRegistryIds.has(server.registryId || ''))
+    .filter(server => server.registryId && !allowedRegistryIds.has(server.registryId) && !legacyAllowedRegistryIds.has(server.registryId))
     .forEach(server => {
       store.setEnabled(server.id, false);
     });
@@ -3451,7 +3456,8 @@ const syncEnterpriseMcpServersToLocalStore = (access: EnterpriseCurrentAccess | 
   }
 
   servers.forEach(server => {
-    const registryId = server.id;
+    const registryId = `enterprise:${server.id}`;
+    const legacyRegistryId = server.id;
     const transportType: 'stdio' | 'sse' | 'http' = server.transportType === 'stdio' || server.transportType === 'sse'
       ? server.transportType
       : 'http';
@@ -3467,7 +3473,11 @@ const syncEnterpriseMcpServersToLocalStore = (access: EnterpriseCurrentAccess | 
       isBuiltIn: true,
       registryId,
     };
-    const existing = existingServers.find(item => item.registryId === registryId || item.name === server.name);
+    const existing = existingServers.find(item =>
+      item.registryId === registryId
+      || item.registryId === legacyRegistryId
+      || (isEnterpriseManagedMcpServer(item) && item.name === server.name),
+    );
     if (existing) {
       store.updateServer(existing.id, data);
       store.setEnabled(existing.id, true);
@@ -3478,6 +3488,11 @@ const syncEnterpriseMcpServersToLocalStore = (access: EnterpriseCurrentAccess | 
     mcpRuntimeInstance.ensureLaunchResolution(created.id, 'enterprise-mcp-synced');
   });
 };
+
+function isEnterpriseManagedMcpServer(server: { registryId?: string | null; description?: string | null }): boolean {
+  return server.registryId?.startsWith('enterprise:') === true
+    || server.description === 'LfClaw enterprise MCP';
+}
 
 const ENTERPRISE_INSTALLED_SKILLS_KEY = 'lfclaw_enterprise_installed_skills';
 type EnterpriseInstalledSkillsMap = Record<string, { packageSha256?: string; packageFileName?: string; installedAt?: string }>;
@@ -3502,17 +3517,7 @@ const syncEnterpriseSkillsToLocalStore = async (access: EnterpriseCurrentAccess 
 
   for (const installedId of Object.keys(enterpriseInstalled)) {
     if (access && allowedIds.has(installedId)) continue;
-    try {
-      await skillManagerInstance.deleteSkill(installedId);
-      console.log(`[Enterprise] removed enterprise skill "${installedId}" after authorization changed`);
-    } catch (error) {
-      console.warn(`[Enterprise] failed to remove enterprise skill "${installedId}":`, error);
-      try {
-        skillManagerInstance.setSkillEnabled(installedId, false);
-      } catch (disableError) {
-        console.warn(`[Enterprise] failed to disable enterprise skill "${installedId}":`, disableError);
-      }
-    }
+    console.log(`[Enterprise] untracked enterprise skill "${installedId}" after authorization changed`);
     delete enterpriseInstalled[installedId];
   }
 
@@ -6638,6 +6643,7 @@ if (!gotTheLock) {
   registerMcpHandlers({
     getMcpRuntime,
     isMcpAllowed: server => getLfClawEnterpriseAccess().isMcpAllowed(server.id, server.registryId, server.name),
+    isEnterpriseManagedMcpServer,
     syncOpenClawConfig,
   });
 

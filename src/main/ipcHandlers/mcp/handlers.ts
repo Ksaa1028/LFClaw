@@ -5,12 +5,13 @@ import { McpIpcChannel } from '../../../shared/mcp/constants';
 import { normalizeMcpServerUrlInput } from '../../../shared/mcp/url';
 import { OpenClawConfigImpact } from '../../libs/openclawConfigImpact';
 import type { McpRuntime } from '../../mcp/mcpRuntime';
-import type { McpServerFormData } from '../../mcp/mcpStore';
+import type { McpServerFormData, McpServerRecord } from '../../mcp/mcpStore';
 import { startQichachaMcpApiKeyLogin } from '../../mcp/qichachaMcpAuth';
 
 export interface McpHandlerDeps {
   getMcpRuntime: () => McpRuntime;
   isMcpAllowed?: (server: { id: string; registryId?: string | null; name?: string | null }) => boolean;
+  isEnterpriseManagedMcpServer?: (server: { registryId?: string | null; description?: string | null }) => boolean;
   syncOpenClawConfig: (options: {
     reason: string;
     restartGatewayIfRunning?: boolean;
@@ -125,19 +126,25 @@ function buildQichachaServerData(
 }
 
 export function registerMcpHandlers(deps: McpHandlerDeps): void {
-  const { getMcpRuntime, isMcpAllowed, syncOpenClawConfig } = deps;
+  const {
+    getMcpRuntime,
+    isEnterpriseManagedMcpServer,
+    isMcpAllowed,
+    syncOpenClawConfig,
+  } = deps;
+
+  const decorateServers = (servers: McpServerRecord[]) => servers.map(server => ({
+    ...server,
+    enterpriseAllowed: isMcpAllowed ? isMcpAllowed(server) : true,
+    enterpriseManaged: isEnterpriseManagedMcpServer ? isEnterpriseManagedMcpServer(server) : false,
+  }));
 
   ipcMain.handle(McpIpcChannel.List, () => {
     try {
       const servers = getMcpRuntime()
         .getStore()
-        .listServers()
-        .map(server => ({
-          ...server,
-          enterpriseAllowed: isMcpAllowed ? isMcpAllowed(server) : true,
-        }))
-        .filter(server => server.enterpriseAllowed || !isMcpAllowed);
-      return { success: true, servers };
+        .listServers();
+      return { success: true, servers: decorateServers(servers) };
     } catch (error) {
       return {
         success: false,
@@ -170,7 +177,7 @@ export function registerMcpHandlers(deps: McpHandlerDeps): void {
         }
         const servers = mcpRuntime.getStore().listServers();
         syncMcpConfig(syncOpenClawConfig, 'mcp-server-created');
-        return { success: true, servers };
+        return { success: true, servers: decorateServers(servers) };
       } catch (error) {
         return {
           success: false,
@@ -205,7 +212,7 @@ export function registerMcpHandlers(deps: McpHandlerDeps): void {
         }
         const servers = mcpRuntime.getStore().listServers();
         syncMcpConfig(syncOpenClawConfig, 'mcp-server-updated');
-        return { success: true, servers };
+        return { success: true, servers: decorateServers(servers) };
       } catch (error) {
         return {
           success: false,
@@ -221,7 +228,7 @@ export function registerMcpHandlers(deps: McpHandlerDeps): void {
       mcpRuntime.getStore().deleteServer(id);
       const servers = mcpRuntime.getStore().listServers();
       syncMcpConfig(syncOpenClawConfig, 'mcp-server-deleted');
-      return { success: true, servers };
+      return { success: true, servers: decorateServers(servers) };
     } catch (error) {
       return {
         success: false,
@@ -246,7 +253,7 @@ export function registerMcpHandlers(deps: McpHandlerDeps): void {
       }
       const servers = store.listServers();
       syncMcpConfig(syncOpenClawConfig, 'mcp-registry-deleted');
-      return { success: true, servers };
+      return { success: true, servers: decorateServers(servers) };
     } catch (error) {
       return {
         success: false,
@@ -259,7 +266,13 @@ export function registerMcpHandlers(deps: McpHandlerDeps): void {
     try {
       const mcpRuntime = getMcpRuntime();
       const existing = mcpRuntime.getStore().listServers().find(server => server.id === options.id);
-      if (options.enabled && existing && isMcpAllowed && !isMcpAllowed(existing)) {
+      if (
+        options.enabled
+        && existing
+        && isMcpAllowed
+        && isEnterpriseManagedMcpServer?.(existing)
+        && !isMcpAllowed(existing)
+      ) {
         return {
           success: false,
           error: 'This MCP server is not enabled for the current enterprise activation.',
@@ -271,7 +284,7 @@ export function registerMcpHandlers(deps: McpHandlerDeps): void {
       }
       const servers = mcpRuntime.getStore().listServers();
       syncMcpConfig(syncOpenClawConfig, 'mcp-server-toggled');
-      return { success: true, servers };
+      return { success: true, servers: decorateServers(servers) };
     } catch (error) {
       return {
         success: false,
@@ -293,6 +306,16 @@ export function registerMcpHandlers(deps: McpHandlerDeps): void {
         const matchingServers = store
           .listServers()
           .filter(server => server.registryId === normalizedRegistryId);
+        if (
+          options.enabled
+          && isMcpAllowed
+          && matchingServers.some(server => isEnterpriseManagedMcpServer?.(server) && !isMcpAllowed(server))
+        ) {
+          return {
+            success: false,
+            error: 'This MCP server is not enabled for the current enterprise activation.',
+          };
+        }
         for (const server of matchingServers) {
           store.setEnabled(server.id, options.enabled);
           if (options.enabled) {
@@ -301,7 +324,7 @@ export function registerMcpHandlers(deps: McpHandlerDeps): void {
         }
         const servers = store.listServers();
         syncMcpConfig(syncOpenClawConfig, 'mcp-registry-toggled');
-        return { success: true, servers };
+        return { success: true, servers: decorateServers(servers) };
       } catch (error) {
         return {
           success: false,
@@ -317,7 +340,7 @@ export function registerMcpHandlers(deps: McpHandlerDeps): void {
       await mcpRuntime.getLaunchResolverManager().retry(id);
       const servers = mcpRuntime.getStore().listServers();
       syncMcpConfig(syncOpenClawConfig, 'mcp-launch-manual-retry');
-      return { success: true, servers };
+      return { success: true, servers: decorateServers(servers) };
     } catch (error) {
       return {
         success: false,
@@ -349,7 +372,7 @@ export function registerMcpHandlers(deps: McpHandlerDeps): void {
 
       const servers = store.listServers();
       syncMcpConfig(syncOpenClawConfig, 'qichacha-mcp-connected');
-      return { success: true, servers };
+      return { success: true, servers: decorateServers(servers) };
     } catch (error) {
       return {
         success: false,

@@ -202,8 +202,16 @@ export class LfClawEnterpriseAccess {
 
   isMcpAllowed(serverId: string, registryId?: string | null, name?: string | null): boolean {
     const allowed = this.getCurrentAccess()?.policy.allowedMcpServerIds;
+    const normalizedRegistryId = registryId?.startsWith('enterprise:')
+      ? registryId.slice('enterprise:'.length)
+      : registryId;
     return Array.isArray(allowed)
-      && (allowed.includes(serverId) || (!!registryId && allowed.includes(registryId)) || (!!name && allowed.includes(name)));
+      && (
+        allowed.includes(serverId)
+        || (!!registryId && allowed.includes(registryId))
+        || (!!normalizedRegistryId && allowed.includes(normalizedRegistryId))
+        || (!!name && allowed.includes(name))
+      );
   }
 
   isSkillAllowed(skillId: string): boolean {
