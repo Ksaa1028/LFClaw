@@ -54,6 +54,7 @@ enterprise-server/*.log
 enterprise-server/storage/
 tmp-enterprise-skill.zip
 vite.log
+electron-dev.*.log
 
 # Accidentally committed git hook files outside git-hooks/
 **/**/post-commit

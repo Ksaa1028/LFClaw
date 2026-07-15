@@ -347,7 +347,7 @@ npm run electron:dev:openclaw
 日常开发：
 
 ```bash
-npm run electron:dev
+npm run client:dev
 ```
 
 指定远程企业服务地址：
@@ -356,14 +356,16 @@ Windows PowerShell：
 
 ```powershell
 $env:LFCLAW_ENTERPRISE_BASE_URL='http://服务器IP:8787'
-npm run electron:dev
+npm run client:dev
 ```
 
 macOS / Linux：
 
 ```bash
-LFCLAW_ENTERPRISE_BASE_URL=http://服务器IP:8787 npm run electron:dev
+LFCLAW_ENTERPRISE_BASE_URL=http://服务器IP:8787 npm run client:dev
 ```
+
+不要直接运行 `electron .`。直接启动会绕过主进程和 preload 的构建流程，容易出现白屏、`preload.js` 缺失、`window.electron` 为空等问题。
 
 客户端启动后：
 

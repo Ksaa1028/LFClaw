@@ -130,7 +130,8 @@ const App: React.FC = () => {
   const pendingPermission = useSelector(selectFirstCurrentSessionPendingPermission);
   const pendingPermissions = useSelector(selectPendingPermissions);
   const authUser = useSelector((state: RootState) => state.auth.user);
-  const isWindows = window.electron.platform === 'win32';
+  const platform = window.electron?.platform ?? 'win32';
+  const isWindows = platform === 'win32';
   const [minimizedPermissionIds, setMinimizedPermissionIds] = useState<string[]>([]);
   const isPendingPermissionMinimized = pendingPermission
     ? minimizedPermissionIds.includes(pendingPermission.requestId)
@@ -177,10 +178,10 @@ const App: React.FC = () => {
 
       try {
         mark('start');
-        document.documentElement.classList.add(`platform-${window.electron.platform}`);
+        document.documentElement.classList.add(`platform-${platform}`);
 
         const initTimeoutMs =
-          window.electron.platform === 'win32'
+          platform === 'win32'
             ? INIT_STEP_TIMEOUT_MS_WINDOWS
             : INIT_STEP_TIMEOUT_MS_DEFAULT;
         mark('configService.init begin');
@@ -276,7 +277,7 @@ const App: React.FC = () => {
     };
 
     void initializeApp();
-  }, [dispatch, waitWithTimeout]);
+  }, [dispatch, platform, waitWithTimeout]);
 
   useEffect(() => {
     const unsubscribe = i18nService.subscribe(() => {
@@ -423,7 +424,7 @@ const App: React.FC = () => {
 
   const handleToggleSidebar = useCallback(() => {
     const nextCollapsed = !isSidebarCollapsed;
-    const message = `sidebar toggle requested activeView=${mainView} nextCollapsed=${nextCollapsed} platform=${window.electron.platform}`;
+    const message = `sidebar toggle requested activeView=${mainView} nextCollapsed=${nextCollapsed} platform=${platform}`;
     console.debug(`[AppLayout] ${message}`);
     try {
       window.electron?.log?.fromRenderer?.('debug', 'AppLayout', message);
@@ -438,7 +439,7 @@ const App: React.FC = () => {
       isCollapsed: isSidebarCollapsed,
     });
     setIsSidebarCollapsed((prev) => !prev);
-  }, [isSidebarCollapsed, mainView]);
+  }, [isSidebarCollapsed, mainView, platform]);
 
   const handleNewChat = useCallback(() => {
     // Only clear when already on home (no session) 鈥?preserve __home__ draft when returning from a session
