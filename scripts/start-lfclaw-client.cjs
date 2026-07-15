@@ -20,14 +20,33 @@ function readEnterpriseServerUrl() {
   }
 }
 
-function npmCommand() {
-  return process.platform === 'win32' ? 'npm.cmd' : 'npm';
+function npmCommandAndArgs() {
+  if (process.env.npm_execpath) {
+    return {
+      command: process.execPath,
+      args: [process.env.npm_execpath],
+    };
+  }
+  const bundledNpmCli = path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  if (fs.existsSync(bundledNpmCli)) {
+    return {
+      command: process.execPath,
+      args: [bundledNpmCli],
+    };
+  }
+  return {
+    command: process.platform === 'win32' ? 'npm.cmd' : 'npm',
+    args: [],
+  };
 }
 
 const enterpriseServerUrl = readEnterpriseServerUrl();
+const pathEnvKey = Object.keys(process.env).find(key => key.toLowerCase() === 'path') || 'PATH';
+const nodeBinDir = path.dirname(process.execPath);
 const env = {
   ...process.env,
   NODE_ENV: 'development',
+  [pathEnvKey]: `${nodeBinDir}${path.delimiter}${process.env[pathEnvKey] || ''}`,
   ...(enterpriseServerUrl ? { LFCLAW_ENTERPRISE_BASE_URL: enterpriseServerUrl } : {}),
 };
 
@@ -37,12 +56,16 @@ if (enterpriseServerUrl) {
 }
 console.log('[LfClaw] do not start Electron directly; this command builds main/preload first.');
 
-const child = spawn(npmCommand(), ['run', 'electron:dev'], {
+const npm = npmCommandAndArgs();
+const child = spawn(npm.command, [...npm.args, 'run', 'electron:dev'], {
   cwd: root,
   env,
-  stdio: 'inherit',
+  stdio: ['ignore', 'pipe', 'pipe'],
   shell: false,
 });
+
+child.stdout.pipe(process.stdout);
+child.stderr.pipe(process.stderr);
 
 child.on('exit', code => {
   process.exit(code ?? 0);

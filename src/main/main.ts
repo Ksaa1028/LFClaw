@@ -3843,8 +3843,7 @@ if (!gotTheLock) {
   const notifyEnterprisePolicyChanged = () => {
     syncOpenClawConfig({
       reason: 'enterprise-policy-updated',
-      restartGatewayIfRunning: true,
-      expectedImpact: OpenClawConfigImpact.Restart,
+      restartGatewayIfRunning: false,
     }).catch(error => console.warn('[Enterprise] failed to sync config after policy update:', error));
     BrowserWindow.getAllWindows().forEach(win => {
       if (!win.isDestroyed()) {
