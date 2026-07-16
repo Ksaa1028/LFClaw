@@ -26,7 +26,7 @@ const json = (res, status, payload) => {
     'content-type': 'application/json; charset=utf-8',
     'access-control-allow-origin': '*',
     'access-control-allow-headers': 'content-type,authorization,x-admin-token',
-    'access-control-allow-methods': 'GET,POST,PATCH,DELETE,OPTIONS',
+    'access-control-allow-methods': 'GET,HEAD,POST,PATCH,DELETE,OPTIONS',
   });
   res.end(JSON.stringify(payload));
 };
@@ -43,7 +43,31 @@ const releaseMimeType = filePath => {
   return 'application/octet-stream';
 };
 
-const serveReleaseFile = (res, pathname) => {
+const releaseFileHash = filePath => {
+  const hash = crypto.createHash('sha256');
+  hash.update(fs.readFileSync(filePath));
+  return hash.digest('hex');
+};
+
+const parseRangeHeader = (rangeHeader, size) => {
+  const match = String(rangeHeader || '').match(/^bytes=(\d*)-(\d*)$/);
+  if (!match) return null;
+  const startText = match[1];
+  const endText = match[2];
+  let start = startText ? Number(startText) : 0;
+  let end = endText ? Number(endText) : size - 1;
+  if (!startText && endText) {
+    const suffixLength = Number(endText);
+    start = Math.max(size - suffixLength, 0);
+    end = size - 1;
+  }
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || start >= size) {
+    return null;
+  }
+  return { start, end: Math.min(end, size - 1) };
+};
+
+const serveReleaseFile = (req, res, pathname) => {
   if (!pathname.startsWith('/releases/')) return false;
   const filename = decodeURIComponent(pathname.slice('/releases/'.length));
   if (!filename || filename !== path.basename(filename) || !/^[A-Za-z0-9._-]+$/.test(filename)) {
@@ -55,12 +79,45 @@ const serveReleaseFile = (res, pathname) => {
     fail(res, 404, 'Release file not found.');
     return true;
   }
-  res.writeHead(200, {
+  const stat = fs.statSync(filePath);
+  const baseHeaders = {
     'content-type': releaseMimeType(filePath),
-    'content-length': fs.statSync(filePath).size,
     'content-disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
+    'accept-ranges': 'bytes',
     'access-control-allow-origin': '*',
+  };
+  const range = parseRangeHeader(req.headers.range, stat.size);
+  if (req.headers.range && !range) {
+    res.writeHead(416, {
+      ...baseHeaders,
+      'content-range': `bytes */${stat.size}`,
+      'content-length': 0,
+    });
+    res.end();
+    return true;
+  }
+  if (range) {
+    const length = range.end - range.start + 1;
+    res.writeHead(206, {
+      ...baseHeaders,
+      'content-length': length,
+      'content-range': `bytes ${range.start}-${range.end}/${stat.size}`,
+    });
+    if (req.method === 'HEAD') {
+      res.end();
+      return true;
+    }
+    fs.createReadStream(filePath, range).pipe(res);
+    return true;
+  }
+  res.writeHead(200, {
+    ...baseHeaders,
+    'content-length': stat.size,
   });
+  if (req.method === 'HEAD') {
+    res.end();
+    return true;
+  }
   fs.createReadStream(filePath).pipe(res);
   return true;
 };
@@ -95,7 +152,7 @@ const detectAutoRelease = origin => {
       if (!version || !platform) return null;
       const filePath = path.join(RELEASE_DIR, name);
       const stat = fs.statSync(filePath);
-      return { name, version, platform, mtimeMs: stat.mtimeMs };
+      return { name, version, platform, mtimeMs: stat.mtimeMs, size: stat.size, sha256: releaseFileHash(filePath) };
     })
     .filter(Boolean)
     .sort((a, b) => Number(b.version) - Number(a.version) || b.mtimeMs - a.mtimeMs);
@@ -108,8 +165,14 @@ const detectAutoRelease = origin => {
     notesZh: readLinesFile(path.join(RELEASE_DIR, `changelog-${latestVersion}.zh.txt`)),
     notesEn: readLinesFile(path.join(RELEASE_DIR, `changelog-${latestVersion}.en.txt`)),
     windowsX64Url: '',
+    windowsX64Size: undefined,
+    windowsX64Sha256: '',
     macArmUrl: '',
+    macArmSize: undefined,
+    macArmSha256: '',
     macIntelUrl: '',
+    macIntelSize: undefined,
+    macIntelSha256: '',
   };
   if (result.notesZh.length === 0) result.notesZh = readLinesFile(path.join(RELEASE_DIR, 'changelog.zh.txt'));
   if (result.notesZh.length === 0) result.notesZh = readLinesFile(path.join(RELEASE_DIR, 'changelog.txt'));
@@ -119,9 +182,16 @@ const detectAutoRelease = origin => {
     const url = releaseFileUrl(origin, item.name);
     if (item.platform === 'macUniversalUrl') {
       result.macArmUrl ||= url;
+      result.macArmSize ||= item.size;
+      result.macArmSha256 ||= item.sha256;
       result.macIntelUrl ||= url;
+      result.macIntelSize ||= item.size;
+      result.macIntelSha256 ||= item.sha256;
     } else {
       result[item.platform] ||= url;
+      const prefix = item.platform.replace(/Url$/, '');
+      result[`${prefix}Size`] ||= item.size;
+      result[`${prefix}Sha256`] ||= item.sha256;
     }
   }
   return result;
@@ -558,9 +628,21 @@ const releaseResponse = (data, req) => {
           ch: { title: version ? `LfClaw ${version}` : '', content: notesZh },
           en: { title: version ? `LfClaw ${version}` : '', content: notesEn },
         },
-        windowsX64: { url: autoRelease.windowsX64Url || release.windowsX64Url || release.manualUrl || '' },
-        macArm: { url: autoRelease.macArmUrl || release.macArmUrl || release.manualUrl || '' },
-        macIntel: { url: autoRelease.macIntelUrl || release.macIntelUrl || release.manualUrl || '' },
+        windowsX64: {
+          url: autoRelease.windowsX64Url || release.windowsX64Url || release.manualUrl || '',
+          size: autoRelease.windowsX64Size,
+          sha256: autoRelease.windowsX64Sha256,
+        },
+        macArm: {
+          url: autoRelease.macArmUrl || release.macArmUrl || release.manualUrl || '',
+          size: autoRelease.macArmSize,
+          sha256: autoRelease.macArmSha256,
+        },
+        macIntel: {
+          url: autoRelease.macIntelUrl || release.macIntelUrl || release.manualUrl || '',
+          size: autoRelease.macIntelSize,
+          sha256: autoRelease.macIntelSha256,
+        },
       },
     },
   };
@@ -732,7 +814,7 @@ const findEmployeeByToken = (data, token) => {
 const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') return json(res, 204, {});
   const url = new URL(req.url || '/', `http://${req.headers.host}`);
-  if (req.method === 'GET' && serveReleaseFile(res, url.pathname)) return;
+  if ((req.method === 'GET' || req.method === 'HEAD') && serveReleaseFile(req, res, url.pathname)) return;
   const data = readData();
   try {
     if (await handleAdmin(req, res, url, data)) return;

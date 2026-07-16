@@ -8,6 +8,8 @@ const rootDir = path.resolve(__dirname, '..');
 const buildVersionPath = path.join(rootDir, '.lfclaw-build', 'build-version.json');
 const releaseDir = path.join(rootDir, 'release');
 
+const MOJIBAKE_PATTERN = /锟|閺|娴|鐎|閵|閿|浼|瀹|绔|鏂|簮|涓|€|銆/;
+
 function readBuildVersion() {
   const envVersion = process.env.LFCLAW_BUILD_VERSION?.trim();
   if (/^\d{10}$/.test(envVersion || '')) return envVersion;
@@ -32,11 +34,14 @@ function runGit(args) {
   }
 }
 
+function cleanLine(line) {
+  return String(line || '').trim();
+}
+
 function envLines() {
   const text = process.env.LFCLAW_CHANGELOG?.trim();
-  if (!text) return [];
-  if (/[�]|鏇|浼|瀹|銆|锛/.test(text)) return [];
-  return text.split(/\r?\n|;|；/).map(line => line.trim()).filter(Boolean);
+  if (!text || MOJIBAKE_PATTERN.test(text)) return [];
+  return text.split(/\r?\n|;/).map(cleanLine).filter(Boolean);
 }
 
 function changedFiles() {
@@ -52,13 +57,15 @@ function recentCommitLines() {
 function inferLinesFromFiles(files) {
   const lines = [];
   const hasEnterpriseServer = files.some(file => file.startsWith('enterprise-server/'));
-  const hasUpdate = files.some(file => file.includes('appUpdate') || file.includes('electron-builder') || file.includes('build-version'));
+  const hasUpdate = files.some(file => file.includes('appUpdate') || file.includes('electron-builder') || file.includes('build-version') || file.includes('release-lfclaw'));
   const hasDocs = files.some(file => file.toLowerCase().endsWith('.md'));
   const hasPackage = files.some(file => file === 'package.json' || file === 'electron-builder.json');
+  const hasBranding = files.some(file => file.includes('assets') || file.includes('icons') || file.includes('brand'));
 
   if (hasEnterpriseServer) lines.push('优化企业管理服务与版本更新源。');
   if (hasUpdate) lines.push('完善客户端自动更新检测、版本号和打包流程。');
   if (hasPackage) lines.push('调整客户端打包配置和发布产物命名规则。');
+  if (hasBranding) lines.push('更新客户端品牌图标和展示信息。');
   if (hasDocs) lines.push('更新部署、打包和运维说明文档。');
 
   return lines;
@@ -69,10 +76,11 @@ function fallbackLines() {
   const inferred = inferLinesFromFiles(files);
   if (inferred.length > 0) return inferred;
 
-  const commits = recentCommitLines();
-  if (commits.length > 0) {
-    return commits.map(line => line.replace(/^[a-z]+(?:\([^)]+\))?:\s*/i, '').trim()).filter(Boolean);
-  }
+  const commits = recentCommitLines()
+    .map(line => line.replace(/^[a-z]+(?:\([^)]+\))?:\s*/i, ''))
+    .map(cleanLine)
+    .filter(line => line && !MOJIBAKE_PATTERN.test(line));
+  if (commits.length > 0) return commits;
 
   return ['更新 LFClaw 客户端。'];
 }

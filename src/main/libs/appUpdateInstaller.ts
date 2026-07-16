@@ -14,6 +14,10 @@ export interface AppUpdateDownloadProgress {
   speed: number | undefined;
 }
 
+export interface AppUpdateDownloadExpectation {
+  expectedSize?: number;
+}
+
 let activeDownloadController: AbortController | null = null;
 
 export function cancelActiveDownload(): boolean {
@@ -48,11 +52,29 @@ const PROGRESS_THROTTLE_MS = 200;
 
 /** Abort download if no data received for this duration (ms). */
 const DOWNLOAD_INACTIVITY_TIMEOUT_MS = 60_000;
+const MIN_WINDOWS_INSTALLER_BYTES = 20 * 1024 * 1024;
+
+async function validateWindowsInstallerFile(filePath: string, size: number): Promise<void> {
+  if (size < MIN_WINDOWS_INSTALLER_BYTES) {
+    throw new Error(`Windows installer is unexpectedly small (${size} bytes)`);
+  }
+  const handle = await fs.promises.open(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(2);
+    await handle.read(buffer, 0, 2, 0);
+    if (buffer.toString('ascii') !== 'MZ') {
+      throw new Error('Windows installer is not a valid executable file');
+    }
+  } finally {
+    await handle.close();
+  }
+}
 
 export async function downloadUpdate(
   url: string,
   source: AppUpdateSource,
   onProgress: (progress: AppUpdateDownloadProgress) => void,
+  expectation: AppUpdateDownloadExpectation = {},
 ): Promise<string> {
   if (activeDownloadController) {
     throw new Error('A download is already in progress');
@@ -179,6 +201,17 @@ export async function downloadUpdate(
     if (total && Number.isFinite(total) && stat.size !== total) {
       throw new Error(`Download incomplete: expected ${total} bytes but got ${stat.size}`);
     }
+    if (
+      typeof expectation.expectedSize === 'number' &&
+      Number.isFinite(expectation.expectedSize) &&
+      expectation.expectedSize > 0 &&
+      stat.size !== expectation.expectedSize
+    ) {
+      throw new Error(`Download incomplete: expected ${expectation.expectedSize} bytes from release manifest but got ${stat.size}`);
+    }
+    if (process.platform === 'win32' && ext.toLowerCase() === '.exe') {
+      await validateWindowsInstallerFile(downloadPath, stat.size);
+    }
 
     // Rename to final path (atomic on same filesystem)
     await fs.promises.rename(downloadPath, finalPath);
@@ -229,6 +262,9 @@ export async function installUpdate(filePath: string): Promise<void> {
     console.log(`[AppUpdate] Installer file size: ${stat.size} bytes`);
     if (stat.size === 0) {
       throw new Error('Update file is empty');
+    }
+    if (process.platform === 'win32') {
+      await validateWindowsInstallerFile(filePath, stat.size);
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {

@@ -25,6 +25,8 @@ type ChangeLogLang = {
 
 type PlatformDownload = {
   url?: string;
+  size?: number;
+  sha256?: string;
 };
 
 type UpdateApiResponse = {
@@ -227,11 +229,7 @@ export class AppUpdateCoordinator {
       }
 
       const updateFound = true;
-      const matchingReadyFile = await this.resolveMatchingReadyFile(
-        previousState,
-        targetSource,
-        info.latestVersion,
-      );
+      const matchingReadyFile = await this.resolveMatchingReadyFile(previousState, targetSource, info);
       if (!this.isFlowActive(flowId, targetSource)) {
         console.log(
           `[AppUpdate] ignoring stale check result after ready-file resolution, flowId=${flowId}, source=${targetSource}, activeFlowId=${this.activeFlowId}, activeSource=${this.activeFlowSource ?? 'none'}`,
@@ -464,7 +462,7 @@ export class AppUpdateCoordinator {
           progress,
           errorMessage: null,
         });
-      });
+      }, { expectedSize: info.packageSize });
       if (!this.isFlowActive(flowId, source)) {
         console.log(
           `[AppUpdate] ignoring stale download completion, flowId=${flowId}, source=${source}, filePath=${filePath}`,
@@ -473,6 +471,10 @@ export class AppUpdateCoordinator {
       }
 
       const fileHash = await this.computeFileHash(filePath);
+      if (info.packageSha256 && fileHash.toLowerCase() !== info.packageSha256.toLowerCase()) {
+        await this.cleanupReadyFile(filePath);
+        throw new Error(`Download hash mismatch: expected ${info.packageSha256} but got ${fileHash}`);
+      }
       console.log(
         `[AppUpdate] download completed, flowId=${flowId}, source=${source}, version=${info.latestVersion}, filePath=${filePath}, fileHash=${fileHash}`,
       );
@@ -587,7 +589,7 @@ export class AppUpdateCoordinator {
         zh: toEntry(value?.changeLog?.ch),
         en: toEntry(value?.changeLog?.en),
       },
-      url: this.getPlatformDownloadUrl(value),
+      ...this.getPlatformDownload(value),
     };
   }
 
@@ -606,19 +608,24 @@ export class AppUpdateCoordinator {
     }
   }
 
-  private getPlatformDownloadUrl(
+  private getPlatformDownload(
     value: NonNullable<NonNullable<UpdateApiResponse['data']>['value']> | undefined,
-  ): string {
+  ): Pick<AppUpdateInfo, 'url' | 'packageSize' | 'packageSha256'> {
+    const normalize = (download?: PlatformDownload) => ({
+      url: download?.url?.trim() || getFallbackDownloadUrl(),
+      packageSize: typeof download?.size === 'number' && Number.isFinite(download.size) ? download.size : undefined,
+      packageSha256: typeof download?.sha256 === 'string' && download.sha256 ? download.sha256.trim().toLowerCase() : undefined,
+    });
     if (process.platform === 'darwin') {
       const download = process.arch === 'arm64' ? value?.macArm : value?.macIntel;
-      return download?.url?.trim() || getFallbackDownloadUrl();
+      return normalize(download);
     }
 
     if (process.platform === 'win32') {
-      return value?.windowsX64?.url?.trim() || getFallbackDownloadUrl();
+      return normalize(value?.windowsX64);
     }
 
-    return getFallbackDownloadUrl();
+    return { url: getFallbackDownloadUrl() };
   }
 
   private canPredownload(url: string): boolean {
@@ -858,8 +865,9 @@ export class AppUpdateCoordinator {
   private async resolveMatchingReadyFile(
     previousState: AppUpdateRuntimeState,
     targetSource: AppUpdateSource,
-    latestVersion: string,
+    info: AppUpdateInfo,
   ): Promise<StoredReadyFile | null> {
+    const latestVersion = info.latestVersion;
     console.log(
       `[AppUpdate] resolveMatchingReadyFile started, targetSource=${targetSource}, previousStatus=${previousState.status}, previousSource=${previousState.source ?? 'none'}, previousVersion=${previousState.info?.latestVersion ?? 'none'}, latestVersion=${latestVersion}`,
     );
@@ -883,6 +891,7 @@ export class AppUpdateCoordinator {
       const isValid = await this.isReadyFileValid(
         inMemoryReadyFile.filePath,
         inMemoryReadyFile.fileHash,
+        info,
       );
       if (isValid) {
         console.log('[AppUpdate] in-memory ready file is valid');
@@ -913,6 +922,7 @@ export class AppUpdateCoordinator {
       const isValid = await this.isReadyFileValid(
         storedReadyFile.filePath,
         storedReadyFile.fileHash,
+        info,
       );
       if (isValid) {
         console.log(`[AppUpdate] persisted ready file from source=${source} is valid`);
@@ -928,7 +938,7 @@ export class AppUpdateCoordinator {
     return null;
   }
 
-  private async isReadyFileValid(filePath: string, expectedHash: string): Promise<boolean> {
+  private async isReadyFileValid(filePath: string, expectedHash: string, info?: AppUpdateInfo): Promise<boolean> {
     try {
       const stat = await fs.promises.stat(filePath);
       if (!stat.isFile() || stat.size <= 0) {
@@ -937,13 +947,26 @@ export class AppUpdateCoordinator {
         );
         return false;
       }
+      if (typeof info?.packageSize === 'number' && stat.size !== info.packageSize) {
+        console.warn(
+          `[AppUpdate] ready file validation failed: size mismatch, path=${filePath}, expectedSize=${info.packageSize}, actualSize=${stat.size}`,
+        );
+        return false;
+      }
       const actualHash = await this.computeFileHash(filePath);
       if (actualHash !== expectedHash) {
         console.warn(
           `[AppUpdate] ready file validation failed: hash mismatch, path=${filePath}, expectedHash=${expectedHash}, actualHash=${actualHash}`,
         );
+        return false;
       }
-      return actualHash === expectedHash;
+      if (info?.packageSha256 && actualHash.toLowerCase() !== info.packageSha256.toLowerCase()) {
+        console.warn(
+          `[AppUpdate] ready file validation failed: manifest hash mismatch, path=${filePath}, expectedSha256=${info.packageSha256}, actualHash=${actualHash}`,
+        );
+        return false;
+      }
+      return true;
     } catch {
       console.warn(
         `[AppUpdate] ready file validation failed: stat/hash threw, path=${filePath}`,

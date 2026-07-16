@@ -65,7 +65,14 @@ describe('Windows update install', () => {
     mocks.showItemInFolder.mockReset();
     mocks.quit.mockReset();
     Object.defineProperty(process, 'platform', { value: 'win32' });
-    vi.spyOn(fs.promises, 'stat').mockResolvedValue({ size: 1024 } as fs.Stats);
+    vi.spyOn(fs.promises, 'stat').mockResolvedValue({ size: 64 * 1024 * 1024 } as fs.Stats);
+    vi.spyOn(fs.promises, 'open').mockResolvedValue({
+      read: vi.fn(async (buffer: Buffer) => {
+        buffer.write('MZ', 0, 'ascii');
+        return { bytesRead: 2, buffer };
+      }),
+      close: vi.fn(async () => undefined),
+    } as any);
   });
 
   afterEach(() => {

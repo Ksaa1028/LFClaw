@@ -180,15 +180,19 @@ GET /api/enterprise/update-manual
 
 返回格式兼容当前客户端更新模块。客户端会根据当前系统选择 Windows 或 macOS 下载地址。
 
+从 `2026071603` 版本开始，更新接口会同时返回安装包大小和 SHA256。客户端下载完成后会校验文件大小、哈希和 Windows 安装包文件头，避免不完整安装包触发 NSIS integrity check 错误。
+
 安装包直接放在企业服务目录：
 
 ```bash
 mkdir -p /opt/LfClaw/releases
-cp LfClaw-Setup-2026071501-win-x64-official.exe /opt/LfClaw/releases/
+cp LFClaw-Setup-2026071501-win-x64-official.exe /opt/LfClaw/releases/
 ```
 
 后台下载地址填写：
 不用手动填写。服务会自动生成 `http://服务器IP:8787/releases/文件名`。
+
+注意：Linux 区分大小写，服务器上的文件名必须和更新接口返回的文件名完全一致，例如 `LFClaw-Setup-2026071603-win-x64-official.exe`。
 
 更新日志放同一目录，推荐命名：
 
@@ -273,11 +277,22 @@ npm run release:mac:x64:runtime
 打包完成后，上传到服务器：
 
 ```bash
-scp release/LfClaw-Setup-2026071503-win-x64-official.exe root@服务器IP:/opt/LfClaw/releases/
-scp release/LfClaw-2026071503-mac-arm64-official.dmg root@服务器IP:/opt/LfClaw/releases/
-scp release/LfClaw-2026071503-mac-x64-official.dmg root@服务器IP:/opt/LfClaw/releases/
+scp release/LFClaw-Setup-2026071503-win-x64-official.exe root@服务器IP:/opt/LfClaw/releases/
+scp release/LFClaw-2026071503-mac-arm64-official.dmg root@服务器IP:/opt/LfClaw/releases/
+scp release/LFClaw-2026071503-mac-x64-official.dmg root@服务器IP:/opt/LfClaw/releases/
 scp release/changelog-2026071503.zh.txt root@服务器IP:/opt/LfClaw/releases/
 ```
+
+如果本次改动包含企业服务更新源逻辑，必须同时上传最新的 `enterprise-server/server.mjs` 并重启企业服务。否则客户端可能拿不到安装包大小和 SHA256，更新校验能力不会生效。
+
+推荐上传后先验证：
+
+```bash
+curl "http://服务器IP:8787/api/enterprise/update?version=旧版本号"
+curl -I "http://服务器IP:8787/releases/LFClaw-Setup-版本号-win-x64-official.exe"
+```
+
+检查更新 JSON 中应包含 `size` 和 `sha256`，`curl -I` 应返回正确的 `Content-Length`。
 
 macOS 首次发版必须重点验证：
 
