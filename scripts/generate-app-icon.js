@@ -9,9 +9,23 @@ const projectRoot = path.resolve(__dirname, '..');
 const source = path.resolve(projectRoot, process.argv[2] || 'public/logo.png');
 const pngDir = path.join(projectRoot, 'build', 'icons', 'png');
 const winDir = path.join(projectRoot, 'build', 'icons', 'win');
+const macDir = path.join(projectRoot, 'build', 'icons', 'mac');
 const outIco = path.join(winDir, 'icon.ico');
+const outIcns = path.join(macDir, 'icon.icns');
 const pngSizes = [1024, 512, 256, 128, 64, 48, 32, 24, 16];
 const icoSizes = [256, 128, 64, 48, 32, 16];
+const macIconEntries = [
+  { file: 'icon_16x16.png', size: 16 },
+  { file: 'icon_16x16@2x.png', size: 32 },
+  { file: 'icon_32x32.png', size: 32 },
+  { file: 'icon_32x32@2x.png', size: 64 },
+  { file: 'icon_128x128.png', size: 128 },
+  { file: 'icon_128x128@2x.png', size: 256 },
+  { file: 'icon_256x256.png', size: 256 },
+  { file: 'icon_256x256@2x.png', size: 512 },
+  { file: 'icon_512x512.png', size: 512 },
+  { file: 'icon_512x512@2x.png', size: 1024 },
+];
 
 function assertSource() {
   if (!fs.existsSync(source)) {
@@ -23,7 +37,7 @@ function psLiteral(value) {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
-function resizePngs() {
+function resizePngsWithPowerShell() {
   fs.mkdirSync(pngDir, { recursive: true });
   fs.mkdirSync(winDir, { recursive: true });
 
@@ -57,6 +71,43 @@ try {
   fs.rmSync(path.dirname(scriptPath), { recursive: true, force: true });
 }
 
+function resizePngsWithSips() {
+  fs.mkdirSync(pngDir, { recursive: true });
+  pngSizes.forEach((size) => {
+    execFileSync('/usr/bin/sips', [
+      '-s',
+      'format',
+      'png',
+      '-z',
+      String(size),
+      String(size),
+      source,
+      '--out',
+      path.join(pngDir, `${size}x${size}.png`),
+    ], { stdio: 'inherit' });
+  });
+}
+
+function writeMacIcns() {
+  if (process.platform !== 'darwin') return;
+  fs.mkdirSync(macDir, { recursive: true });
+  const iconsetDir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lfclaw-iconset-')), 'icon.iconset');
+  fs.mkdirSync(iconsetDir, { recursive: true });
+
+  try {
+    macIconEntries.forEach((entry) => {
+      const sourcePng = path.join(pngDir, `${entry.size}x${entry.size}.png`);
+      if (!fs.existsSync(sourcePng)) {
+        throw new Error(`Missing PNG for macOS icon: ${sourcePng}`);
+      }
+      fs.copyFileSync(sourcePng, path.join(iconsetDir, entry.file));
+    });
+    execFileSync('/usr/bin/iconutil', ['-c', 'icns', iconsetDir, '-o', outIcns], { stdio: 'inherit' });
+  } finally {
+    fs.rmSync(path.dirname(iconsetDir), { recursive: true, force: true });
+  }
+}
+
 function buildIco(entries, outputPath) {
   let offset = 6 + entries.length * 16;
   const directoryEntries = entries.map((entry) => {
@@ -87,6 +138,7 @@ function buildIco(entries, outputPath) {
 }
 
 function writeWindowsIco() {
+  fs.mkdirSync(winDir, { recursive: true });
   const entries = icoSizes.map((size) => ({
     size,
     data: fs.readFileSync(path.join(pngDir, `${size}x${size}.png`)),
@@ -96,11 +148,19 @@ function writeWindowsIco() {
 
 function main() {
   assertSource();
-  resizePngs();
-  writeWindowsIco();
+  if (process.platform === 'win32') {
+    resizePngsWithPowerShell();
+    writeWindowsIco();
+  } else if (process.platform === 'darwin') {
+    resizePngsWithSips();
+    writeMacIcns();
+  } else {
+    throw new Error('App icon generation currently supports Windows and macOS hosts only.');
+  }
   console.log(`Generated app icons from ${source}`);
   console.log(`- ${pngDir}`);
-  console.log(`- ${outIco}`);
+  if (process.platform === 'win32') console.log(`- ${outIco}`);
+  if (process.platform === 'darwin') console.log(`- ${outIcns}`);
 }
 
 try {

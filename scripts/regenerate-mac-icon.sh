@@ -1,8 +1,5 @@
 #!/bin/bash
-set -e
-
-# Script to regenerate macOS .icns file from PNG icons for better compatibility
-# This ensures the icon works correctly on both Intel and Apple Silicon Macs
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -11,64 +8,45 @@ PNG_DIR="$ICON_DIR/png"
 MAC_DIR="$ICON_DIR/mac"
 ICONSET_DIR="$MAC_DIR/icon.iconset"
 
-echo "🎨 Regenerating macOS icon for better compatibility..."
+echo "[LfClaw] Regenerating macOS icon..."
 
-# Check if source PNG exists
-if [ ! -f "$PNG_DIR/icon_512x512.png" ]; then
-    echo "❌ Error: Source PNG not found at $PNG_DIR/icon_512x512.png"
-    echo "   Please ensure PNG icons are extracted first."
-    exit 1
+if ! command -v iconutil >/dev/null 2>&1; then
+  echo "iconutil is required. Please run this script on macOS."
+  exit 1
 fi
 
-# Create iconset directory
+if [ ! -f "$PNG_DIR/1024x1024.png" ]; then
+  echo "PNG icons are missing. Generating icons from public/logo.png first..."
+  node "$PROJECT_ROOT/scripts/generate-app-icon.js"
+fi
+
 rm -rf "$ICONSET_DIR"
 mkdir -p "$ICONSET_DIR"
 
-# Copy PNG files to iconset with correct naming
-for size in 16 32 128 256 512; do
-    if [ -f "$PNG_DIR/icon_${size}x${size}.png" ]; then
-        cp "$PNG_DIR/icon_${size}x${size}.png" "$ICONSET_DIR/icon_${size}x${size}.png"
-        echo "  ✓ Added ${size}x${size}"
-    fi
-
-    # Copy @2x versions
-    doubled=$((size * 2))
-    if [ -f "$PNG_DIR/icon_${size}x${size}@2x.png" ]; then
-        cp "$PNG_DIR/icon_${size}x${size}@2x.png" "$ICONSET_DIR/icon_${size}x${size}@2x.png"
-        echo "  ✓ Added ${size}x${size}@2x (${doubled}x${doubled})"
-    fi
-done
-
-# Backup old icon
-if [ -f "$MAC_DIR/icon.icns" ]; then
-    mv "$MAC_DIR/icon.icns" "$MAC_DIR/icon.icns.backup"
-    echo "📦 Backed up old icon to icon.icns.backup"
-fi
-
-# Generate new .icns file using iconutil
-iconutil -c icns "$ICONSET_DIR" -o "$MAC_DIR/icon.icns"
-
-if [ $? -eq 0 ]; then
-    echo "✅ Successfully generated new icon.icns"
-
-    # Show file info
-    ls -lh "$MAC_DIR/icon.icns"
-    file "$MAC_DIR/icon.icns"
-
-    # Clean up
-    rm -rf "$ICONSET_DIR"
-    echo "🧹 Cleaned up temporary iconset directory"
-else
-    echo "❌ Failed to generate icon.icns"
-    # Restore backup if generation failed
-    if [ -f "$MAC_DIR/icon.icns.backup" ]; then
-        mv "$MAC_DIR/icon.icns.backup" "$MAC_DIR/icon.icns"
-        echo "♻️  Restored original icon"
-    fi
+copy_icon() {
+  local source_size="$1"
+  local target_name="$2"
+  local source_file="$PNG_DIR/${source_size}x${source_size}.png"
+  if [ ! -f "$source_file" ]; then
+    echo "Missing source PNG: $source_file"
     exit 1
-fi
+  fi
+  cp "$source_file" "$ICONSET_DIR/$target_name"
+}
 
-echo ""
-echo "🎉 Icon regeneration complete!"
-echo "   The new icon should work correctly on both Intel and Apple Silicon Macs."
-echo "   You can now rebuild the app with: npm run dist:mac"
+copy_icon 16 "icon_16x16.png"
+copy_icon 32 "icon_16x16@2x.png"
+copy_icon 32 "icon_32x32.png"
+copy_icon 64 "icon_32x32@2x.png"
+copy_icon 128 "icon_128x128.png"
+copy_icon 256 "icon_128x128@2x.png"
+copy_icon 256 "icon_256x256.png"
+copy_icon 512 "icon_256x256@2x.png"
+copy_icon 512 "icon_512x512.png"
+copy_icon 1024 "icon_512x512@2x.png"
+
+mkdir -p "$MAC_DIR"
+iconutil -c icns "$ICONSET_DIR" -o "$MAC_DIR/icon.icns"
+rm -rf "$ICONSET_DIR"
+
+echo "[LfClaw] macOS icon generated: $MAC_DIR/icon.icns"
