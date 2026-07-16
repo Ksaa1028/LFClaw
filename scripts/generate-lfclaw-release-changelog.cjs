@@ -35,6 +35,7 @@ function runGit(args) {
 function envLines() {
   const text = process.env.LFCLAW_CHANGELOG?.trim();
   if (!text) return [];
+  if (/[�]|鏇|浼|瀹|銆|锛/.test(text)) return [];
   return text.split(/\r?\n|;|；/).map(line => line.trim()).filter(Boolean);
 }
 

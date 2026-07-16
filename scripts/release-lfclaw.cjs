@@ -119,13 +119,7 @@ function readRuntimeTarget() {
 
 function ensureChangelogEnv(env) {
   if (env.LFCLAW_CHANGELOG?.trim()) return env;
-  return {
-    ...env,
-    LFCLAW_CHANGELOG: [
-      '更新 LFClaw 客户端。',
-      '优化企业版体验与发布流程。',
-    ].join('\n'),
-  };
+  return env;
 }
 
 function runtimeTarget(platform, arch) {
