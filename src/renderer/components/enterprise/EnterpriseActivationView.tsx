@@ -77,7 +77,7 @@ const EnterpriseActivationView: React.FC<EnterpriseActivationViewProps> = ({
               {updateBadge}
             </div>
           )}
-          <h1 className="text-lg font-semibold text-foreground">LfClaw 企业激活</h1>
+          <h1 className="text-lg font-semibold text-foreground">LFClaw 企业激活</h1>
         </div>
         {message && (
           <div className="non-draggable rounded-md bg-primary/10 px-3 py-1 text-sm text-primary">

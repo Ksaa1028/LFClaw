@@ -50,11 +50,11 @@ const env = {
   ...(enterpriseServerUrl ? { LFCLAW_ENTERPRISE_BASE_URL: enterpriseServerUrl } : {}),
 };
 
-console.log('[LfClaw] starting desktop client with the standard dev pipeline...');
+console.log('[LFClaw] starting desktop client with the standard dev pipeline...');
 if (enterpriseServerUrl) {
-  console.log(`[LfClaw] enterprise server: ${enterpriseServerUrl}`);
+  console.log(`[LFClaw] enterprise server: ${enterpriseServerUrl}`);
 }
-console.log('[LfClaw] do not start Electron directly; this command builds main/preload first.');
+console.log('[LFClaw] do not start Electron directly; this command builds main/preload first.');
 
 const npm = npmCommandAndArgs();
 const child = spawn(npm.command, [...npm.args, 'run', 'electron:dev'], {

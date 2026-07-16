@@ -12,6 +12,7 @@ export interface Model {
   openClawProviderId?: string; // OpenClaw runtime provider id
   supportsImage?: boolean;
   supportsThinking?: boolean;
+  modelTypes?: string[];
   contextWindow?: number;
   isServerModel?: boolean; // 是否为服务端套餐模型
   serverApiFormat?: string; // 服务端模型的 API 格式 ("openai" | "anthropic")

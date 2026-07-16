@@ -209,7 +209,7 @@ const App: React.FC = () => {
         };
         apiService.setConfig(apiConfig);
 
-        const providerModels: { id: string; name: string; provider?: string; providerKey?: string; openClawProviderId?: string; supportsImage?: boolean }[] = [];
+        const providerModels: { id: string; name: string; provider?: string; providerKey?: string; openClawProviderId?: string; supportsImage?: boolean; modelTypes?: string[] }[] = [];
         if (config.providers) {
           Object.entries(config.providers).forEach(([providerName, providerConfig]) => {
             if (providerConfig.enabled && providerConfig.models) {
@@ -217,14 +217,19 @@ const App: React.FC = () => {
               if (providerName === ProviderName.Minimax && providerConfig.authType === ProviderAuthType.OAuth) {
                 mark('MiniMax OAuth provider resolved to OpenClaw minimax-portal');
               }
-              providerConfig.models.forEach((model: { id: string; name: string; supportsImage?: boolean }) => {
+              providerConfig.models.forEach((model: { id: string; name: string; supportsImage?: boolean; modelTypes?: string[] }) => {
                 providerModels.push({
                   id: model.id,
                   name: model.name,
                   provider: getProviderDisplayName(providerName, providerConfig),
                   providerKey: providerName,
                   openClawProviderId,
-                  supportsImage: model.supportsImage ?? false,
+                  supportsImage: ProviderRegistry.resolveModelSupportsImage(
+                    providerName,
+                    model.id,
+                    model.supportsImage,
+                  ),
+                  modelTypes: Array.isArray(model.modelTypes) ? model.modelTypes : [],
                 });
               });
             }
@@ -677,18 +682,23 @@ const App: React.FC = () => {
     });
 
     if (config.providers) {
-      const allModels: { id: string; name: string; provider?: string; providerKey?: string; openClawProviderId?: string; supportsImage?: boolean }[] = [];
+        const allModels: { id: string; name: string; provider?: string; providerKey?: string; openClawProviderId?: string; supportsImage?: boolean; modelTypes?: string[] }[] = [];
       Object.entries(config.providers).forEach(([providerName, providerConfig]) => {
         if (providerConfig.enabled && providerConfig.models) {
           const openClawProviderId = ProviderRegistry.getOpenClawProviderIdForConfig(providerName, providerConfig);
-          providerConfig.models.forEach((model: { id: string; name: string; supportsImage?: boolean }) => {
+          providerConfig.models.forEach((model: { id: string; name: string; supportsImage?: boolean; modelTypes?: string[] }) => {
             allModels.push({
               id: model.id,
               name: model.name,
               provider: getProviderDisplayName(providerName, providerConfig),
               providerKey: providerName,
               openClawProviderId,
-              supportsImage: model.supportsImage ?? false,
+              supportsImage: ProviderRegistry.resolveModelSupportsImage(
+                providerName,
+                model.id,
+                model.supportsImage,
+              ),
+              modelTypes: Array.isArray(model.modelTypes) ? model.modelTypes : [],
             });
           });
         }

@@ -13,6 +13,7 @@ import type {
   EnterpriseStatus,
   EnterpriseUser,
 } from '../../shared/enterprise/constants';
+import { ProviderRegistry } from '../../shared/providers';
 import type { SqliteStore } from '../sqliteStore';
 
 const ENTERPRISE_ACCESS_KEY = 'lfclaw_enterprise_access';
@@ -69,7 +70,7 @@ const normalizeMcpTransportType = (value: unknown): 'stdio' | 'sse' | 'http' | '
   value === 'stdio' || value === 'http' || value === 'streamable-http' ? value : 'sse'
 );
 
-export class LfClawEnterpriseAccess {
+export class LFClawEnterpriseAccess {
   constructor(private readonly store: SqliteStore) {}
 
   getServerUrl(): string {
@@ -315,7 +316,7 @@ export class LfClawEnterpriseAccess {
     const creditsLimit = numberValue(raw.creditsLimit ?? fallback?.creditsLimit);
     const creditsUsed = numberValue(raw.creditsUsed ?? fallback?.creditsUsed);
     return {
-      planName: typeof raw.planName === 'string' && raw.planName.trim() ? raw.planName.trim() : fallback?.planName ?? 'LfClaw Enterprise',
+      planName: typeof raw.planName === 'string' && raw.planName.trim() ? raw.planName.trim() : fallback?.planName ?? 'LFClaw Enterprise',
       subscriptionStatus: AuthSubscriptionStatus.Active,
       creditsLimit,
       creditsUsed,
@@ -341,7 +342,12 @@ export class LfClawEnterpriseAccess {
         models: recordList(provider.models).map(model => ({
           id: String(model.id || '').trim(),
           name: String(model.name || model.id || '').trim(),
-          supportsImage: model.supportsImage === true,
+          modelTypes: stringList(model.modelTypes),
+          supportsImage: ProviderRegistry.resolveModelSupportsImage(
+            String(provider.provider || provider.id || '').trim(),
+            String(model.id || '').trim(),
+            model.supportsImage === true,
+          ),
           supportsThinking: model.supportsThinking === true,
           ...(typeof model.contextWindow === 'number' ? { contextWindow: model.contextWindow } : {}),
         })).filter(model => model.id),

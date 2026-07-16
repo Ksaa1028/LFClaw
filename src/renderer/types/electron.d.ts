@@ -1588,6 +1588,7 @@ interface IElectronAPI {
         apiFormat: string;
         supportsImage?: boolean;
         supportsThinking?: boolean;
+        modelTypes?: string[];
         contextWindow?: number;
         explicitContextCache?: boolean;
         costMultiplier?: number;
@@ -1606,6 +1607,7 @@ interface IElectronAPI {
         description?: string;
         supportsImage?: boolean;
         supportsThinking?: boolean;
+        modelTypes?: string[];
         contextWindow?: number | null;
         costMultiplier?: number;
       }>;

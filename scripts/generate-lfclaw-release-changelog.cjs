@@ -15,7 +15,7 @@ function readBuildVersion() {
   const parsed = JSON.parse(fs.readFileSync(buildVersionPath, 'utf8'));
   const version = String(parsed.version || '').trim();
   if (!/^\d{10}$/.test(version)) {
-    throw new Error('Missing LfClaw build version. Run npm run build:version first.');
+    throw new Error('Missing LFClaw build version. Run npm run build:version first.');
   }
   return version;
 }
@@ -73,7 +73,7 @@ function fallbackLines() {
     return commits.map(line => line.replace(/^[a-z]+(?:\([^)]+\))?:\s*/i, '').trim()).filter(Boolean);
   }
 
-  return ['更新 LfClaw 客户端。'];
+  return ['更新 LFClaw 客户端。'];
 }
 
 function main() {
@@ -84,7 +84,7 @@ function main() {
 
   const filePath = path.join(releaseDir, `changelog-${version}.zh.txt`);
   fs.writeFileSync(filePath, `${changelogLines.join('\n')}\n`, 'utf8');
-  console.log(`[LfClaw Build] release changelog: ${filePath}`);
+  console.log(`[LFClaw Build] release changelog: ${filePath}`);
 }
 
 main();

@@ -54,8 +54,10 @@ export type AgentLegacyIdentityCleanupResult =
 
 export const LegacyAgentName = {
   Main: 'main',
+  LobsterAI: 'LobsterAI',
+  LobsterAiLower: 'lobsterai',
 } as const;
 
 export const DefaultAgentProfile = {
-  Name: 'LobsterAI',
+  Name: 'LFClaw',
 } as const;

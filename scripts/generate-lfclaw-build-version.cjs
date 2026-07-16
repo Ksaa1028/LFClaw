@@ -51,4 +51,4 @@ fs.writeFileSync(
   'utf8',
 );
 
-console.log(`[LfClaw Build] build version: ${version}`);
+console.log(`[LFClaw Build] build version: ${version}`);

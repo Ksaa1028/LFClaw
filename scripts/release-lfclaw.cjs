@@ -51,16 +51,16 @@ function parseArgs() {
 
 function packageFileName(version, platform, arch) {
   if (platform === 'win') {
-    return `LfClaw-Setup-${version}-win-${arch}-official.exe`;
+    return `LFClaw-Setup-${version}-win-${arch}-official.exe`;
   }
-  return `LfClaw-${version}-mac-${arch}-official.dmg`;
+  return `LFClaw-${version}-mac-${arch}-official.dmg`;
 }
 
 function releasePattern(prefix, platform, arch) {
   if (platform === 'win') {
-    return new RegExp(`^LfClaw-Setup-(${prefix})(\\d{2})-win-${arch}-.*\\.exe$`);
+    return new RegExp(`^LFClaw-Setup-(${prefix})(\\d{2})-win-${arch}-.*\\.exe$`);
   }
-  return new RegExp(`^LfClaw-(${prefix})(\\d{2})-mac-${arch}-.*\\.dmg$`);
+  return new RegExp(`^LFClaw-(${prefix})(\\d{2})-mac-${arch}-.*\\.dmg$`);
 }
 
 function resolveVersion(platform, arch) {
@@ -95,7 +95,7 @@ function resolveVersion(platform, arch) {
 }
 
 function run(label, command, args, env) {
-  console.log(`\n[LfClaw Release] ${label}`);
+  console.log(`\n[LFClaw Release] ${label}`);
   const result = spawnSync(command, args, {
     cwd: rootDir,
     env,
@@ -122,7 +122,7 @@ function ensureChangelogEnv(env) {
   return {
     ...env,
     LFCLAW_CHANGELOG: [
-      '更新 LfClaw 客户端。',
+      '更新 LFClaw 客户端。',
       '优化企业版体验与发布流程。',
     ].join('\n'),
   };
@@ -160,7 +160,7 @@ function verifyRelease(version, platform, arch) {
     throw new Error(`Release package looks too small: ${packagePath}`);
   }
 
-  console.log('\n[LfClaw Release] done');
+  console.log('\n[LFClaw Release] done');
   console.log(`Version: ${version}`);
   console.log(`Package: ${packagePath}`);
   console.log(`Changelog: ${changelogPath}`);
@@ -183,7 +183,7 @@ function main() {
   });
   const target = runtimeTarget(options.platform, options.arch);
 
-  console.log(`[LfClaw Release] ${options.platform} ${options.arch} version ${version}`);
+  console.log(`[LFClaw Release] ${options.platform} ${options.arch} version ${version}`);
   run('prepare icons', 'npm', ['run', 'sync:icons'], env);
   run('prepare channel info', 'node', ['scripts/generate-keyfrom-build-info.cjs'], env);
   run('write build version', 'npm', ['run', 'build:version'], env);
@@ -192,10 +192,10 @@ function main() {
   const currentRuntimeTarget = readRuntimeTarget();
   if (options.withRuntime || currentRuntimeTarget !== target) {
     const reason = options.withRuntime ? 'requested' : `current runtime is ${currentRuntimeTarget || 'missing'}`;
-    console.log(`[LfClaw Release] building OpenClaw runtime because ${reason}.`);
+    console.log(`[LFClaw Release] building OpenClaw runtime because ${reason}.`);
     run('build OpenClaw runtime', 'npm', ['run', `openclaw:runtime:${target}`], env);
   } else {
-    console.log(`[LfClaw Release] OpenClaw runtime is already ${target}, skip rebuild.`);
+    console.log(`[LFClaw Release] OpenClaw runtime is already ${target}, skip rebuild.`);
   }
 
   if (options.platform === 'win') {

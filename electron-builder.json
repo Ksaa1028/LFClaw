@@ -1,7 +1,7 @@
 {
   "appId": "com.lfclaw.app",
-  "productName": "LfClaw",
-  "executableName": "LfClaw",
+  "productName": "LFClaw",
+  "executableName": "LFClaw",
   "directories": {
     "output": "release"
   },
@@ -73,7 +73,7 @@
   ],
   "protocols": [
     {
-      "name": "LfClaw",
+      "name": "LFClaw",
       "schemes": ["lfclaw"]
     }
   ],
@@ -89,10 +89,10 @@
     "entitlementsInherit": "build/entitlements.mac.plist",
     "extendInfo": {
       "CFBundleIconName": "icon",
-      "NSMicrophoneUsageDescription": "LfClaw 需要访问您的麦克风来录制语音输入并进行语音识别。",
-      "NSCalendarsUsageDescription": "LfClaw 需要访问您的日历来帮助您查看和管理日程安排，例如查找事件、创建会议等。",
-      "NSRemindersUsageDescription": "LfClaw 需要访问您的提醒事项来帮助您管理待办事项。",
-      "NSAppleEventsUsageDescription": "LfClaw 需要使用 Apple Events 来控制 Calendar 应用执行自动化操作。"
+      "NSMicrophoneUsageDescription": "LFClaw 需要访问您的麦克风来录制语音输入并进行语音识别。",
+      "NSCalendarsUsageDescription": "LFClaw 需要访问您的日历来帮助您查看和管理日程安排，例如查找事件、创建会议等。",
+      "NSRemindersUsageDescription": "LFClaw 需要访问您的提醒事项来帮助您管理待办事项。",
+      "NSAppleEventsUsageDescription": "LFClaw 需要使用 Apple Events 来控制 Calendar 应用执行自动化操作。"
     },
     "extraResources": [
       {
@@ -252,7 +252,7 @@
       }
     ],
     "desktop": {
-      "Name": "LfClaw",
+      "Name": "LFClaw",
       "Comment": "AI-assisted coding and productivity tool",
       "Terminal": "false"
     }

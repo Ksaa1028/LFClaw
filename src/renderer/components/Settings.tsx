@@ -5137,10 +5137,10 @@ const Settings: React.FC<SettingsProps> = ({
           <div className="flex min-h-full flex-col items-center justify-center pb-10">
             <img
               src="logo.png"
-              alt="LfClaw"
+              alt="LFClaw"
               className="mb-3 h-16 w-16 select-none"
             />
-            <h3 className="text-lg font-semibold text-foreground">LfClaw</h3>
+            <h3 className="text-lg font-semibold text-foreground">LFClaw</h3>
             <div className="mt-2 space-y-1 text-center text-xs text-secondary">
               <div>当前版本：v{appVersion || '-'}</div>
               <div>

@@ -1,4 +1,4 @@
-import type { ApiFormat, ProviderAuthType } from './constants';
+import type { ApiFormat, ModelCapability, ProviderAuthType } from './constants';
 
 export interface ProviderConfig {
   enabled: boolean;
@@ -10,6 +10,7 @@ export interface ProviderConfig {
     name: string;
     supportsImage?: boolean;
     supportsThinking?: boolean;
+    modelTypes?: ModelCapability[];
     contextWindow?: number;
     customParams?: Record<string, unknown>;
   }>;

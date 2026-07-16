@@ -3,6 +3,8 @@ export type { ProviderDef } from './constants';
 export {
   ApiFormat,
   AuthType,
+  ModelCapability,
+  ModelCapabilityLabelZh,
   OpenClawApi,
   OpenClawProviderId,
   ProviderAuthType,

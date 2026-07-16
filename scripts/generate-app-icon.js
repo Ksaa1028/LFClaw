@@ -26,6 +26,15 @@ const macIconEntries = [
   { file: 'icon_512x512.png', size: 512 },
   { file: 'icon_512x512@2x.png', size: 1024 },
 ];
+const macIcnsEntries = [
+  { type: 'icp4', size: 16 },
+  { type: 'icp5', size: 32 },
+  { type: 'icp6', size: 64 },
+  { type: 'ic07', size: 128 },
+  { type: 'ic08', size: 256 },
+  { type: 'ic09', size: 512 },
+  { type: 'ic10', size: 1024 },
+];
 
 function assertSource() {
   if (!fs.existsSync(source)) {
@@ -54,7 +63,16 @@ try {
     $g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
     $g.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
     $g.Clear([System.Drawing.Color]::Transparent)
-    $g.DrawImage($src, 0, 0, $s, $s)
+    $sourceSize = [Math]::Min($src.Width, $src.Height)
+    $cropSize = $sourceSize
+    if ($s -le 64) {
+      $cropSize = [int]($sourceSize * 0.74)
+    }
+    $cropX = [int](($src.Width - $cropSize) / 2)
+    $cropY = [int](($src.Height - $cropSize) / 2)
+    $srcRect = New-Object System.Drawing.Rectangle($cropX, $cropY, $cropSize, $cropSize)
+    $dstRect = New-Object System.Drawing.Rectangle(0, 0, $s, $s)
+    $g.DrawImage($src, $dstRect, $srcRect, [System.Drawing.GraphicsUnit]::Pixel)
     $g.Dispose()
     $outPath = Join-Path ${psLiteral(pngDir)} "$($s)x$($s).png"
     $bmp.Save($outPath, [System.Drawing.Imaging.ImageFormat]::Png)
@@ -89,8 +107,11 @@ function resizePngsWithSips() {
 }
 
 function writeMacIcns() {
-  if (process.platform !== 'darwin') return;
   fs.mkdirSync(macDir, { recursive: true });
+  if (process.platform !== 'darwin') {
+    writeMacIcnsFromPngs();
+    return;
+  }
   const iconsetDir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lfclaw-iconset-')), 'icon.iconset');
   fs.mkdirSync(iconsetDir, { recursive: true });
 
@@ -106,6 +127,26 @@ function writeMacIcns() {
   } finally {
     fs.rmSync(path.dirname(iconsetDir), { recursive: true, force: true });
   }
+}
+
+function writeMacIcnsFromPngs() {
+  const chunks = macIcnsEntries.map((entry) => {
+    const pngPath = path.join(pngDir, `${entry.size}x${entry.size}.png`);
+    if (!fs.existsSync(pngPath)) {
+      throw new Error(`Missing PNG for macOS icon: ${pngPath}`);
+    }
+    const data = fs.readFileSync(pngPath);
+    const chunk = Buffer.alloc(8 + data.length);
+    chunk.write(entry.type, 0, 4, 'ascii');
+    chunk.writeUInt32BE(chunk.length, 4);
+    data.copy(chunk, 8);
+    return chunk;
+  });
+  const totalLength = 8 + chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const header = Buffer.alloc(8);
+  header.write('icns', 0, 4, 'ascii');
+  header.writeUInt32BE(totalLength, 4);
+  fs.writeFileSync(outIcns, Buffer.concat([header, ...chunks], totalLength));
 }
 
 function buildIco(entries, outputPath) {
@@ -151,6 +192,7 @@ function main() {
   if (process.platform === 'win32') {
     resizePngsWithPowerShell();
     writeWindowsIco();
+    writeMacIcns();
   } else if (process.platform === 'darwin') {
     resizePngsWithSips();
     writeMacIcns();
@@ -160,7 +202,7 @@ function main() {
   console.log(`Generated app icons from ${source}`);
   console.log(`- ${pngDir}`);
   if (process.platform === 'win32') console.log(`- ${outIco}`);
-  if (process.platform === 'darwin') console.log(`- ${outIcns}`);
+  console.log(`- ${outIcns}`);
 }
 
 try {

@@ -4928,9 +4928,9 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
   private buildSystemPromptPrefix(systemPrompt: string): string {
     return [
-      '[LobsterAI system instructions]',
+      '[LFClaw system instructions]',
       'Apply the instructions below as the highest-priority guidance for this session.',
-      'If earlier LobsterAI system instructions exist, replace them with this version.',
+      'If earlier LFClaw system instructions exist, replace them with this version.',
       systemPrompt,
     ].join('\n');
   }
@@ -5086,7 +5086,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     const client = new GatewayClient({
       url: connection.url,
       token: connection.token,
-      clientDisplayName: 'LobsterAI',
+      clientDisplayName: 'LFClaw',
       clientVersion: app.getVersion(),
       mode: 'backend',
       caps: [OPENCLAW_GATEWAY_TOOL_EVENTS_CAP],

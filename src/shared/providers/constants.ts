@@ -94,6 +94,33 @@ export const ApiFormat = {
 } as const;
 export type ApiFormat = typeof ApiFormat[keyof typeof ApiFormat];
 
+export const ModelCapability = {
+  Text: 'text',
+  MultimodalUnderstanding: 'multimodal-understanding',
+  ImageGeneration: 'image-generation',
+  VideoGeneration: 'video-generation',
+  SpeechToText: 'speech-to-text',
+  TextToSpeech: 'text-to-speech',
+  AudioUnderstanding: 'audio-understanding',
+  Embedding: 'embedding',
+  Rerank: 'rerank',
+  OcrDocument: 'ocr-document',
+} as const;
+export type ModelCapability = typeof ModelCapability[keyof typeof ModelCapability];
+
+export const ModelCapabilityLabelZh: Record<ModelCapability, string> = {
+  [ModelCapability.Text]: '文本模型',
+  [ModelCapability.MultimodalUnderstanding]: '多模态理解',
+  [ModelCapability.ImageGeneration]: '图片生成',
+  [ModelCapability.VideoGeneration]: '视频生成',
+  [ModelCapability.SpeechToText]: '语音识别',
+  [ModelCapability.TextToSpeech]: '语音合成',
+  [ModelCapability.AudioUnderstanding]: '音频理解',
+  [ModelCapability.Embedding]: '向量模型',
+  [ModelCapability.Rerank]: '重排序模型',
+  [ModelCapability.OcrDocument]: 'OCR/文档解析',
+};
+
 // ─── Auth Type ──────────────────────────────────────────────────────────
 export const AuthType = {
   ApiKey: 'api-key',

@@ -33,6 +33,7 @@ export interface PricingCatalogTextModel {
   description?: string;
   supportsImage?: boolean;
   supportsThinking?: boolean;
+  modelTypes?: string[];
   contextWindow?: number | null;
   costMultiplier?: number;
 }
@@ -63,7 +64,7 @@ export function mapPricingCatalogTextModelsToServerModels(
     const modelName = readString(model.modelName) || modelId;
     const provider = readString(model.providerLabel)
       || readString(model.provider)
-      || 'LobsterAI';
+      || 'LFClaw';
     const contextWindow = readPositiveNumber(model.contextWindow);
     const costMultiplier = readPositiveNumber(model.costMultiplier);
 
@@ -75,6 +76,7 @@ export function mapPricingCatalogTextModelsToServerModels(
       isServerModel: true,
       supportsImage: model.supportsImage === true,
       supportsThinking: model.supportsThinking === true,
+      modelTypes: Array.isArray(model.modelTypes) ? model.modelTypes : [],
       description: readString(model.description) || undefined,
       costMultiplier,
       contextWindow,
@@ -272,7 +274,7 @@ class AuthService {
       const enterpriseStatus = await window.electron.enterprise.getStatus().catch(() => null);
       const enterpriseManaged = enterpriseStatus?.success === true && !!enterpriseStatus.status?.access;
       if (modelsResult.success && modelsResult.models) {
-        const serverModels: Model[] = modelsResult.models.map((m: { modelId: string; modelName: string; provider: string; providerKey?: string; openClawProviderId?: string; apiFormat: string; supportsImage?: boolean; supportsThinking?: boolean; contextWindow?: number; explicitContextCache?: boolean; costMultiplier?: number; description?: string; accessible?: boolean; restrictionHint?: string }) => ({
+        const serverModels: Model[] = modelsResult.models.map((m: { modelId: string; modelName: string; provider: string; providerKey?: string; openClawProviderId?: string; apiFormat: string; supportsImage?: boolean; supportsThinking?: boolean; modelTypes?: string[]; contextWindow?: number; explicitContextCache?: boolean; costMultiplier?: number; description?: string; accessible?: boolean; restrictionHint?: string }) => ({
           id: m.modelId,
           name: m.modelName,
           provider: m.provider,
@@ -282,6 +284,7 @@ class AuthService {
           serverApiFormat: m.apiFormat,
           supportsImage: m.supportsImage ?? false,
           supportsThinking: m.supportsThinking ?? false,
+          modelTypes: Array.isArray(m.modelTypes) ? m.modelTypes : [],
           contextWindow: m.contextWindow,
           explicitContextCache: m.explicitContextCache ?? false,
           description: m.description,

@@ -68,7 +68,7 @@ const WelcomeDialog: React.FC<WelcomeDialogProps> = ({ onEnterpriseActivate }) =
       <div className="relative z-10 flex w-[420px] flex-col items-center px-8 py-12">
         <img
           src="logo.png"
-          alt="LfClaw"
+          alt="LFClaw"
           width={72}
           height={72}
           className="mb-5 select-none rounded-2xl"
@@ -76,7 +76,7 @@ const WelcomeDialog: React.FC<WelcomeDialogProps> = ({ onEnterpriseActivate }) =
         />
 
         <h1 className="mb-2 text-center text-2xl font-bold text-foreground">
-          欢迎使用 LfClaw
+          欢迎使用 LFClaw
         </h1>
 
         <p className="mb-7 text-center text-sm text-secondary">

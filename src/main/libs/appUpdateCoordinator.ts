@@ -658,7 +658,7 @@ export class AppUpdateCoordinator {
 
     const buildVersion = this.readPackagedBuildVersion();
     if (buildVersion) {
-      console.log(`[AppUpdate] using LfClaw build version: ${buildVersion}`);
+      console.log(`[AppUpdate] using LFClaw build version: ${buildVersion}`);
       return buildVersion;
     }
 
@@ -682,7 +682,7 @@ export class AppUpdateCoordinator {
           return parsed.version.trim();
         }
       } catch (error) {
-        console.warn(`[AppUpdate] failed to read LfClaw build version from ${filePath}:`, error);
+        console.warn(`[AppUpdate] failed to read LFClaw build version from ${filePath}:`, error);
       }
     }
 

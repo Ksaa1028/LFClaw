@@ -2,6 +2,7 @@ import { app } from 'electron';
 import fs from 'fs';
 import path from 'path';
 
+import { ProviderRegistry } from '../../shared/providers';
 import type { IMStore } from '../im/imStore';
 import type { PopoInstanceConfig } from '../im/types';
 import type { SqliteStore } from '../sqliteStore';
@@ -413,7 +414,11 @@ function syncModelConfig(configPath: string, store: SqliteStore): void {
       const providerModels = (providerConfig.models ?? []).map((m: any) => ({
         id: m.id,
         name: m.name ?? m.id,
-        supportsImage: Array.isArray(m.input) && m.input.includes('image'),
+        supportsImage: ProviderRegistry.resolveModelSupportsImage(
+          providerId,
+          m.id,
+          Array.isArray(m.input) && m.input.includes('image'),
+        ),
       }));
 
       // Resolve apiKey: use plain text value, skip placeholders like ${LOBSTER_...}

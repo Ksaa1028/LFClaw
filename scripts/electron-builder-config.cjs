@@ -41,7 +41,7 @@ function normalizeBuildVersion(value) {
   return BUILD_VERSION_PATTERN.test(normalized) ? normalized : null;
 }
 
-function readLfClawBuildVersion() {
+function readLFClawBuildVersion() {
   const envVersion = normalizeBuildVersion(process.env.LFCLAW_BUILD_VERSION);
   if (envVersion) {
     return envVersion;
@@ -57,7 +57,7 @@ function readLfClawBuildVersion() {
       }
     }
   } catch (error) {
-    console.warn('[LfClaw Build] failed to read build version for artifact names:', error);
+    console.warn('[LFClaw Build] failed to read build version for artifact names:', error);
   }
 
   return '${version}';
@@ -95,7 +95,7 @@ function mergeExtraResources(platformName) {
 }
 
 const keyfrom = readBuildKeyfrom();
-const buildVersion = readLfClawBuildVersion();
+const buildVersion = readLFClawBuildVersion();
 
 for (const platformName of ['mac', 'win', 'linux']) {
   mergeExtraResources(platformName);
@@ -105,15 +105,15 @@ delete config.extraResources;
 
 config.dmg = {
   ...(config.dmg || {}),
-  artifactName: `LfClaw-${buildVersion}-mac-\${arch}-${keyfrom}.\${ext}`,
+  artifactName: `LFClaw-${buildVersion}-mac-\${arch}-${keyfrom}.\${ext}`,
 };
 
 config.nsis = {
   ...(config.nsis || {}),
-  artifactName: `LfClaw-Setup-${buildVersion}-win-\${arch}-${keyfrom}.\${ext}`,
+  artifactName: `LFClaw-Setup-${buildVersion}-win-\${arch}-${keyfrom}.\${ext}`,
 };
 
 console.log(`[Keyfrom] configured artifact keyfrom as ${keyfrom}`);
-console.log(`[LfClaw Build] configured artifact build version as ${buildVersion}`);
+console.log(`[LFClaw Build] configured artifact build version as ${buildVersion}`);
 
 module.exports = config;

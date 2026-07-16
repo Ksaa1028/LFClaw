@@ -1746,7 +1746,7 @@ export class CoworkStore {
       timestamp: row.created_at,
       preview: getCoworkRailPreview(
         row.preview_content,
-        row.type === 'user' ? `Turn ${index + 1}` : 'LobsterAI',
+        row.type === 'user' ? `Turn ${index + 1}` : 'LFClaw',
         COWORK_RAIL_TOOLTIP_PREVIEW_MAX_LENGTH,
       ),
       contentLen: row.content_len,

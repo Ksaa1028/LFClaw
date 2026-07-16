@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-import { isDesignedAgentAvatarIcon } from '../../shared/agent/avatar';
+import { AgentId, DefaultAgentProfile, isDesignedAgentAvatarIcon,LegacyAgentName } from '../../shared/agent';
 import { OpenClawProviderId } from '../../shared/providers/constants';
 import type { Agent } from '../coworkStore';
 
@@ -219,14 +219,19 @@ export function buildAgentEntry(
   const primaryModel = qualified.status === 'qualified' ? qualified.primaryModel : fallbackPrimaryModel;
   const legacyIcon = isDesignedAgentAvatarIcon(agent.icon) ? '' : agent.icon;
   const subagentConfig = buildSubagentConfig(agent);
+  const normalizedName = agent.name?.trim() ?? '';
+  const displayName = agent.id === AgentId.Main
+    && (!normalizedName || normalizedName.toLowerCase() === LegacyAgentName.Main || normalizedName.toLowerCase() === LegacyAgentName.LobsterAiLower)
+    ? DefaultAgentProfile.Name
+    : normalizedName;
 
   return {
     id: agent.id,
     ...(agent.isDefault ? { default: true } : {}),
-    ...(agent.name ? { name: agent.name } : {}),
-    ...(agent.name || legacyIcon ? {
+    ...(displayName ? { name: displayName } : {}),
+    ...(displayName || legacyIcon ? {
       identity: {
-        ...(agent.name ? { name: agent.name } : {}),
+        ...(displayName ? { name: displayName } : {}),
         ...(legacyIcon ? { emoji: legacyIcon } : {}),
       },
     } : {}),

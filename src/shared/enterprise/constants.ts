@@ -42,6 +42,7 @@ export interface EnterprisePolicy {
       name: string;
       supportsImage?: boolean;
       supportsThinking?: boolean;
+      modelTypes?: string[];
       contextWindow?: number;
     }>;
     costPerCall?: number;

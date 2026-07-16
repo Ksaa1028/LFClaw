@@ -1,5 +1,5 @@
 import { CheckIcon, ChevronDownIcon, ChevronRightIcon, LockClosedIcon, XMarkIcon } from '@heroicons/react/24/outline';
-import { ProviderName } from '@shared/providers';
+import { ModelCapabilityLabelZh, ProviderName } from '@shared/providers';
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { useDispatch, useSelector } from 'react-redux';
@@ -50,6 +50,9 @@ const HOVER_CARD_WIDTH = 220;
 const HOVER_CARD_GAP = 8;
 const HOVER_CARD_VIEWPORT_MARGIN = 8;
 const MODEL_ICON_CLASS_NAME = 'h-[18px] w-[18px]';
+const modelCapabilityLabel = (type: string): string => (
+  ModelCapabilityLabelZh[type as keyof typeof ModelCapabilityLabelZh] ?? type
+);
 export const ModelSelectorGroup = {
   Server: 'server',
   User: 'user',
@@ -464,7 +467,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
     const itemRect = event.currentTarget.getBoundingClientRect();
     hoverTimerRef.current = setTimeout(() => {
-      if (!model.description && !model.costMultiplier && !model.supportsImage && !model.supportsThinking) {
+      if (!model.description && !model.costMultiplier && !model.supportsImage && !model.supportsThinking && !model.modelTypes?.length) {
         setHoveredModel(null);
         return;
       }
@@ -528,11 +531,6 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
           </span>
         )}
         <span className="flex-1" />
-        {model.supportsImage && (
-          <span className="shrink-0 rounded-md bg-surface-raised px-1.5 py-0.5 text-[10px] font-medium leading-none text-secondary">
-            {i18nService.t('modelSupportsImageInputBadge')}
-          </span>
-        )}
         {restricted && (
           <LockClosedIcon className="h-3.5 w-3.5 shrink-0 text-secondary" />
         )}
@@ -545,6 +543,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
 
   const renderHoverCard = () => {
     if (!hoveredModel) return null;
+    const capabilityTagClass = 'rounded-md border border-primary/15 bg-primary/5 px-1.5 py-0.5 text-[11px] font-medium leading-4 text-primary';
     const card = (
       <div ref={hoverCardRef} style={hoverCardStyle} className="w-[220px] rounded-xl border border-border bg-surface shadow-popover p-3 pointer-events-none">
         <div className="text-[13px] font-semibold text-foreground leading-5">{hoveredModel.name}</div>
@@ -556,20 +555,16 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
             ({i18nService.t('modelCostMultiplierLabel')} x{hoveredModel.costMultiplier})
           </div>
         )}
-        {(hoveredModel.supportsImage || hoveredModel.supportsThinking) && (
-          <div className="mt-1.5 flex items-center gap-3 text-[11px] text-emerald-600">
-            {hoveredModel.supportsImage && (
-              <span className="flex items-center gap-1">
-                <span>✓</span>
-                <span>{i18nService.t('modelSupportsImageInputBadge')}</span>
-              </span>
-            )}
+        {(hoveredModel.supportsThinking || hoveredModel.modelTypes?.length) && (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
             {hoveredModel.supportsThinking && (
-              <span className="flex items-center gap-1">
-                <span>✓</span>
-                <span>{i18nService.t('modelSupportsThinkingBadge')}</span>
-              </span>
+              <span className={capabilityTagClass}>{i18nService.t('modelSupportsThinkingBadge')}</span>
             )}
+            {hoveredModel.modelTypes?.map(type => (
+              <span key={type} className={capabilityTagClass}>
+                {modelCapabilityLabel(type)}
+              </span>
+            ))}
           </div>
         )}
       </div>

@@ -104,7 +104,7 @@ import {
   OpenClawGatewayRepairErrorCode,
 } from '../shared/openclawEngine/constants';
 import { PlatformRegistry } from '../shared/platform';
-import { OpenClawProviderId, ProviderName } from '../shared/providers';
+import { OpenClawProviderId, ProviderName, ProviderRegistry } from '../shared/providers';
 import {
   ShareDeploymentCandidateSource,
   type ShareDeploymentCreateNodeInput,
@@ -246,7 +246,7 @@ import {
 } from './libs/htmlShare/htmlShareClient';
 import { packageHtmlFile } from './libs/htmlShare/htmlSharePackager';
 import { getKeyfromAttribution, initializeKeyfromAttribution } from './libs/keyfromAttribution';
-import { LfClawEnterpriseAccess } from './libs/lfclawEnterpriseAccess';
+import { LFClawEnterpriseAccess } from './libs/lfclawEnterpriseAccess';
 import { exportLogsZip } from './libs/logExport';
 import { inferImageMimeTypeFromDataUrl, type PersistedGeneratedImageAsset, persistGeneratedImageAssets, type PersistGeneratedImageAssetsResult, persistGeneratedVideoAssets, type RemoteGeneratedMediaAsset } from './libs/mediaAssetPersistence';
 import { migrateAgentModelRefs, parsePrimaryModelRef, resolveQualifiedAgentModelRef } from './libs/openclawAgentModels';
@@ -1522,7 +1522,7 @@ let storeInitPromise: Promise<SqliteStore> | null = null;
 let sqliteBackupManager: SqliteBackupManager | null = null;
 let openClawEngineManager: OpenClawEngineManager | null = null;
 let openClawConfigSync: OpenClawConfigSync | null = null;
-let lfClawEnterpriseAccess: LfClawEnterpriseAccess | null = null;
+let lfClawEnterpriseAccess: LFClawEnterpriseAccess | null = null;
 let openClawBootstrapPromise: Promise<OpenClawEngineStatus> | null = null;
 let cachedSubscriptionStatus: string = AuthSubscriptionStatus.Free;
 let cachedMediaGenerationEntitled = false;
@@ -1534,9 +1534,9 @@ let appUpdateCoordinator: AppUpdateCoordinator | null = null;
 
 const AUTH_USER_STORE_KEY = 'auth_user';
 
-const getLfClawEnterpriseAccess = (): LfClawEnterpriseAccess => {
+const getLFClawEnterpriseAccess = (): LFClawEnterpriseAccess => {
   if (!lfClawEnterpriseAccess) {
-    lfClawEnterpriseAccess = new LfClawEnterpriseAccess(getStore());
+    lfClawEnterpriseAccess = new LFClawEnterpriseAccess(getStore());
   }
   return lfClawEnterpriseAccess;
 };
@@ -1845,9 +1845,9 @@ const getOpenClawConfigSync = (): OpenClawConfigSync => {
           .map(s => ({
             id: s.id,
             enabled: s.enabled && (
-              !getLfClawEnterpriseAccess().getCurrentAccess()
+              !getLFClawEnterpriseAccess().getCurrentAccess()
               || !isEnterpriseManagedSkill(s.id)
-              || getLfClawEnterpriseAccess().isSkillAllowed(s.id)
+              || getLFClawEnterpriseAccess().isSkillAllowed(s.id)
             ),
           })),
       getTelegramInstances: () => {
@@ -1937,7 +1937,7 @@ const getOpenClawConfigSync = (): OpenClawConfigSync => {
       getResolvedMcpServers: () => {
         // Synchronous wrapper: returns last resolved servers from cache.
         // The async resolution happens during syncOpenClawConfig via McpRuntime.
-        const enterpriseAccess = getLfClawEnterpriseAccess();
+        const enterpriseAccess = getLFClawEnterpriseAccess();
         if (!enterpriseAccess.getCurrentAccess()) {
           return getMcpRuntime().getResolvedServersCache();
         }
@@ -2496,7 +2496,7 @@ const bindCoworkRuntimeForwarder = (): void => {
     const modelId = typeof metadata?.model === 'string' && metadata.model.trim()
       ? metadata.model.trim()
       : session?.modelOverride || undefined;
-    getLfClawEnterpriseAccess().reportUsage({
+    getLFClawEnterpriseAccess().reportUsage({
       modelId,
       inputTokens,
       outputTokens,
@@ -3046,12 +3046,17 @@ const PRELOAD_PATH = app.isPackaged
 // 获取应用图标路径（Windows 使用 .ico，其他平台使用 .png）
 const getAppIconPath = (): string | undefined => {
   if (process.platform !== 'win32' && process.platform !== 'linux') return undefined;
-  const basePath = app.isPackaged
-    ? path.join(process.resourcesPath, 'tray')
-    : path.join(__dirname, '..', 'resources', 'tray');
-  return process.platform === 'win32'
-    ? path.join(basePath, 'tray-icon.ico')
-    : path.join(basePath, 'tray-icon.png');
+  const candidates = app.isPackaged
+    ? [
+        process.platform === 'win32' ? path.join(process.resourcesPath, 'app-icon/512x512.png') : '',
+        path.join(process.resourcesPath, 'tray', process.platform === 'win32' ? 'tray-icon.ico' : 'tray-icon.png'),
+      ]
+    : [
+        process.platform === 'win32' ? path.join(__dirname, '../build/icons/win/icon.ico') : '',
+        path.join(__dirname, '../build/icons/png/512x512.png'),
+        path.join(__dirname, '../resources/tray', process.platform === 'win32' ? 'tray-icon.ico' : 'tray-icon.png'),
+      ];
+  return candidates.find(candidate => candidate && fs.existsSync(candidate));
 };
 
 const getNotificationIconPath = (): string | null => {
@@ -3395,10 +3400,14 @@ const syncEnterpriseModelProvidersToAppConfig = (
   const current = store.get<AppConfigSettings>('app_config') ?? {};
   const currentProviders = isRecordValue(current.providers) ? current.providers : {};
   const nextProviders: Record<string, unknown> = { ...currentProviders };
+  const resolveEnterpriseModelSupportsImage = (providerName: string, model: EnterpriseCurrentAccess['policy']['modelProviders'][number]['models'][number]): boolean => (
+    ProviderRegistry.resolveModelSupportsImage(providerName, model.id, model.supportsImage === true)
+  );
   const availableModels = providers.flatMap(provider => provider.models.map(model => ({
     id: model.id,
     name: model.name || model.id,
-    supportsImage: model.supportsImage === true,
+    supportsImage: resolveEnterpriseModelSupportsImage(provider.provider || provider.id, model),
+    modelTypes: Array.isArray(model.modelTypes) ? model.modelTypes : [],
   })));
   const currentModel = isRecordValue(current.model) ? current.model : {};
 
@@ -3413,8 +3422,9 @@ const syncEnterpriseModelProvidersToAppConfig = (
       models: provider.models.map(model => ({
         id: model.id,
         name: model.name || model.id,
-        supportsImage: model.supportsImage === true,
+        supportsImage: resolveEnterpriseModelSupportsImage(provider.provider || provider.id, model),
         supportsThinking: model.supportsThinking === true,
+        modelTypes: Array.isArray(model.modelTypes) ? model.modelTypes : [],
         ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
       })),
     };
@@ -3463,7 +3473,7 @@ const syncEnterpriseMcpServersToLocalStore = (access: EnterpriseCurrentAccess | 
       : 'http';
     const data = {
       name: server.name || server.id,
-      description: server.description || 'LfClaw enterprise MCP',
+      description: server.description || 'LFClaw enterprise MCP',
       transportType,
       command: server.command,
       args: server.args,
@@ -3491,7 +3501,7 @@ const syncEnterpriseMcpServersToLocalStore = (access: EnterpriseCurrentAccess | 
 
 function isEnterpriseManagedMcpServer(server: { registryId?: string | null; description?: string | null }): boolean {
   return server.registryId?.startsWith('enterprise:') === true
-    || server.description === 'LfClaw enterprise MCP';
+    || server.description === 'LFClaw enterprise MCP';
 }
 
 const ENTERPRISE_INSTALLED_SKILLS_KEY = 'lfclaw_enterprise_installed_skills';
@@ -3507,7 +3517,7 @@ const isEnterpriseManagedSkill = (skillId: string): boolean => (
 
 const isSkillAllowedForEnterpriseActivation = (
   skillId: string,
-  enterpriseAccess: LfClawEnterpriseAccess,
+  enterpriseAccess: LFClawEnterpriseAccess,
 ): boolean => (
   !enterpriseAccess.getCurrentAccess()
   || !isEnterpriseManagedSkill(skillId)
@@ -3940,8 +3950,8 @@ if (!gotTheLock) {
     });
   };
 
-  const ensureEnterpriseAccessForCowork = async (): Promise<LfClawEnterpriseAccess> => {
-    const enterpriseAccess = getLfClawEnterpriseAccess();
+  const ensureEnterpriseAccessForCowork = async (): Promise<LFClawEnterpriseAccess> => {
+    const enterpriseAccess = getLFClawEnterpriseAccess();
     const access = await enterpriseAccess.requireActiveAccess();
     if (access.quota.creditsRemaining <= 0) {
       throw new Error('企业积分已用完，请联系管理员分配积分。');
@@ -3963,7 +3973,7 @@ if (!gotTheLock) {
 
   ipcMain.handle(EnterpriseIpcChannel.GetStatus, async () => {
     try {
-      return { success: true, status: getLfClawEnterpriseAccess().getStatus() };
+      return { success: true, status: getLFClawEnterpriseAccess().getStatus() };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to load enterprise status' };
     }
@@ -3971,7 +3981,7 @@ if (!gotTheLock) {
 
   ipcMain.handle(EnterpriseIpcChannel.SetServerUrl, async (_event, serverUrl: string) => {
     try {
-      return { success: true, status: getLfClawEnterpriseAccess().setServerUrl(serverUrl) };
+      return { success: true, status: getLFClawEnterpriseAccess().setServerUrl(serverUrl) };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to save enterprise server URL' };
     }
@@ -3979,7 +3989,7 @@ if (!gotTheLock) {
 
   ipcMain.handle(EnterpriseIpcChannel.Activate, async (_event, input: EnterpriseActivateInput) => {
     try {
-      const access = await getLfClawEnterpriseAccess().activate(input);
+      const access = await getLFClawEnterpriseAccess().activate(input);
       syncEnterpriseModelProvidersToAppConfig(access);
       syncEnterpriseMcpServersToLocalStore(access);
       await syncEnterpriseSkillsToLocalStore(access);
@@ -3992,7 +4002,7 @@ if (!gotTheLock) {
 
   ipcMain.handle(EnterpriseIpcChannel.SyncPolicy, async () => {
     try {
-      const access = await getLfClawEnterpriseAccess().syncPolicy();
+      const access = await getLFClawEnterpriseAccess().syncPolicy();
       syncEnterpriseModelProvidersToAppConfig(access);
       syncEnterpriseMcpServersToLocalStore(access);
       await syncEnterpriseSkillsToLocalStore(access);
@@ -4005,7 +4015,7 @@ if (!gotTheLock) {
 
   ipcMain.handle(EnterpriseIpcChannel.DeactivateCurrent, async () => {
     try {
-      getLfClawEnterpriseAccess().deactivateCurrent();
+      getLFClawEnterpriseAccess().deactivateCurrent();
       return { success: true };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to deactivate' };
@@ -5383,8 +5393,8 @@ if (!gotTheLock) {
 
   ipcMain.handle('auth:getUser', async () => {
     try {
-      const enterpriseAccess = getLfClawEnterpriseAccess().getCurrentAccess()
-        ? await getLfClawEnterpriseAccess().syncPolicy()
+      const enterpriseAccess = getLFClawEnterpriseAccess().getCurrentAccess()
+        ? await getLFClawEnterpriseAccess().syncPolicy()
         : null;
       if (enterpriseAccess) {
         return { success: true, user: enterpriseAccess.user, quota: enterpriseAccess.quota };
@@ -5397,8 +5407,8 @@ if (!gotTheLock) {
 
   ipcMain.handle('auth:getQuota', async () => {
     try {
-      const enterpriseAccess = getLfClawEnterpriseAccess().getCurrentAccess()
-        ? await getLfClawEnterpriseAccess().syncPolicy()
+      const enterpriseAccess = getLFClawEnterpriseAccess().getCurrentAccess()
+        ? await getLFClawEnterpriseAccess().syncPolicy()
         : null;
       if (enterpriseAccess) {
         return { success: true, quota: enterpriseAccess.quota };
@@ -5411,8 +5421,8 @@ if (!gotTheLock) {
 
   ipcMain.handle('auth:getProfileSummary', async () => {
     try {
-      const enterpriseAccess = getLfClawEnterpriseAccess().getCurrentAccess()
-        ? await getLfClawEnterpriseAccess().syncPolicy()
+      const enterpriseAccess = getLFClawEnterpriseAccess().getCurrentAccess()
+        ? await getLFClawEnterpriseAccess().syncPolicy()
         : null;
       if (enterpriseAccess) {
         return {
@@ -5424,8 +5434,8 @@ if (!gotTheLock) {
             totalCreditsRemaining: enterpriseAccess.quota.creditsRemaining,
             creditItems: [{
               type: 'subscription',
-              label: 'LfClaw 企业积分',
-              labelEn: 'LfClaw Enterprise Credits',
+              label: 'LFClaw 企业积分',
+              labelEn: 'LFClaw Enterprise Credits',
               creditsRemaining: enterpriseAccess.quota.creditsRemaining,
               expiresAt: null,
             }],
@@ -5468,7 +5478,7 @@ if (!gotTheLock) {
 
   ipcMain.handle('auth:logout', async () => {
     try {
-      getLfClawEnterpriseAccess().deactivateCurrent();
+      getLFClawEnterpriseAccess().deactivateCurrent();
       const tokens = getAuthTokens();
       if (tokens) {
         const serverBaseUrl = getServerApiBaseUrl();
@@ -5580,13 +5590,13 @@ if (!gotTheLock) {
 
   ipcMain.handle('auth:getModels', async () => {
     try {
-      const enterpriseAccess = await getLfClawEnterpriseAccess().syncPolicy()
-        .catch(() => getLfClawEnterpriseAccess().getCurrentAccess());
+      const enterpriseAccess = await getLFClawEnterpriseAccess().syncPolicy()
+        .catch(() => getLFClawEnterpriseAccess().getCurrentAccess());
       if (enterpriseAccess) {
         syncEnterpriseModelProvidersToAppConfig(enterpriseAccess);
         const enterpriseModels = (enterpriseAccess.policy.modelProviders ?? []).flatMap((provider, index) => (
           provider.models
-            .filter(model => getLfClawEnterpriseAccess().isModelAllowed(model.id))
+            .filter(model => getLFClawEnterpriseAccess().isModelAllowed(model.id))
             .map(model => ({
               modelId: model.id,
               modelName: model.name || model.id,
@@ -5594,7 +5604,12 @@ if (!gotTheLock) {
               providerKey: `custom_${index}`,
               openClawProviderId: `custom_${index}`,
               apiFormat: provider.apiFormat,
-              supportsImage: model.supportsImage === true,
+              supportsImage: ProviderRegistry.resolveModelSupportsImage(
+                provider.provider || provider.id,
+                model.id,
+                model.supportsImage === true,
+              ),
+              modelTypes: Array.isArray(model.modelTypes) ? model.modelTypes : [],
               supportsThinking: model.supportsThinking === true,
               contextWindow: model.contextWindow,
               costMultiplier: provider.costPerCall,
@@ -6213,7 +6228,7 @@ if (!gotTheLock) {
   registerSkillHandlers({
     getSkillManager,
     getSkillStoreUrl,
-    isSkillAllowed: skillId => getLfClawEnterpriseAccess().isSkillAllowed(skillId),
+    isSkillAllowed: skillId => getLFClawEnterpriseAccess().isSkillAllowed(skillId),
     isEnterpriseManagedSkill,
     getOpenClawRuntimeAdapter: () => openClawRuntimeAdapter,
   });
@@ -6651,7 +6666,7 @@ if (!gotTheLock) {
 
   registerMcpHandlers({
     getMcpRuntime,
-    isMcpAllowed: server => getLfClawEnterpriseAccess().isMcpAllowed(server.id, server.registryId, server.name),
+    isMcpAllowed: server => getLFClawEnterpriseAccess().isMcpAllowed(server.id, server.registryId, server.name),
     isEnterpriseManagedMcpServer,
     syncOpenClawConfig,
   });
@@ -10537,10 +10552,11 @@ if (!gotTheLock) {
     );
     const { isMaximized: shouldRestoreMaximized, ...initialWindowBounds } = initialWindowState;
 
+    const appIconPath = getAppIconPath();
     mainWindow = new BrowserWindow({
       ...initialWindowBounds,
       title: APP_NAME,
-      icon: getAppIconPath(),
+      icon: appIconPath,
       ...(isMac
         ? {
             titleBarStyle: 'hiddenInset' as const,
@@ -10575,6 +10591,13 @@ if (!gotTheLock) {
       autoHideMenuBar: true,
       enableLargerThanScreen: false,
     });
+
+    if (appIconPath && (process.platform === 'win32' || process.platform === 'linux')) {
+      const appIcon = nativeImage.createFromPath(appIconPath);
+      if (!appIcon.isEmpty()) {
+        mainWindow.setIcon(appIcon);
+      }
+    }
 
     // 设置 macOS Dock 图标（开发模式下 Electron 默认图标不是应用 Logo）
     if (isMac && isDev) {
