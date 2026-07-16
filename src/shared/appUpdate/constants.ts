@@ -19,6 +19,7 @@ export type AppUpdateSource = typeof AppUpdateSource[keyof typeof AppUpdateSourc
 
 export const AppUpdateIpc = {
   GetState: 'appUpdate:getState',
+  GetLatestInfo: 'appUpdate:getLatestInfo',
   CheckNow: 'appUpdate:checkNow',
   RetryDownload: 'appUpdate:retryDownload',
   CancelDownload: 'appUpdate:cancelDownload',
@@ -61,6 +62,13 @@ export interface AppUpdateCheckResult {
   success: boolean;
   state: AppUpdateRuntimeState;
   updateFound: boolean;
+  error?: string;
+}
+
+export interface AppUpdateLatestInfoResult {
+  success: boolean;
+  currentVersion: string;
+  latestInfo: AppUpdateInfo | null;
   error?: string;
 }
 

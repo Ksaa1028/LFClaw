@@ -3505,6 +3505,15 @@ const isEnterpriseManagedSkill = (skillId: string): boolean => (
   Object.prototype.hasOwnProperty.call(getEnterpriseInstalledSkillsMap(), skillId)
 );
 
+const isSkillAllowedForEnterpriseActivation = (
+  skillId: string,
+  enterpriseAccess: LfClawEnterpriseAccess,
+): boolean => (
+  !enterpriseAccess.getCurrentAccess()
+  || !isEnterpriseManagedSkill(skillId)
+  || enterpriseAccess.isSkillAllowed(skillId)
+);
+
 const syncEnterpriseSkillsToLocalStore = async (access: EnterpriseCurrentAccess | null): Promise<void> => {
   const skills = access?.policy.skills ?? [];
   const store = getStore();
@@ -4186,7 +4195,7 @@ if (!gotTheLock) {
     },
   );
 
-  ipcMain.handle('app:getVersion', () => app.getVersion());
+  ipcMain.handle('app:getVersion', () => getAppUpdateCoordinator().getCurrentVersion());
   ipcMain.handle('app:getSystemLocale', () => app.getLocale());
   ipcMain.handle(AppIpcChannel.GetKeyfromAttribution, () => getKeyfromAttribution(getStore()));
 
@@ -6733,7 +6742,9 @@ if (!gotTheLock) {
             error: 'This model is not enabled for the current enterprise activation.',
           };
         }
-        const blockedSkillId = (runtimeSkillIds ?? []).find(skillId => !enterpriseAccess.isSkillAllowed(skillId));
+        const blockedSkillId = (runtimeSkillIds ?? []).find(
+          skillId => !isSkillAllowedForEnterpriseActivation(skillId, enterpriseAccess),
+        );
         if (blockedSkillId) {
           return {
             success: false,
@@ -6920,7 +6931,9 @@ if (!gotTheLock) {
           };
         }
         const runtimeSkillIds = options.runtimeSkillIds ?? options.activeSkillIds;
-        const blockedSkillId = (runtimeSkillIds ?? []).find(skillId => !enterpriseAccess.isSkillAllowed(skillId));
+        const blockedSkillId = (runtimeSkillIds ?? []).find(
+          skillId => !isSkillAllowedForEnterpriseActivation(skillId, enterpriseAccess),
+        );
         if (blockedSkillId) {
           return {
             success: false,
@@ -10156,6 +10169,10 @@ if (!gotTheLock) {
 
   ipcMain.handle(AppUpdateIpc.GetState, async () => {
     return getAppUpdateCoordinator().getState();
+  });
+
+  ipcMain.handle(AppUpdateIpc.GetLatestInfo, async (_event, options?: { userId?: string | null }) => {
+    return getAppUpdateCoordinator().getLatestInfo(options?.userId);
   });
 
   ipcMain.handle(AppUpdateIpc.CheckNow, async (_event, options?: { manual?: boolean }) => {

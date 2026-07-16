@@ -158,7 +158,7 @@ const PortalMenuIcon: React.FC<{ src: string; darkInvert?: boolean }> = ({
   />
 );
 
-const UserMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+const UserMenu: React.FC<{ onClose: () => void; onLogoutSuccess?: () => void }> = ({ onClose, onLogoutSuccess }) => {
   const { profileSummary, quota, user } = useSelector((state: RootState) => state.auth);
   const [creditsExpanded, setCreditsExpanded] = useState(false);
   const isEn = i18nService.getLanguage() === 'en';
@@ -189,6 +189,7 @@ const UserMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         result: 'success',
       });
       onClose();
+      onLogoutSuccess?.();
     } catch (error) {
       reportAccountMenuAction('logout', {
         creditItemCount: creditItems.length,
@@ -283,9 +284,10 @@ const UserMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 
 interface LoginButtonProps {
   onEnterpriseLogin?: () => void;
+  onLogoutSuccess?: () => void;
 }
 
-const LoginButton: React.FC<LoginButtonProps> = ({ onEnterpriseLogin }) => {
+const LoginButton: React.FC<LoginButtonProps> = ({ onEnterpriseLogin, onLogoutSuccess }) => {
   const { isLoggedIn, isLoading, profileSummary, user } = useSelector((state: RootState) => state.auth);
   const [showMenu, setShowMenu] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -363,7 +365,12 @@ const LoginButton: React.FC<LoginButtonProps> = ({ onEnterpriseLogin }) => {
           </>
         )}
       </button>
-      {showMenu && isLoggedIn && <UserMenu onClose={() => setShowMenu(false)} />}
+      {showMenu && isLoggedIn && (
+        <UserMenu
+          onClose={() => setShowMenu(false)}
+          onLogoutSuccess={onLogoutSuccess}
+        />
+      )}
     </div>
   );
 };

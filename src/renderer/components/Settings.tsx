@@ -1419,11 +1419,52 @@ const Settings: React.FC<SettingsProps> = ({
 
   // About tab
   const [appVersion, setAppVersion] = useState('');
+  const [latestServerVersion, setLatestServerVersion] = useState('');
+  const [latestServerVersionStatus, setLatestServerVersionStatus] = useState<'idle' | 'checking' | 'error'>('idle');
   const [testMode, setTestMode] = useState(false);
 
   useEffect(() => {
-    window.electron.appInfo.getVersion().then(setAppVersion);
-  }, []);
+    if (activeTab !== 'about') return;
+
+    let cancelled = false;
+
+    const refreshAboutVersions = async () => {
+      try {
+        const version = await window.electron.appInfo.getVersion();
+        if (!cancelled) {
+          setAppVersion(version);
+        }
+      } catch (error) {
+        console.warn('[Settings] failed to load app version:', error);
+      }
+
+      setLatestServerVersionStatus('checking');
+      try {
+        const result = await window.electron.appUpdate.getLatestInfo();
+        if (cancelled) return;
+
+        if (result.success && result.latestInfo?.latestVersion) {
+          setLatestServerVersion(result.latestInfo.latestVersion);
+          setLatestServerVersionStatus('idle');
+        } else {
+          setLatestServerVersion('');
+          setLatestServerVersionStatus(result.success ? 'idle' : 'error');
+        }
+      } catch (error) {
+        console.warn('[Settings] failed to load latest app update info:', error);
+        if (!cancelled) {
+          setLatestServerVersion('');
+          setLatestServerVersionStatus('error');
+        }
+      }
+    };
+
+    void refreshAboutVersions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab]);
 
   useEffect(() => {
     setShowApiKey(false);
@@ -5087,7 +5128,11 @@ const Settings: React.FC<SettingsProps> = ({
           />
         );
 
-      case 'about':
+      case 'about': {
+        const latestVersionText =
+          latestServerVersion ||
+          (latestServerVersionStatus === 'checking' ? '检查中...' : '暂未获取');
+
         return (
           <div className="flex min-h-full flex-col items-center justify-center pb-10">
             <img
@@ -5096,9 +5141,16 @@ const Settings: React.FC<SettingsProps> = ({
               className="mb-3 h-16 w-16 select-none"
             />
             <h3 className="text-lg font-semibold text-foreground">LfClaw</h3>
-            <span className="mt-1 text-xs text-secondary">v{appVersion}</span>
+            <div className="mt-2 space-y-1 text-center text-xs text-secondary">
+              <div>当前版本：v{appVersion || '-'}</div>
+              <div>
+                服务器最新：v{latestVersionText}
+                {latestServerVersion && latestServerVersion === appVersion ? '（已是最新）' : ''}
+              </div>
+            </div>
           </div>
         );
+      }
 
       default:
         return null;

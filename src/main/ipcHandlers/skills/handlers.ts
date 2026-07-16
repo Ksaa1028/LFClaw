@@ -32,11 +32,14 @@ export function registerSkillHandlers(deps: SkillHandlerDeps): void {
   } = deps;
 
   const decorateSkills = (skills: SkillRecord[]) => (
-    skills.map(skill => ({
-      ...skill,
-      enterpriseAllowed: isSkillAllowed ? isSkillAllowed(skill.id) : true,
-      enterpriseManaged: isEnterpriseManagedSkill ? isEnterpriseManagedSkill(skill.id) : false,
-    }))
+    skills.map(skill => {
+      const enterpriseManaged = isEnterpriseManagedSkill ? isEnterpriseManagedSkill(skill.id) : false;
+      return {
+        ...skill,
+        enterpriseAllowed: !enterpriseManaged || !isSkillAllowed || isSkillAllowed(skill.id),
+        enterpriseManaged,
+      };
+    })
   );
 
   ipcMain.handle('skills:list', () => {

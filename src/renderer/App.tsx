@@ -1181,6 +1181,7 @@ const App: React.FC = () => {
           onShowKits={handleShowKits}
           onShowMcp={handleShowMcp}
           onShowEnterprise={handleShowEnterprise}
+          onLogoutSuccess={handleShowEnterpriseLogin}
           onNewChat={handleNewChat}
           isCollapsed={isSidebarCollapsed}
           onToggleCollapse={handleToggleSidebar}

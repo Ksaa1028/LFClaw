@@ -7,6 +7,7 @@ import {
   type AppUpdateCheckResult,
   type AppUpdateInfo,
   AppUpdateIpc,
+  type AppUpdateLatestInfoResult,
   type AppUpdateRuntimeState,
   AppUpdateSource,
   AppUpdateStatus,
@@ -86,6 +87,57 @@ export class AppUpdateCoordinator {
 
   getState(): AppUpdateRuntimeState {
     return { ...this.state };
+  }
+
+  getCurrentVersion(): string {
+    return this.resolveCurrentVersion();
+  }
+
+  async getLatestInfo(userId?: string | null): Promise<AppUpdateLatestInfoResult> {
+    const currentVersion = this.resolveCurrentVersion();
+
+    if (this.isUpdateDisabled()) {
+      return { success: true, currentVersion, latestInfo: null };
+    }
+
+    try {
+      const baseUrl = this.getEnterpriseUpdateCheckUrl(true) ?? getManualUpdateCheckUrl();
+      const qs = this.getUpdateQueryString(userId, currentVersion);
+      const url = qs ? `${baseUrl}?${qs}` : baseUrl;
+      console.log(`[AppUpdate] fetching latest update metadata, currentVersion=${currentVersion}, url=${url}`);
+
+      const response = await session.defaultSession.fetch(url, {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Update metadata fetch failed (HTTP ${response.status})`);
+      }
+
+      const payload = (await response.json()) as UpdateApiResponse;
+      if (payload.code !== 0) {
+        throw new Error(`Update metadata fetch failed with code ${payload.code ?? 'unknown'}`);
+      }
+
+      const value = payload.data?.value;
+      const latestVersion = value?.version?.trim();
+      if (!latestVersion) {
+        return { success: true, currentVersion, latestInfo: null };
+      }
+
+      return {
+        success: true,
+        currentVersion,
+        latestInfo: this.buildUpdateInfo(value, latestVersion),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn('[AppUpdate] failed to fetch latest update metadata:', error);
+      return { success: false, currentVersion, latestInfo: null, error: message };
+    }
   }
 
   shouldAutoOpenReadyModal(): boolean {
@@ -512,12 +564,23 @@ export class AppUpdateCoordinator {
       return null;
     }
 
+    const result = this.buildUpdateInfo(value, latestVersion);
+    console.log(
+      `[AppUpdate] update available: ${currentVersion} -> ${latestVersion}, downloadUrl=${result.url}`,
+    );
+    return result;
+  }
+
+  private buildUpdateInfo(
+    value: NonNullable<NonNullable<UpdateApiResponse['data']>['value']> | undefined,
+    latestVersion: string,
+  ): AppUpdateInfo {
     const toEntry = (log?: ChangeLogLang) => ({
       title: typeof log?.title === 'string' ? log.title : '',
       content: Array.isArray(log?.content) ? log.content : [],
     });
 
-    const result: AppUpdateInfo = {
+    return {
       latestVersion,
       date: value?.date?.trim() || '',
       changeLog: {
@@ -526,10 +589,6 @@ export class AppUpdateCoordinator {
       },
       url: this.getPlatformDownloadUrl(value),
     };
-    console.log(
-      `[AppUpdate] update available: ${currentVersion} -> ${latestVersion}, downloadUrl=${result.url}`,
-    );
-    return result;
   }
 
   private getEnterpriseUpdateCheckUrl(manual: boolean): string | null {

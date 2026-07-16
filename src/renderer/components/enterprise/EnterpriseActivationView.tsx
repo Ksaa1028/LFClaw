@@ -1,14 +1,7 @@
-import {
-  CheckCircleIcon,
-  KeyIcon,
-} from '@heroicons/react/24/outline';
+import { CheckCircleIcon } from '@heroicons/react/24/outline';
 import type { EnterpriseStatus } from '@shared/enterprise/constants';
 import React, { useCallback, useEffect, useState } from 'react';
-import { useDispatch } from 'react-redux';
 
-import { authService } from '../../services/auth';
-import { skillService } from '../../services/skill';
-import { setSkills } from '../../store/slices/skillSlice';
 import ComposeIcon from '../icons/ComposeIcon';
 import SidebarToggleIcon from '../icons/SidebarToggleIcon';
 
@@ -33,13 +26,10 @@ const EnterpriseActivationView: React.FC<EnterpriseActivationViewProps> = ({
   onNewChat,
   updateBadge,
 }) => {
-  const dispatch = useDispatch();
   const isMac = window.electron.platform === 'darwin';
   const isWindows = window.electron.platform === 'win32';
   const [status, setStatus] = useState<EnterpriseStatus | null>(null);
-  const [activationCode, setActivationCode] = useState('');
   const [message, setMessage] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
 
   const showMessage = useCallback((text: string) => {
     setMessage(text);
@@ -59,41 +49,10 @@ const EnterpriseActivationView: React.FC<EnterpriseActivationViewProps> = ({
     void refresh();
   }, [refresh]);
 
-  const refreshClientPolicy = useCallback(async () => {
-    await authService.refreshAuthState({ clearOnFailure: true });
-    const loadedSkills = await skillService.loadSkills();
-    dispatch(setSkills(loadedSkills));
-    await refresh();
-  }, [dispatch, refresh]);
-
-  const handleActivate = useCallback(async () => {
-    setLoading(true);
-    try {
-      const result = await window.electron.enterprise.activate({
-        activationCode,
-      });
-      if (!result.success) {
-        showMessage(result.error || '激活失败');
-        return;
-      }
-      await refreshClientPolicy();
-      const nickname = result.access?.user?.nickname;
-      showMessage(nickname ? `${nickname}，企业账号已激活` : '企业账号已激活');
-      setActivationCode('');
-    } finally {
-      setLoading(false);
-    }
-  }, [activationCode, refreshClientPolicy, showMessage]);
-
-  const handleLogout = useCallback(async () => {
-    await window.electron.enterprise.deactivateCurrent();
-    await refreshClientPolicy();
-    showMessage('已退出企业登录');
-  }, [refreshClientPolicy, showMessage]);
-
   const access = status?.access ?? null;
   const quota = access?.quota;
   const policy = access?.policy;
+  const activationCodeDisplay = access?.activationCode || status?.lastActivationCode || '-';
 
   return (
     <div className="flex h-full flex-1 flex-col bg-background">
@@ -130,49 +89,13 @@ const EnterpriseActivationView: React.FC<EnterpriseActivationViewProps> = ({
       <div className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]">
         <div className="mx-auto w-full max-w-[960px] px-6 py-6">
           <section className="rounded-lg border border-border bg-surface p-5">
-            <h2 className="text-xl font-semibold text-foreground">
-              {access ? '企业账号' : '输入企业激活码'}
-            </h2>
-            <p className="mt-1 text-sm text-secondary">
-              {access
-                ? '你的模型、MCP、技能和积分由企业统一分配，客户端会自动保持最新。'
-                : '激活后会自动获取你的企业模型、MCP、技能和积分授权。'}
-            </p>
+            <h2 className="text-xl font-semibold text-foreground">企业激活码</h2>
 
-            {!access && (
-              <div className="mt-5 max-w-md">
-                <label className="block">
-                  <span className="text-sm font-medium text-foreground">企业激活码</span>
-                  <input
-                    value={activationCode}
-                    onChange={event => setActivationCode(event.target.value)}
-                    className="mt-1 h-10 w-full rounded-md border border-border bg-background px-3 text-sm font-mono outline-none focus:border-primary"
-                    placeholder="LFCLAW-XXXX"
-                  />
-                </label>
+            <div className="mt-5 max-w-md rounded-md border border-border bg-background px-3 py-2">
+              <div className="text-xs text-secondary">激活码</div>
+              <div className="mt-1 break-all font-mono text-sm font-semibold text-foreground">
+                {activationCodeDisplay}
               </div>
-            )}
-
-            <div className="mt-4 flex flex-wrap gap-2">
-              {access ? (
-                <button
-                  type="button"
-                  onClick={handleLogout}
-                  className="inline-flex h-10 items-center rounded-md border border-border px-4 text-sm font-medium text-foreground transition-colors hover:bg-surface-raised"
-                >
-                  退出企业登录
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={handleActivate}
-                  disabled={loading || !activationCode.trim()}
-                  className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  <KeyIcon className="h-4 w-4" />
-                  激活企业账号
-                </button>
-              )}
             </div>
           </section>
 
@@ -194,7 +117,7 @@ const EnterpriseActivationView: React.FC<EnterpriseActivationViewProps> = ({
               </div>
             ) : (
               <p className="mt-3 text-sm text-secondary">
-                请联系企业管理员获取激活码。
+                请通过首次登录激活页输入企业激活码。
               </p>
             )}
           </section>

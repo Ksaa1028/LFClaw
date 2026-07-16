@@ -1,5 +1,9 @@
 import type { OpenClawSessionPatch } from '../../common/openclawSession';
-import type { AppUpdateCheckResult, AppUpdateRuntimeState } from '../../shared/appUpdate/constants';
+import type {
+  AppUpdateCheckResult,
+  AppUpdateLatestInfoResult,
+  AppUpdateRuntimeState,
+} from '../../shared/appUpdate/constants';
 import type {
   AsrRealtimeSessionRequest,
   AsrRealtimeSessionResult,
@@ -20,8 +24,8 @@ import type {
   DataMigrationRestoreScheduleResult,
 } from '../../shared/dataMigration/constants';
 import type {
-  EnterpriseCurrentAccess,
   EnterpriseActivateInput,
+  EnterpriseCurrentAccess,
   EnterpriseStatus,
 } from '../../shared/enterprise/constants';
 import type {
@@ -1192,6 +1196,9 @@ interface IElectronAPI {
   };
   appUpdate: {
     getState: () => Promise<AppUpdateRuntimeState>;
+    getLatestInfo: (options?: {
+      userId?: string | null;
+    }) => Promise<AppUpdateLatestInfoResult>;
     checkNow: (options?: {
       manual?: boolean;
       userId?: string | null;
