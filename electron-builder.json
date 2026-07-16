@@ -52,6 +52,10 @@
       ]
     },
     {
+      "from": ".lfclaw-build/build-version.json",
+      "to": "build-version.json"
+    },
+    {
       "from": "resources/tray",
       "to": "tray",
       "filter": [

@@ -48,6 +48,9 @@ const APP_UPDATE_TEST_CURRENT_VERSION_ENV = 'LOBSTERAI_UPDATE_CURRENT_VERSION';
 export const APP_UPDATE_READY_FILE_KEY_PREFIX = 'app_update_ready_file';
 const ENTERPRISE_ACCESS_KEY = 'lfclaw_enterprise_access';
 const ENTERPRISE_SERVER_URL_KEY = 'lfclaw_enterprise_server_url';
+const LFCLAW_BUILD_VERSION_FILE = 'build-version.json';
+const LFCLAW_DATE_SERIAL_VERSION_PATTERN = /^(\d{4})(\d{2})(\d{2})(\d{2})$/;
+const DOTTED_DATE_VERSION_PATTERN = /^(\d{4})\.(\d{1,2})\.(\d{1,2})(?:\.(\d{1,2}))?$/;
 
 type StoredReadyFile = {
   version: string;
@@ -594,7 +597,37 @@ export class AppUpdateCoordinator {
       return overriddenVersion;
     }
 
+    const buildVersion = this.readPackagedBuildVersion();
+    if (buildVersion) {
+      console.log(`[AppUpdate] using LfClaw build version: ${buildVersion}`);
+      return buildVersion;
+    }
+
     return app.getVersion();
+  }
+
+  private readPackagedBuildVersion(): string | null {
+    const candidatePaths = [
+      path.join(process.resourcesPath, LFCLAW_BUILD_VERSION_FILE),
+      path.join(app.getAppPath(), '.lfclaw-build', LFCLAW_BUILD_VERSION_FILE),
+      path.join(process.cwd(), '.lfclaw-build', LFCLAW_BUILD_VERSION_FILE),
+    ];
+
+    for (const filePath of candidatePaths) {
+      try {
+        if (!fs.existsSync(filePath)) {
+          continue;
+        }
+        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as { version?: unknown };
+        if (typeof parsed.version === 'string' && LFCLAW_DATE_SERIAL_VERSION_PATTERN.test(parsed.version.trim())) {
+          return parsed.version.trim();
+        }
+      } catch (error) {
+        console.warn(`[AppUpdate] failed to read LfClaw build version from ${filePath}:`, error);
+      }
+    }
+
+    return null;
   }
 
   private getUpdateQueryString(userId?: string | null, version?: string): string {
@@ -635,6 +668,14 @@ export class AppUpdateCoordinator {
   }
 
   private compareVersions(a: string, b: string): number {
+    const aSerial = this.toDateSerialVersion(a);
+    const bSerial = this.toDateSerialVersion(b);
+    if (aSerial !== null && bSerial !== null) {
+      if (aSerial > bSerial) return 1;
+      if (aSerial < bSerial) return -1;
+      return 0;
+    }
+
     const aParts = this.toVersionParts(a);
     const bParts = this.toVersionParts(b);
     const maxLength = Math.max(aParts.length, bParts.length);
@@ -647,6 +688,23 @@ export class AppUpdateCoordinator {
     }
 
     return 0;
+  }
+
+  private toDateSerialVersion(version: string): number | null {
+    const normalized = version.trim();
+    const serialMatch = normalized.match(LFCLAW_DATE_SERIAL_VERSION_PATTERN);
+    if (serialMatch) {
+      return Number.parseInt(normalized, 10);
+    }
+
+    const dottedMatch = normalized.match(DOTTED_DATE_VERSION_PATTERN);
+    if (!dottedMatch) {
+      return null;
+    }
+
+    const [, year, month, day, sequence = '1'] = dottedMatch;
+    const padded = `${year}${month.padStart(2, '0')}${day.padStart(2, '0')}${sequence.padStart(2, '0')}`;
+    return Number.parseInt(padded, 10);
   }
 
   private toVersionParts(version: string): number[] {

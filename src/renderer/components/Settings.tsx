@@ -77,6 +77,12 @@ import ThemedSelect from './ui/ThemedSelect';
 
 type TabType = 'general' | 'appearance' | 'coworkAgentEngine' | 'model' | 'browserWebAccess' | 'coworkMemory' | 'coworkDreaming' | 'shortcuts' | 'im' | 'email' | 'plugins' | 'about';
 
+const LFCLAW_HIDDEN_SETTINGS_TABS = new Set<TabType>([
+  'model',
+  'browserWebAccess',
+  'shortcuts',
+]);
+
 const waitForNextPaint = (): Promise<void> => new Promise(resolve => {
   window.requestAnimationFrame(() => {
     window.requestAnimationFrame(() => resolve());
@@ -4007,15 +4013,21 @@ const Settings: React.FC<SettingsProps> = ({
       { key: 'shortcuts' as TabType,      label: i18nService.t('shortcuts'),      icon: <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-5 w-5"><rect x="2" y="4" width="20" height="14" rx="2" /><line x1="6" y1="8" x2="8" y2="8" /><line x1="10" y1="8" x2="12" y2="8" /><line x1="14" y1="8" x2="16" y2="8" /><line x1="6" y1="12" x2="8" y2="12" /><line x1="10" y1="12" x2="14" y2="12" /><line x1="16" y1="12" x2="18" y2="12" /><line x1="8" y1="15.5" x2="16" y2="15.5" /></svg> },
       { key: 'about' as TabType,          label: i18nService.t('about'),          icon: <InformationCircleIcon className="h-5 w-5" /> },
     ];
+    const visibleTabs = allTabs.filter(tab => !LFCLAW_HIDDEN_SETTINGS_TABS.has(tab.key));
     // Filter out tabs hidden by enterprise config
     // Filter out tabs with 'hide' action in enterprise config
     // e.g., ui: { "settings.im": "hide" } → hide the 'im' tab
     const ui = enterpriseConfig?.ui;
     if (ui) {
-      return allTabs.filter(tab => ui[`settings.${tab.key}`] !== 'hide');
+      return visibleTabs.filter(tab => ui[`settings.${tab.key}`] !== 'hide');
     }
-    return allTabs;
+    return visibleTabs;
   })();
+
+  useEffect(() => {
+    if (sidebarTabs.some(tab => tab.key === activeTab)) return;
+    setActiveTab(sidebarTabs[0]?.key ?? 'general');
+  }, [activeTab, sidebarTabs]);
 
   const activeTabLabel = useMemo(() => {
     return sidebarTabs.find(t => t.key === activeTab)?.label ?? '';
@@ -4371,15 +4383,6 @@ const Settings: React.FC<SettingsProps> = ({
               checked={skipMissedJobs}
               onToggle={() => {
                 setSkipMissedJobs((prev) => !prev);
-              }}
-            />
-
-            <SettingsToggleRow
-              title={i18nService.t('usageAnalyticsEnabled')}
-              description={i18nService.t('usageAnalyticsEnabledDescription')}
-              checked={usageAnalyticsEnabled}
-              onToggle={() => {
-                setUsageAnalyticsEnabled((prev) => !prev);
               }}
             />
 

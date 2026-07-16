@@ -14,6 +14,7 @@ const DATA_FILE = process.env.LFCLAW_ENTERPRISE_DATA || path.join(DATA_DIR, 'ent
 const STORAGE_DIR = process.env.LFCLAW_ENTERPRISE_STORAGE || path.join(ROOT_DIR, 'storage');
 const SKILL_DIR = path.join(STORAGE_DIR, 'skills');
 const BACKUP_DIR = process.env.LFCLAW_ENTERPRISE_BACKUP_DIR || path.join(DATA_DIR, 'backups');
+const RELEASE_DIR = process.env.LFCLAW_ENTERPRISE_RELEASE_DIR || path.join(ROOT_DIR, 'releases');
 
 const nowIso = () => new Date().toISOString();
 const id = prefix => `${prefix}_${crypto.randomBytes(6).toString('hex')}`;
@@ -31,6 +32,100 @@ const json = (res, status, payload) => {
 };
 const ok = (res, data = {}) => json(res, 200, { code: 0, data });
 const fail = (res, status, message) => json(res, status, { code: status, message });
+
+const releaseMimeType = filePath => {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === '.dmg') return 'application/x-apple-diskimage';
+  if (ext === '.exe') return 'application/vnd.microsoft.portable-executable';
+  if (ext === '.zip') return 'application/zip';
+  if (ext === '.json') return 'application/json; charset=utf-8';
+  if (ext === '.yml' || ext === '.yaml') return 'text/yaml; charset=utf-8';
+  return 'application/octet-stream';
+};
+
+const serveReleaseFile = (res, pathname) => {
+  if (!pathname.startsWith('/releases/')) return false;
+  const filename = decodeURIComponent(pathname.slice('/releases/'.length));
+  if (!filename || filename !== path.basename(filename) || !/^[A-Za-z0-9._-]+$/.test(filename)) {
+    fail(res, 400, 'Invalid release filename.');
+    return true;
+  }
+  const filePath = path.join(RELEASE_DIR, filename);
+  if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+    fail(res, 404, 'Release file not found.');
+    return true;
+  }
+  res.writeHead(200, {
+    'content-type': releaseMimeType(filePath),
+    'content-length': fs.statSync(filePath).size,
+    'content-disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
+    'access-control-allow-origin': '*',
+  });
+  fs.createReadStream(filePath).pipe(res);
+  return true;
+};
+
+const readLinesFile = filePath => {
+  try {
+    if (!fs.existsSync(filePath)) return [];
+    return fs.readFileSync(filePath, 'utf8').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+};
+
+const releaseFileUrl = (origin, filename) => `${origin.replace(/\/+$/, '')}/releases/${encodeURIComponent(filename)}`;
+
+const detectReleasePlatform = filename => {
+  const lower = filename.toLowerCase();
+  if (lower.endsWith('.exe')) return 'windowsX64Url';
+  if (!lower.endsWith('.dmg')) return '';
+  if (/(arm64|aarch64|apple|silicon)/.test(lower)) return 'macArmUrl';
+  if (/(x64|x86_64|intel)/.test(lower)) return 'macIntelUrl';
+  return 'macUniversalUrl';
+};
+
+const detectAutoRelease = origin => {
+  if (!fs.existsSync(RELEASE_DIR)) return null;
+  const candidates = fs.readdirSync(RELEASE_DIR)
+    .filter(name => /^[A-Za-z0-9._-]+$/.test(name))
+    .map(name => {
+      const version = name.match(/20\d{8}/)?.[0] || '';
+      const platform = detectReleasePlatform(name);
+      if (!version || !platform) return null;
+      const filePath = path.join(RELEASE_DIR, name);
+      const stat = fs.statSync(filePath);
+      return { name, version, platform, mtimeMs: stat.mtimeMs };
+    })
+    .filter(Boolean)
+    .sort((a, b) => Number(b.version) - Number(a.version) || b.mtimeMs - a.mtimeMs);
+  const latestVersion = candidates[0]?.version || '';
+  if (!latestVersion) return null;
+  const latest = candidates.filter(item => item.version === latestVersion);
+  const result = {
+    version: latestVersion,
+    date: `${latestVersion.slice(0, 4)}-${latestVersion.slice(4, 6)}-${latestVersion.slice(6, 8)}`,
+    notesZh: readLinesFile(path.join(RELEASE_DIR, `changelog-${latestVersion}.zh.txt`)),
+    notesEn: readLinesFile(path.join(RELEASE_DIR, `changelog-${latestVersion}.en.txt`)),
+    windowsX64Url: '',
+    macArmUrl: '',
+    macIntelUrl: '',
+  };
+  if (result.notesZh.length === 0) result.notesZh = readLinesFile(path.join(RELEASE_DIR, 'changelog.zh.txt'));
+  if (result.notesZh.length === 0) result.notesZh = readLinesFile(path.join(RELEASE_DIR, 'changelog.txt'));
+  if (result.notesEn.length === 0) result.notesEn = readLinesFile(path.join(RELEASE_DIR, 'changelog.en.txt'));
+  if (result.notesEn.length === 0) result.notesEn = result.notesZh;
+  for (const item of latest) {
+    const url = releaseFileUrl(origin, item.name);
+    if (item.platform === 'macUniversalUrl') {
+      result.macArmUrl ||= url;
+      result.macIntelUrl ||= url;
+    } else {
+      result[item.platform] ||= url;
+    }
+  }
+  return result;
+};
 
 const defaultData = () => ({
   enterpriseName: 'LfClaw Enterprise',
@@ -358,7 +453,7 @@ const adminHtml = () => String.raw`<!doctype html><html lang="zh-CN"><head><meta
 <section id="skills"><div class="grid"><label>技能 ID<input id="skillId" placeholder="sales-report"></label><label>名称<input id="skillName"></label><label>版本<input id="skillVersion" value="1.0.0"></label><label>说明<input id="skillDesc"></label></div><div class="grid" style="margin-top:12px"><label>技能压缩包(.zip)<input id="skillZip" type="file" accept=".zip,application/zip"></label><div><p class="hint">上传后服务端保存 zip，客户端按员工权限下载。</p><button id="uploadSkillBtn">上传/保存技能包</button><button class="secondary" id="cancelSkillBtn">取消编辑</button></div></div><table><thead><tr><th>ID</th><th>名称</th><th>版本</th><th>包</th><th>操作</th></tr></thead><tbody id="skillRows"></tbody></table></section>
 <section id="usage"><div class="formula"><b>用量扣费说明：</b>客户端上报模型调用后，服务端按模型价格计算积分，并按天汇总展示。</div><div class="grid grid-5"><label>员工筛选<select id="usageEmployeeFilter"><option value="">全部员工</option></select></label><label>模型筛选<select id="usageModelFilter"><option value="">全部模型</option></select></label><div class="card"><div class="hint">调用次数</div><div class="num" id="usageCalls">0</div></div><div class="card"><div class="hint">消耗积分</div><div class="num" id="usageCredits">0</div></div><div class="card"><div class="hint">折算金额</div><div class="num" id="usageMoney">-</div></div></div><table><thead><tr><th>时间（天）</th><th>员工</th><th>模型</th><th>使用 token</th><th>积分</th><th>折算金额</th></tr></thead><tbody id="usageRows"></tbody></table></section>
 <section id="backup"><div class="formula"><b>数据位置：</b>当前企业数据固定保存在 data/enterprise-data.json；备份保存在 data/backups，更新 server.mjs 不会覆盖这里。</div><div class="row"><button id="createBackupBtn">创建备份</button><button class="secondary" id="exportDataBtn">导出当前数据</button></div><table><thead><tr><th>备份文件</th><th>大小</th><th>时间</th><th>操作</th></tr></thead><tbody id="backupRows"></tbody></table></section>
-<section id="release"><div class="grid"><label>最新版本<input id="releaseVersion" placeholder="1.0.1"></label><label>发布日期<input id="releaseDate" placeholder="2026-07-15"></label><label>Windows x64 下载地址<input id="releaseWinUrl" placeholder="https://.../LfClaw-Setup.exe"></label><label>通用下载页<input id="releaseManualUrl" placeholder="https://..."></label></div><div class="grid" style="margin-top:12px"><label>macOS Apple Silicon 下载地址<input id="releaseMacArmUrl" placeholder="https://.../LfClaw-arm64.dmg"></label><label>macOS Intel 下载地址<input id="releaseMacIntelUrl" placeholder="https://.../LfClaw-x64.dmg"></label><label>中文更新日志<textarea id="releaseNotesZh" placeholder="一行一条"></textarea></label><label>英文更新日志<textarea id="releaseNotesEn" placeholder="One item per line"></textarea></label></div><div class="row" style="margin-top:12px"><button id="saveReleaseBtn">保存更新信息</button><button class="secondary" id="testReleaseBtn">查看更新 JSON</button></div></section>
+<section id="release"><div class="formula"><b>自动更新源：</b>把安装包上传到 <code>/opt/LfClaw/releases</code>，文件名带日期流水号即可自动识别，无需手动填写下载地址。示例：<code>LfClaw-Setup-2026071501-win-x64-official.exe</code>、<code>LfClaw-2026071501-mac-arm64-official.dmg</code>。更新日志可放 <code>changelog-2026071501.zh.txt</code>，一行一条。</div><div id="releaseSummary" class="formula"></div><input id="releaseVersion" type="hidden"><input id="releaseDate" type="hidden"><input id="releaseWinUrl" type="hidden"><input id="releaseMacArmUrl" type="hidden"><input id="releaseMacIntelUrl" type="hidden"><input id="releaseManualUrl" type="hidden"><textarea id="releaseNotesZh" style="display:none"></textarea><textarea id="releaseNotesEn" style="display:none"></textarea><div class="row" style="margin-top:12px"><button class="secondary" id="testReleaseBtn">查看自动生成的更新 JSON</button><button id="saveReleaseBtn" style="display:none">保存更新信息</button></div></section>
 </main><script>
 var state={modelProviders:[],mcpServers:[],skills:[],employees:[],usageEvents:[],backups:[],release:{}};var editingEmployee='';var $=function(id){return document.getElementById(id);};var esc=function(v){return String(v==null?'':v).replace(/[&<>"']/g,function(s){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s];});};var headers=function(json){localStorage.setItem('lfclaw_admin_token',$('token').value);var h={authorization:'Bearer '+$('token').value};if(json!==false)h['content-type']='application/json';return h;};var api=async function(path,opt){opt=opt||{};var res=await fetch(path,Object.assign({},opt,{headers:Object.assign({},headers(),opt.headers||{})}));var text=await res.text();var body=text?JSON.parse(text):{};if(!res.ok||body.code!==0)throw new Error(body.message||'请求失败');return body.data;};var run=async function(fn){try{await fn();}catch(e){alert(e.message||String(e));}};var multiItems={employeeModels:[],employeeMcps:[],employeeSkills:[]};var multiValues={employeeModels:[],employeeMcps:[],employeeSkills:[]};var selected=function(id){return multiValues[id]||[];};var setSelected=function(id,values){multiValues[id]=Array.from(new Set(values||[]));renderMultiSelect(id);};var set=function(id,v){$(id).value=v==null?'':v;};
 function showTab(tab){document.querySelectorAll('section').forEach(function(s){s.classList.toggle('active',s.id===tab);});document.querySelectorAll('nav button').forEach(function(b){b.classList.toggle('active-tab',b.dataset.tab===tab);});}
@@ -386,7 +481,7 @@ function providerByModel(modelId){return state.modelProviders.find(function(p){r
 function renderUsage(){var eid=$('usageEmployeeFilter').value;var mid=$('usageModelFilter').value;var rows={};var events=state.usageEvents.filter(function(e){return (!eid||e.employeeId===eid)&&(!mid||e.modelId===mid);});events.forEach(function(e){var day=String(e.createdAt||'').slice(0,10)||'-';var key=day+'|'+e.employeeId+'|'+e.modelId;rows[key]=rows[key]||{day:day,employeeId:e.employeeId,modelId:e.modelId,tokens:0,credits:0};rows[key].tokens+=Number(e.inputTokens||0)+Number(e.outputTokens||0)+Number(e.cacheWriteTokens||0)+Number(e.cacheReadTokens||0);rows[key].credits+=Number(e.credits||0);});$('usageCalls').textContent=events.length;$('usageCredits').textContent=events.reduce(function(s,e){return s+Number(e.credits||0);},0).toFixed(4);$('usageMoney').textContent='-';$('usageRows').innerHTML=Object.values(rows).map(function(r){var emp=state.employees.find(function(e){return e.employeeId===r.employeeId;});return '<tr><td>'+esc(r.day)+'</td><td>'+esc(emp?emp.employeeName:r.employeeId)+'<br><code>'+esc(r.employeeId)+'</code></td><td>'+esc(r.modelId)+'</td><td>'+r.tokens+'</td><td>'+r.credits.toFixed(4)+'</td><td>'+esc(money(r.credits,r.modelId))+'</td></tr>';}).join('');}
 function downloadAdmin(path,name){return run(async function(){var res=await fetch(path,{headers:headers(false)});if(!res.ok)throw new Error('下载失败');var blob=await res.blob();var url=URL.createObjectURL(blob);var a=document.createElement('a');a.href=url;a.download=name||'';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);});}
 function renderBackups(){if(!$('backupRows'))return;var backups=state.backups||[];$('backupRows').innerHTML=backups.map(function(b){return '<tr><td><code>'+esc(b.name)+'</code></td><td>'+Math.ceil(Number(b.size||0)/1024)+' KB</td><td>'+esc(b.createdAt||'-')+'</td><td><button class="secondary" data-act="downloadBackup" data-name="'+esc(b.name)+'">下载</button></td></tr>';}).join('')||'<tr><td colspan="4" class="hint">暂无备份</td></tr>';}
-function renderRelease(){if(!$('releaseVersion'))return;var r=state.release||{};set('releaseVersion',r.version||'');set('releaseDate',r.date||'');set('releaseWinUrl',r.windowsX64Url||'');set('releaseMacArmUrl',r.macArmUrl||'');set('releaseMacIntelUrl',r.macIntelUrl||'');set('releaseManualUrl',r.manualUrl||'');set('releaseNotesZh',r.notesZh||'');set('releaseNotesEn',r.notesEn||'');}
+async function renderRelease(){if(!$('releaseVersion'))return;var r=state.release||{};set('releaseVersion',r.version||'');set('releaseDate',r.date||'');set('releaseWinUrl',r.windowsX64Url||'');set('releaseMacArmUrl',r.macArmUrl||'');set('releaseMacIntelUrl',r.macIntelUrl||'');set('releaseManualUrl',r.manualUrl||'');set('releaseNotesZh',r.notesZh||'');set('releaseNotesEn',r.notesEn||'');if($('releaseSummary')){try{var res=await fetch('/api/enterprise/update');var body=await res.json();var v=(body.data||{}).value||{};$('releaseSummary').innerHTML='<b>当前自动生成：</b><br>版本：<code>'+esc(v.version||'未检测到安装包')+'</code><br>发布日期：'+esc(v.date||'-')+'<br>Windows：'+esc((v.windowsX64||{}).url||'-')+'<br>macOS Apple Silicon：'+esc((v.macArm||{}).url||'-')+'<br>macOS Intel：'+esc((v.macIntel||{}).url||'-')+'<br>更新日志：'+esc((((v.changeLog||{}).ch||{}).content||[]).join('；')||'-');}catch(e){$('releaseSummary').textContent='暂时无法读取更新 JSON：'+(e.message||e);}}}
 document.querySelector('nav').onclick=function(e){if(e.target.dataset.tab)showTab(e.target.dataset.tab);};$('refreshBtn').onclick=function(){run(loadAll);};$('token').value=localStorage.getItem('lfclaw_admin_token')||'lfclaw-admin';$('employeeName').oninput=function(){run(async function(){var d=await api('/api/admin/pinyin?name='+encodeURIComponent($('employeeName').value));$('employeePreview').textContent=d.employeeId+' / '+d.activationPrefix;if(!$('employeeId').value)$('employeeId').placeholder=d.employeeId;});};$('addEmployeeBtn').onclick=function(){run(async function(){await api('/api/admin/employees',{method:'POST',body:JSON.stringify({employeeName:$('employeeName').value,employeeId:$('employeeId').value,creditsLimit:Number($('creditsLimit').value),notes:$('notes').value,allowedModelProviderIds:selected('employeeModels'),allowedMcpServerIds:selected('employeeMcps'),allowedSkillIds:selected('employeeSkills')})});clearEmployee();await loadAll();});};$('saveEmployeeBtn').onclick=function(){run(async function(){await api('/api/admin/employees/'+encodeURIComponent(editingEmployee),{method:'PATCH',body:JSON.stringify({employeeName:$('employeeName').value,employeeId:$('employeeId').value,creditsLimit:Number($('creditsLimit').value),notes:$('notes').value,allowedModelProviderIds:selected('employeeModels'),allowedMcpServerIds:selected('employeeMcps'),allowedSkillIds:selected('employeeSkills')})});clearEmployee();await loadAll();});};$('cancelEmployeeBtn').onclick=clearEmployee;$('saveModelBtn').onclick=function(){run(async function(){await api('/api/admin/model-providers',{method:'POST',body:JSON.stringify(modelPayload())});clearModel();await loadAll();});};$('cancelModelBtn').onclick=clearModel;$('saveMcpBtn').onclick=function(){run(async function(){await api('/api/admin/mcp',{method:'POST',body:JSON.stringify({id:$('mcpId').value.trim(),name:$('mcpName').value,description:$('mcpDesc').value,transportType:$('mcpTransport').value,url:$('mcpUrl').value,headers:$('mcpHeaders').value,command:$('mcpCommand').value,args:$('mcpArgs').value.split(/\r?\n|,/).map(function(x){return x.trim();}).filter(Boolean)} )});clearMcp();await loadAll();});};$('cancelMcpBtn').onclick=clearMcp;$('uploadSkillBtn').onclick=function(){run(async function(){var fd=new FormData();fd.set('id',$('skillId').value.trim());fd.set('name',$('skillName').value);fd.set('version',$('skillVersion').value);fd.set('description',$('skillDesc').value);if($('skillZip').files[0])fd.set('package',$('skillZip').files[0]);var res=await fetch('/api/admin/skills/upload',{method:'POST',headers:headers(false),body:fd});var text=await res.text();var body=text?JSON.parse(text):{};if(!res.ok||body.code!==0)throw new Error(body.message||'上传失败');clearSkill();await loadAll();});};$('cancelSkillBtn').onclick=clearSkill;$('usageEmployeeFilter').onchange=renderUsage;$('usageModelFilter').onchange=renderUsage;$('createBackupBtn').onclick=function(){run(async function(){await api('/api/admin/backups',{method:'POST',body:'{}'});await loadAll();alert('备份已创建');});};$('exportDataBtn').onclick=function(){downloadAdmin('/api/admin/export','enterprise-data.json');};$('saveReleaseBtn').onclick=function(){run(async function(){await api('/api/admin/release',{method:'POST',body:JSON.stringify({version:$('releaseVersion').value,date:$('releaseDate').value,windowsX64Url:$('releaseWinUrl').value,macArmUrl:$('releaseMacArmUrl').value,macIntelUrl:$('releaseMacIntelUrl').value,manualUrl:$('releaseManualUrl').value,notesZh:$('releaseNotesZh').value,notesEn:$('releaseNotesEn').value})});await loadAll();alert('更新信息已保存');});};$('testReleaseBtn').onclick=function(){window.open('/api/enterprise/update','_blank');};
 document.body.onchange=function(e){var t=e.target;if(!t.dataset.multiId)return;var id=t.dataset.multiId;var value=t.dataset.multiValue;var set=new Set(multiValues[id]||[]);if(t.checked)set.add(value);else set.delete(value);multiValues[id]=Array.from(set);renderMultiSelect(id);$(id).classList.add('open');};
 document.body.onclick=function(e){var t=e.target;if(t.dataset.multiToggle){$(t.dataset.multiToggle).classList.toggle('open');return;}var a=t.dataset.act;if(!a)return;run(async function(){if(a==='editEmployee')editEmployee(t.dataset.code);if(a==='copy')await copyCode(t.dataset.code);if(a==='toggle'){await api('/api/admin/employees/'+encodeURIComponent(t.dataset.code),{method:'PATCH',body:JSON.stringify({status:t.dataset.status==='active'?'disabled':'active'})});await loadAll();}if(a==='credits'){var v=prompt('新积分额度');if(v!==null){await api('/api/admin/employees/'+encodeURIComponent(t.dataset.code),{method:'PATCH',body:JSON.stringify({creditsLimit:Number(v)})});await loadAll();}}if(a==='deleteEmployee'){if(confirm('确定删除？')){await api('/api/admin/employees/'+encodeURIComponent(t.dataset.code),{method:'DELETE'});await loadAll();}}if(a==='editModel')editModel(t.dataset.id);if(a==='editMcp')editMcp(t.dataset.id);if(a==='editSkill')editSkill(t.dataset.id);if(a==='downloadBackup')downloadAdmin('/api/admin/backups/'+encodeURIComponent(t.dataset.name)+'/download',t.dataset.name);if(a==='delete'){if(confirm('确定删除？')){await api(t.dataset.path+'/'+encodeURIComponent(t.dataset.id),{method:'DELETE'});await loadAll();}}});};
@@ -434,23 +529,25 @@ const sendJsonDownload = (res, fileName, data) => {
   res.end(JSON.stringify(ensureData(data), null, 2));
 };
 
-const releaseResponse = data => {
+const releaseResponse = (data, req) => {
   const release = data.release || {};
-  const notesZh = release.notesZh ? release.notesZh.split(/\r?\n/).filter(Boolean) : [];
-  const notesEn = release.notesEn ? release.notesEn.split(/\r?\n/).filter(Boolean) : notesZh;
+  const autoRelease = detectAutoRelease(requestOrigin(req)) || {};
+  const notesZh = autoRelease.notesZh?.length ? autoRelease.notesZh : release.notesZh ? release.notesZh.split(/\r?\n/).filter(Boolean) : [];
+  const notesEn = autoRelease.notesEn?.length ? autoRelease.notesEn : release.notesEn ? release.notesEn.split(/\r?\n/).filter(Boolean) : notesZh;
+  const version = autoRelease.version || release.version || '';
   return {
     code: 0,
     data: {
       value: {
-        version: release.version || '',
-        date: release.date || String(release.updatedAt || nowIso()).slice(0, 10),
+        version,
+        date: autoRelease.date || release.date || String(release.updatedAt || nowIso()).slice(0, 10),
         changeLog: {
-          ch: { title: release.version ? `LfClaw ${release.version}` : '', content: notesZh },
-          en: { title: release.version ? `LfClaw ${release.version}` : '', content: notesEn },
+          ch: { title: version ? `LfClaw ${version}` : '', content: notesZh },
+          en: { title: version ? `LfClaw ${version}` : '', content: notesEn },
         },
-        windowsX64: { url: release.windowsX64Url || release.manualUrl || '' },
-        macArm: { url: release.macArmUrl || release.manualUrl || '' },
-        macIntel: { url: release.macIntelUrl || release.manualUrl || '' },
+        windowsX64: { url: autoRelease.windowsX64Url || release.windowsX64Url || release.manualUrl || '' },
+        macArm: { url: autoRelease.macArmUrl || release.macArmUrl || release.manualUrl || '' },
+        macIntel: { url: autoRelease.macIntelUrl || release.macIntelUrl || release.manualUrl || '' },
       },
     },
   };
@@ -622,11 +719,12 @@ const findEmployeeByToken = (data, token) => {
 const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') return json(res, 204, {});
   const url = new URL(req.url || '/', `http://${req.headers.host}`);
+  if (req.method === 'GET' && serveReleaseFile(res, url.pathname)) return;
   const data = readData();
   try {
     if (await handleAdmin(req, res, url, data)) return;
     if ((url.pathname === '/api/enterprise/update' || url.pathname === '/api/enterprise/update-manual') && req.method === 'GET') {
-      return json(res, 200, releaseResponse(data));
+      return json(res, 200, releaseResponse(data, req));
     }
     if (url.pathname === '/api/enterprise/activate' && req.method === 'POST') {
       const body = await readBody(req);

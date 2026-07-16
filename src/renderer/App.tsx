@@ -20,7 +20,6 @@ import EngineStartupOverlay from './components/cowork/EngineStartupOverlay';
 import EnterpriseActivationView from './components/enterprise/EnterpriseActivationView';
 import KitsView from './components/kits/KitsView';
 import { McpView } from './components/mcp';
-import PrivacyDialog from './components/PrivacyDialog';
 import { ScheduledTasksView } from './components/scheduledTasks';
 import Settings, { type SettingsOpenOptions } from './components/Settings';
 import Sidebar from './components/Sidebar';
@@ -112,7 +111,6 @@ const App: React.FC = () => {
     errorMessage: null,
   });
   const [showUpdateModal, setShowUpdateModal] = useState(false);
-  const [isUpdateCardExpanded, setIsUpdateCardExpanded] = useState(false);
   const [privacyAgreed, setPrivacyAgreed] = useState<boolean | null>(null);
   const [showWelcome, setShowWelcome] = useState(false);
   const [enterpriseConfig, setEnterpriseConfig] = useState<{
@@ -244,8 +242,11 @@ const App: React.FC = () => {
         mark('model resolution done');
 
         const agreed = await window.electron.store.get('privacy_agreed');
-        setPrivacyAgreed(agreed === true);
-        if (agreed === true && !store.getState().auth.isLoggedIn) {
+        if (agreed !== true) {
+          await window.electron.store.set('privacy_agreed', true);
+        }
+        setPrivacyAgreed(true);
+        if (!store.getState().auth.isLoggedIn) {
           setShowWelcome(true);
         }
         mark('privacy check done');
@@ -618,17 +619,6 @@ const App: React.FC = () => {
     shouldInstallReadyUpdateRef.current = false;
     await window.electron.appUpdate.retryDownload();
   }, [updateInfo]);
-
-  const handlePrivacyAccept = useCallback(async () => {
-    await window.electron.store.set('privacy_agreed', true);
-    setPrivacyAgreed(true);
-    setShowWelcome(true);
-  }, []);
-
-  const handlePrivacyReject = useCallback(() => {
-    // 绔嬪埢闅愯棌绐楀彛锛岃鐢ㄦ埛鎰熻绔嬪嵆鍏抽棴
-    window.electron.window.close();
-  }, []);
 
   const handleWelcomeEnterpriseActivate = useCallback(async (input: { serverUrl: string; activationCode: string }) => {
     try {
@@ -1103,7 +1093,6 @@ const App: React.FC = () => {
       onUpdate={handleConfirmUpdate}
       onShowDetails={handleOpenUpdateModal}
       onCancelDownload={handleCancelDownload}
-      onExpandedChange={setIsUpdateCardExpanded}
     />
   ) : null;
   const canUseWindowsTopBarActions = isInitialized && !initError;
@@ -1197,7 +1186,6 @@ const App: React.FC = () => {
           onToggleCollapse={handleToggleSidebar}
           onWidthChange={setSidebarWidth}
           updateNotice={!isSidebarCollapsed ? updateCard : null}
-          hideAdBanner={isUpdateCardExpanded}
           hideLogin={enterpriseConfig?.ui?.login === 'hide'}
         />
         <div className={`flex-1 min-w-0 transition-[padding] duration-200 ease-out ${isSidebarCollapsed ? 'pl-1.5' : ''}`}>
@@ -1290,12 +1278,6 @@ const App: React.FC = () => {
         />
       )}
       {permissionModal}
-      {privacyAgreed === false && (
-        <PrivacyDialog
-          onAccept={handlePrivacyAccept}
-          onReject={handlePrivacyReject}
-        />
-      )}
       {showWelcome && (
         <WelcomeDialog
           onEnterpriseActivate={handleWelcomeEnterpriseActivate}

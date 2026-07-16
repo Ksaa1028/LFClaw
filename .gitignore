@@ -37,6 +37,7 @@ package-lock.json
 nul
 .work.env
 .keyfrom-build/
+.lfclaw-build/
 
 .playwright-mcp/
 .cowork-temp/
@@ -52,6 +53,7 @@ sandbox/
 enterprise-server/enterprise-data.json
 enterprise-server/*.log
 enterprise-server/storage/
+enterprise-server/releases/
 tmp-enterprise-skill.zip
 vite.log
 electron-dev.*.log

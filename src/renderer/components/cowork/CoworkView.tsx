@@ -33,7 +33,6 @@ import {
 import type { MediaAttachmentRef } from '../../types/mediaGeneration';
 import { applyOptimisticGoalCommand } from '../../utils/goalCommand';
 import { toOpenClawModelRef } from '../../utils/openclawModelRef';
-import CreditsResetCampaignFloat from '../CreditsResetCampaignFloat';
 import ComposeIcon from '../icons/ComposeIcon';
 import SidebarToggleIcon from '../icons/SidebarToggleIcon';
 import { PromptPanel, QuickActionBar } from '../quick-actions';
@@ -884,7 +883,6 @@ const CoworkView: React.FC<CoworkViewProps> = ({
             ) : (
               <QuickActionBar actions={quickActions} onActionSelect={handleActionSelect} />
             )}
-            <CreditsResetCampaignFloat />
           </div>
 
           <div aria-hidden="true" className="w-full min-h-[24px] flex-[3_0_0px]" />

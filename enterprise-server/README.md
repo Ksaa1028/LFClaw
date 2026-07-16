@@ -169,16 +169,7 @@ tail -f /opt/LfClaw/server.log
 
 ## 8. 企业更新源
 
-后台“版本更新”维护以下字段：
-
-- 最新版本，例如 `2026.7.16`
-- 发布日期
-- Windows x64 下载地址，建议是 `.exe`
-- macOS Apple Silicon 下载地址，建议是 `.dmg`
-- macOS Intel 下载地址，建议是 `.dmg`
-- 通用下载页
-- 中文更新日志
-- 英文更新日志
+后台“版本更新”默认不需要手动填写。企业服务会自动扫描 `/opt/LfClaw/releases`，取文件名中最大的日期流水号作为最新版。
 
 客户端激活企业服务后，更新检查优先访问：
 
@@ -189,27 +180,106 @@ GET /api/enterprise/update-manual
 
 返回格式兼容当前客户端更新模块。客户端会根据当前系统选择 Windows 或 macOS 下载地址。
 
+安装包直接放在企业服务目录：
+
+```bash
+mkdir -p /opt/LfClaw/releases
+cp LfClaw-Setup-2026071501-win-x64-official.exe /opt/LfClaw/releases/
+```
+
+后台下载地址填写：
+不用手动填写。服务会自动生成 `http://服务器IP:8787/releases/文件名`。
+
+更新日志放同一目录，推荐命名：
+
+```text
+changelog-2026071501.zh.txt
+changelog-2026071501.en.txt
+```
+
+每行一条更新内容。没有英文日志时会自动复用中文日志。
+
+如果需要独立存放安装包目录，可以启动服务时设置：
+
+```bash
+LFCLAW_ENTERPRISE_RELEASE_DIR=/opt/LfClaw/releases
+```
+
 ## 9. 打包命令
 
-Windows：
+Windows 日常更新包只用这一条：
 
 ```bash
-npm run dist:win
+npm run release:win
 ```
 
-macOS Apple Silicon：
+Windows 和 macOS 的发布命令都会自动完成：
+
+- 生成当天版本号。
+- 生成更新日志。
+- 构建前端和 Electron 主进程。
+- 构建技能依赖。
+- 构建或复用对应平台的 OpenClaw runtime。
+- 打对应平台安装包。
+- 校验安装包、版本号和更新日志是否都存在。
+
+版本号规则是 `YYYYMMDDNN`。如果当天已有 `2026071501`、`2026071502`，再次运行会自动生成 `2026071503`。
+
+如果要手动指定当天第几版：
 
 ```bash
-npm run dist:mac:arm64
+LFCLAW_BUILD_SEQ=3 npm run release:win
 ```
 
-macOS Intel：
+也可以直接指定完整版本：
 
 ```bash
-npm run dist:mac:x64
+LFCLAW_BUILD_VERSION=2026071503 npm run release:win
 ```
 
-macOS 后续必须重点验证：
+如果要手动写更新日志：
+
+```bash
+LFCLAW_CHANGELOG="隐藏旧协议弹窗；去掉广告；优化设置入口" npm run release:win
+```
+
+只有改了 OpenClaw runtime、底层网关、内置依赖时，才跑完整运行时打包：
+
+```bash
+npm run release:win:runtime
+```
+
+macOS 必须在 Mac 电脑上打包。Mac 电脑拉取 Git 代码后运行：
+
+```bash
+npm run release:mac:arm64
+npm run release:mac:x64
+```
+
+如果要让 macOS 包和 Windows 包使用同一个版本号，需要显式指定同一个版本：
+
+```bash
+LFCLAW_BUILD_VERSION=2026071601 npm run release:mac:arm64
+LFCLAW_BUILD_VERSION=2026071601 npm run release:mac:x64
+```
+
+macOS 改了 OpenClaw runtime、底层网关、内置依赖时，才跑：
+
+```bash
+npm run release:mac:arm64:runtime
+npm run release:mac:x64:runtime
+```
+
+打包完成后，上传到服务器：
+
+```bash
+scp release/LfClaw-Setup-2026071503-win-x64-official.exe root@服务器IP:/opt/LfClaw/releases/
+scp release/LfClaw-2026071503-mac-arm64-official.dmg root@服务器IP:/opt/LfClaw/releases/
+scp release/LfClaw-2026071503-mac-x64-official.dmg root@服务器IP:/opt/LfClaw/releases/
+scp release/changelog-2026071503.zh.txt root@服务器IP:/opt/LfClaw/releases/
+```
+
+macOS 首次发版必须重点验证：
 
 - 应用签名
 - 公证

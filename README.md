@@ -378,16 +378,64 @@ LFCLAW_ENTERPRISE_BASE_URL=http://服务器IP:8787 npm run client:dev
 
 ## 15. 打包客户端
 
-Windows：
+Windows 日常更新包：
 
 ```bash
-npm run dist:win
+npm run release:win
 ```
 
-macOS：
+macOS 必须在 Mac 电脑上打包。Apple Silicon 和 Intel 分别执行：
 
 ```bash
-npm run dist:mac
+npm run release:mac:arm64
+npm run release:mac:x64
+```
+
+打包版本号按日期流水生成：`YYYYMMDDNN`。例如 `2026071501` 表示 2026-07-15 的第 1 个包。
+
+当天第三版可以这样打：
+
+```bash
+LFCLAW_BUILD_SEQ=3 npm run release:win
+```
+
+如果 Windows 和 Mac 要发同一个版本，直接指定完整版本：
+
+```bash
+LFCLAW_BUILD_VERSION=2026071503 npm run release:win
+LFCLAW_BUILD_VERSION=2026071503 npm run release:mac:arm64
+LFCLAW_BUILD_VERSION=2026071503 npm run release:mac:x64
+```
+
+生成的安装包文件名会带版本号，例如：
+
+```text
+LfClaw-Setup-2026071501-win-x64-official.exe
+LfClaw-2026071501-mac-arm64-official.dmg
+```
+
+把安装包放到服务器 `/opt/LfClaw/releases` 后，不需要在后台手动填写下载地址。企业服务会自动扫描安装包，取文件名里最大的日期流水号作为最新版：
+
+```text
+LfClaw-Setup-2026071501-win-x64-official.exe
+LfClaw-2026071501-mac-arm64-official.dmg
+LfClaw-2026071501-mac-x64-official.dmg
+```
+
+更新日志会自动生成，上传时放同一目录：
+
+```text
+changelog-2026071501.zh.txt
+```
+
+一行一条即可。
+
+只有改了 OpenClaw runtime、底层网关、内置依赖时，才跑完整运行时打包：
+
+```bash
+npm run release:win:runtime
+npm run release:mac:arm64:runtime
+npm run release:mac:x64:runtime
 ```
 
 Linux：

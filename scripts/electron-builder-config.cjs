@@ -7,6 +7,7 @@ const config = require('../electron-builder.json');
 
 const DEFAULT_KEYFROM = 'official';
 const KEYFROM_PATTERN = /^[a-z0-9_-]{1,64}$/;
+const BUILD_VERSION_PATTERN = /^\d{10}$/;
 
 function normalizeKeyfrom(value) {
   if (typeof value !== 'string') return DEFAULT_KEYFROM;
@@ -32,6 +33,34 @@ function readBuildKeyfrom() {
     console.warn('[Keyfrom] failed to read build keyfrom for artifact names, using official:', error);
     return DEFAULT_KEYFROM;
   }
+}
+
+function normalizeBuildVersion(value) {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  return BUILD_VERSION_PATTERN.test(normalized) ? normalized : null;
+}
+
+function readLfClawBuildVersion() {
+  const envVersion = normalizeBuildVersion(process.env.LFCLAW_BUILD_VERSION);
+  if (envVersion) {
+    return envVersion;
+  }
+
+  const buildVersionPath = path.join(__dirname, '..', '.lfclaw-build', 'build-version.json');
+  try {
+    if (fs.existsSync(buildVersionPath)) {
+      const parsed = JSON.parse(fs.readFileSync(buildVersionPath, 'utf8'));
+      const fileVersion = normalizeBuildVersion(parsed?.version);
+      if (fileVersion) {
+        return fileVersion;
+      }
+    }
+  } catch (error) {
+    console.warn('[LfClaw Build] failed to read build version for artifact names:', error);
+  }
+
+  return '${version}';
 }
 
 function asArray(value) {
@@ -66,6 +95,7 @@ function mergeExtraResources(platformName) {
 }
 
 const keyfrom = readBuildKeyfrom();
+const buildVersion = readLfClawBuildVersion();
 
 for (const platformName of ['mac', 'win', 'linux']) {
   mergeExtraResources(platformName);
@@ -75,14 +105,15 @@ delete config.extraResources;
 
 config.dmg = {
   ...(config.dmg || {}),
-  artifactName: `LobsterAI-darwin-\${arch}-\${version}-${keyfrom}.\${ext}`,
+  artifactName: `LfClaw-${buildVersion}-mac-\${arch}-${keyfrom}.\${ext}`,
 };
 
 config.nsis = {
   ...(config.nsis || {}),
-  artifactName: `LobsterAI-Setup-\${arch}-\${version}-${keyfrom}.\${ext}`,
+  artifactName: `LfClaw-Setup-${buildVersion}-win-\${arch}-${keyfrom}.\${ext}`,
 };
 
 console.log(`[Keyfrom] configured artifact keyfrom as ${keyfrom}`);
+console.log(`[LfClaw Build] configured artifact build version as ${buildVersion}`);
 
 module.exports = config;
