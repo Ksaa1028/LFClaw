@@ -14,6 +14,7 @@ import type {
   ResolvedKitCapabilities,
 } from '../../shared/kit/constants';
 import type {
+  OpenClawEngineErrorCode,
   OpenClawEnginePhase as SharedOpenClawEnginePhase,
   OpenClawGatewayRepairErrorCode,
 } from '../../shared/openclawEngine/constants';
@@ -234,6 +235,7 @@ export interface OpenClawEngineStatus {
   version: string | null;
   progressPercent?: number;
   message?: string;
+  errorCode?: OpenClawEngineErrorCode;
   gatewayPort?: number | null;
   gatewayHttpUrl?: string | null;
   canRetry: boolean;

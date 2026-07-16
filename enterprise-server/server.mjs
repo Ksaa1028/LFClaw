@@ -771,14 +771,17 @@ const server = http.createServer(async (req, res) => {
       const provider = data.modelProviders.find(item => item.models?.some(model => model.id === modelId));
       const credits = body.credits === undefined ? calculateUsageCredits(provider, body) : toNumber(body.credits);
       const creditsRemaining = Math.max(0, toNumber(employee.creditsLimit) - toNumber(employee.creditsUsed));
-      if (creditsRemaining <= 0 || credits > creditsRemaining) {
+      if (creditsRemaining <= 0) {
         return fail(res, 402, 'Enterprise credits exhausted.');
       }
+      const chargedCredits = Number(Math.min(credits, creditsRemaining).toFixed(4));
       const event = {
         id: id('usage'),
         employeeId: employee.employeeId,
         modelId,
-        credits,
+        credits: chargedCredits,
+        calculatedCredits: Number(credits.toFixed(4)),
+        exhaustedByCall: credits > creditsRemaining,
         inputTokens: toNumber(body.inputTokens),
         outputTokens: toNumber(body.outputTokens),
         cacheWriteTokens: toNumber(body.cacheWriteTokens),
@@ -788,10 +791,10 @@ const server = http.createServer(async (req, res) => {
         createdAt: nowIso(),
       };
       data.usageEvents.push(event);
-      employee.creditsUsed = Number((toNumber(employee.creditsUsed) + credits).toFixed(4));
+      employee.creditsUsed = Number((toNumber(employee.creditsUsed) + chargedCredits).toFixed(4));
       employee.lastUsedAt = nowIso();
       writeData(data);
-      return ok(res, { credits, event });
+      return ok(res, { credits: chargedCredits, calculatedCredits: event.calculatedCredits, event });
     }
     fail(res, 404, 'Not found.');
   } catch (error) {

@@ -46,6 +46,7 @@ import type {
   LocalWebService,
 } from '../../shared/localWebServices/constants';
 import type {
+  OpenClawEngineErrorCode,
   OpenClawEnginePhase as SharedOpenClawEnginePhase,
   OpenClawGatewayRepairErrorCode,
 } from '../../shared/openclawEngine/constants';
@@ -233,6 +234,7 @@ interface OpenClawEngineStatus {
   version: string | null;
   progressPercent?: number;
   message?: string;
+  errorCode?: OpenClawEngineErrorCode;
   gatewayPort?: number | null;
   gatewayHttpUrl?: string | null;
   canRetry: boolean;
