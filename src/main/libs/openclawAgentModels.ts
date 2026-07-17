@@ -30,6 +30,14 @@ const LegacyQualifiedProviderMigration: Record<string, readonly string[]> = {
   [OpenClawProviderId.OpenAICodex]: [OpenClawProviderId.OpenAI],
 };
 
+function providerHasModel(
+  availableProviders: ProviderModelCatalog,
+  providerId: string,
+  modelId: string,
+): boolean {
+  return (availableProviders[providerId]?.models ?? []).some((model) => model.id === modelId);
+}
+
 function normalizeSubagentAllowAgentIds(agent: Agent): string[] {
   const seen = new Set<string>();
   const allowAgentIds: string[] = [];
@@ -96,6 +104,12 @@ export function resolveManagedSessionModelTarget(options: {
 
   const explicitTarget = parsePrimaryModelRef(explicitModel);
   if (explicitTarget) {
+    if (
+      options.availableProviders[explicitTarget.providerId]
+      && !providerHasModel(options.availableProviders, explicitTarget.providerId, explicitTarget.modelId)
+    ) {
+      if (fallbackTarget) return fallbackTarget;
+    }
     return explicitTarget;
   }
 
@@ -153,8 +167,7 @@ export function resolveQualifiedAgentModelRef(options: {
 
   const explicitTarget = parsePrimaryModelRef(explicitModel);
   if (explicitTarget) {
-    const providerModels = options.availableProviders[explicitTarget.providerId]?.models ?? [];
-    if (providerModels.some((model) => model.id === explicitTarget.modelId)) {
+    if (providerHasModel(options.availableProviders, explicitTarget.providerId, explicitTarget.modelId)) {
       return {
         status: 'qualified',
         primaryModel: explicitTarget.primaryModel,
@@ -173,6 +186,13 @@ export function resolveQualifiedAgentModelRef(options: {
       return {
         status: 'qualified',
         primaryModel: `${matchingProviders[0]}/${explicitTarget.modelId}`,
+      };
+    }
+
+    if (options.availableProviders[explicitTarget.providerId]) {
+      return {
+        status: 'unresolved',
+        modelId: explicitTarget.modelId,
       };
     }
 

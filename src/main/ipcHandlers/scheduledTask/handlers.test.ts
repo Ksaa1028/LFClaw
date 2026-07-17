@@ -336,6 +336,56 @@ describe('registerScheduledTaskHandlers', () => {
     expect(adapter.connectGatewayIfNeeded).not.toHaveBeenCalled();
   });
 
+  test('repairs only the casing of an existing Weixin direct target', async () => {
+    const nativePeerId = 'o9cq8006XvWcetrGlHt3HAiuHICk@im.wechat';
+    const request = vi.fn(async () => ({
+      sessions: [
+        {
+          updatedAt: 2_000,
+          lastChannel: 'openclaw-weixin',
+          lastTo: nativePeerId,
+          lastAccountId: 'inferred-account-must-not-be-added',
+        },
+      ],
+    }));
+    const { cronJobService, deps } = makeDeps(OpenClawEnginePhase.Running, {
+      gatewayClient: { request },
+    });
+    cronJobService.listJobs.mockResolvedValue([
+      {
+        id: 'legacy-weixin-job',
+        name: 'legacy weixin direct',
+        description: '',
+        enabled: true,
+        schedule: { kind: 'cron', expr: '0 13 * * *' },
+        sessionTarget: SessionTarget.Isolated,
+        wakeMode: WakeMode.Now,
+        payload: { kind: PayloadKind.AgentTurn, message: 'hi' },
+        delivery: {
+          mode: DeliveryMode.Announce,
+          channel: 'openclaw-weixin',
+          to: nativePeerId.toLowerCase(),
+        },
+        agentId: 'main',
+        sessionKey: null,
+        state: {},
+        createdAt: '2026-07-17T00:00:00.000Z',
+        updatedAt: '2026-07-17T00:00:00.000Z',
+      },
+    ]);
+
+    const result = await migrateScheduledTaskAnnounceJobs(deps);
+
+    expect(result).toEqual({ checked: 1, updated: 1 });
+    expect(cronJobService.updateJob).toHaveBeenCalledWith('legacy-weixin-job', {
+      delivery: {
+        mode: DeliveryMode.Announce,
+        channel: 'openclaw-weixin',
+        to: nativePeerId,
+      },
+    });
+  });
+
   test('repairs only the casing of an existing DingTalk group target', async () => {
     const nativeConversationId = 'cid+wQbmjFBusv8Bld+Du9t1w==';
     const request = vi.fn(async () => ({

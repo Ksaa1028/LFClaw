@@ -171,6 +171,7 @@ export function createScheduledTaskFormState(
   task: ScheduledTask | undefined,
   fallbackModelRef: string,
   template?: ScheduledTaskTemplate | null,
+  availableModels: Model[] = [],
 ): FormState {
   if (!task) {
     const form = { ...DEFAULT_FORM_STATE, ...nowDefaults(), modelId: fallbackModelRef };
@@ -184,7 +185,7 @@ export function createScheduledTaskFormState(
     ? (exprToCronBuilder(rawCronExpr) ?? { ...DEFAULT_CRON_BUILDER })
     : { ...DEFAULT_CRON_BUILDER };
   const taskModelRef = task.payload.kind === PayloadKind.AgentTurn
-    ? (task.payload.model?.trim() || fallbackModelRef)
+    ? normalizeScheduledTaskModelRef(task.payload.model, fallbackModelRef, availableModels)
     : '';
 
   return {
@@ -209,6 +210,21 @@ export function createScheduledTaskFormState(
     notifyAccountId: task.delivery.accountId,
     modelId: taskModelRef,
   };
+}
+
+function normalizeScheduledTaskModelRef(
+  modelRef: string | undefined,
+  fallbackModelRef: string,
+  availableModels: Model[],
+): string {
+  const trimmedRef = modelRef?.trim();
+  if (!trimmedRef) {
+    return fallbackModelRef;
+  }
+  if (availableModels.length === 0) {
+    return trimmedRef;
+  }
+  return resolveOpenClawModelRef(trimmedRef, availableModels) ? trimmedRef : fallbackModelRef;
 }
 
 function buildScheduleInput(form: FormState): ScheduledTaskInput['schedule'] {
@@ -294,15 +310,17 @@ const TaskForm: React.FC<TaskFormProps> = ({
   const availableModels = useSelector((state: RootState) => state.model.availableModels);
   const defaultSelectedModel = useSelector((state: RootState) => state.model.defaultSelectedModel);
   const fallbackModelRef = defaultSelectedModel ? toOpenClawModelRef(defaultSelectedModel) : '';
+  const availableModelsRef = useRef(availableModels);
   const [form, setForm] = useState<FormState>(() =>
     createScheduledTaskFormState(
       task,
       fallbackModelRef,
       mode === 'create' ? initialTemplate : null,
+      availableModels,
     )
   );
   const initialFormRef = useRef<string>(
-    JSON.stringify(createScheduledTaskFormState(task, fallbackModelRef)),
+    JSON.stringify(createScheduledTaskFormState(task, fallbackModelRef, null, availableModels)),
   );
   const [channelOptions, setChannelOptions] = useState<ScheduledTaskChannelOption[]>(() => {
     const base: ScheduledTaskChannelOption[] = [];
@@ -328,6 +346,10 @@ const TaskForm: React.FC<TaskFormProps> = ({
   );
   const [payloadEditorOpen, setPayloadEditorOpen] = useState(false);
   const payloadEditorTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    availableModelsRef.current = availableModels;
+  }, [availableModels]);
 
   useEffect(() => {
     if (!payloadEditorOpen) return;
@@ -356,16 +378,39 @@ const TaskForm: React.FC<TaskFormProps> = ({
   const isSystemEventTask = task?.payload.kind === PayloadKind.SystemEvent;
 
   useEffect(() => {
-    const cleanForm = createScheduledTaskFormState(task, fallbackModelRef);
+    const cleanForm = createScheduledTaskFormState(
+      task,
+      fallbackModelRef,
+      null,
+      availableModelsRef.current,
+    );
     const nextForm = createScheduledTaskFormState(
       task,
       fallbackModelRef,
       mode === 'create' ? initialTemplate : null,
+      availableModelsRef.current,
     );
     initialFormRef.current = JSON.stringify(cleanForm);
     setForm(nextForm);
     setAppliedTemplate(mode === 'create' ? initialTemplate : null);
   }, [task, fallbackModelRef, initialTemplate, mode]);
+
+  useEffect(() => {
+    if (isSystemEventTask || availableModels.length === 0) {
+      return;
+    }
+    setForm(current => {
+      const normalizedModelId = normalizeScheduledTaskModelRef(
+        current.modelId,
+        fallbackModelRef,
+        availableModels,
+      );
+      if (normalizedModelId === current.modelId) {
+        return current;
+      }
+      return { ...current, modelId: normalizedModelId };
+    });
+  }, [availableModels, fallbackModelRef, isSystemEventTask]);
 
   useEffect(() => {
     reportScheduledTaskAction('form_open', {

@@ -3019,10 +3019,31 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
         });
 
         if (shouldMigrateManagedModelRefs) {
+          const overrideProvider =
+            typeof entry.providerOverride === 'string' ? entry.providerOverride.trim() : '';
+          const overrideModel =
+            typeof entry.modelOverride === 'string' ? entry.modelOverride.trim() : '';
+          const effectiveTarget = overrideModel
+            ? resolveManagedSessionModelTarget({
+                agentModel: overrideProvider ? `${overrideProvider}/${overrideModel}` : overrideModel,
+                fallbackPrimaryModel: target.primaryModel,
+                availableProviders,
+                currentProviderId: overrideProvider || entryProvider || target.providerId,
+              })
+            : target;
+          if (
+            overrideModel
+            && (overrideProvider !== effectiveTarget.providerId || overrideModel !== effectiveTarget.modelId)
+          ) {
+            entry.providerOverride = effectiveTarget.providerId;
+            entry.modelOverride = effectiveTarget.modelId;
+            changed = true;
+          }
+
           const entryModel = typeof entry.model === 'string' ? entry.model.trim() : '';
-          if (entryProvider !== target.providerId || entryModel !== target.modelId) {
-            entry.modelProvider = target.providerId;
-            entry.model = target.modelId;
+          if (entryProvider !== effectiveTarget.providerId || entryModel !== effectiveTarget.modelId) {
+            entry.modelProvider = effectiveTarget.providerId;
+            entry.model = effectiveTarget.modelId;
             changed = true;
           }
 
@@ -3032,12 +3053,12 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
             const reportProvider =
               typeof report.provider === 'string' ? report.provider.trim() : '';
             const reportModel = typeof report.model === 'string' ? report.model.trim() : '';
-            if (reportProvider !== target.providerId) {
-              report.provider = target.providerId;
+            if (reportProvider !== effectiveTarget.providerId) {
+              report.provider = effectiveTarget.providerId;
               changed = true;
             }
-            if (reportModel !== target.modelId) {
-              report.model = target.modelId;
+            if (reportModel !== effectiveTarget.modelId) {
+              report.model = effectiveTarget.modelId;
               changed = true;
             }
           }

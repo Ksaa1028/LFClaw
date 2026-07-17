@@ -96,6 +96,35 @@ describe('buildAgentEntry', () => {
     });
   });
 
+  test('falls back when a qualified agent model was removed from its configured provider', () => {
+    const result = buildAgentEntry({
+      id: 'main',
+      name: 'main',
+      description: '',
+      systemPrompt: '',
+      identity: '',
+      model: 'custom_0/qwen3.6-plus',
+      workingDirectory: '',
+      icon: '',
+      skillIds: [],
+      enabled: true,
+      isDefault: true,
+      source: 'custom',
+      presetId: '',
+      createdAt: 0,
+      updatedAt: 0,
+    }, 'custom_0/qwen3.7-plus', {
+      availableProviders: {
+        custom_0: { models: [{ id: 'qwen3.7-plus' }] },
+      },
+    });
+
+    expect(result).toMatchObject({
+      id: 'main',
+      model: { primary: 'custom_0/qwen3.7-plus' },
+    });
+  });
+
   test('falls back to the default model when agent model is an ambiguous bare id', () => {
     const result = buildAgentEntry({
       id: 'main',
@@ -412,6 +441,20 @@ describe('resolveManagedSessionModelTarget', () => {
     });
   });
 
+  test('uses fallback target when a qualified session model no longer exists on its provider', () => {
+    expect(resolveManagedSessionModelTarget({
+      agentModel: 'custom_0/qwen3.6-plus',
+      fallbackPrimaryModel: 'custom_0/qwen3.7-plus',
+      availableProviders: {
+        custom_0: { models: [{ id: 'qwen3.7-plus' }] },
+      },
+    })).toEqual({
+      providerId: 'custom_0',
+      modelId: 'qwen3.7-plus',
+      primaryModel: 'custom_0/qwen3.7-plus',
+    });
+  });
+
   test('resolves bare model ids against available providers', () => {
     expect(resolveManagedSessionModelTarget({
       agentModel: 'deepseek-v3.2',
@@ -499,6 +542,18 @@ describe('resolveQualifiedAgentModelRef', () => {
     })).toEqual({
       status: 'qualified',
       primaryModel: 'lobsterai-server/kimi-k2.6',
+    });
+  });
+
+  test('marks qualified refs unresolved when their provider exists but no longer has the model', () => {
+    expect(resolveQualifiedAgentModelRef({
+      agentModel: 'custom_0/qwen3.6-plus',
+      availableProviders: {
+        custom_0: { models: [{ id: 'qwen3.7-plus' }] },
+      },
+    })).toEqual({
+      status: 'unresolved',
+      modelId: 'qwen3.6-plus',
     });
   });
 });

@@ -3,6 +3,7 @@ import { describe, expect, test } from 'vitest';
 import { DeliveryMode, PayloadKind, ScheduleKind, SessionTarget, WakeMode } from '../../../scheduledTask/constants';
 import type { ScheduledTask, ScheduledTaskChannelOption } from '../../../scheduledTask/types';
 import { i18nService } from '../../services/i18n';
+import type { Model } from '../../store/slices/modelSlice';
 import { getScheduleAnalyticsParams } from './analytics';
 import { createScheduledTaskFormState } from './TaskForm';
 import {
@@ -20,6 +21,18 @@ import {
 } from './utils';
 
 const fallbackModelRef = 'openai/gpt-5.5';
+const availableModels: Model[] = [
+  {
+    id: 'gpt-5.5',
+    name: 'GPT-5.5',
+    providerKey: 'openai',
+  },
+  {
+    id: 'claude-sonnet-4',
+    name: 'Claude Sonnet 4',
+    providerKey: 'anthropic',
+  },
+];
 
 function makeTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
   return {
@@ -72,6 +85,18 @@ describe('createScheduledTaskFormState', () => {
     }), fallbackModelRef);
 
     expect(form.modelId).toBe('anthropic/claude-sonnet-4');
+  });
+
+  test('falls back when an explicit existing task model is no longer available', () => {
+    const form = createScheduledTaskFormState(makeTask({
+      payload: {
+        kind: PayloadKind.AgentTurn,
+        message: 'Summarize updates',
+        model: 'zhipu/glm-5.2',
+      },
+    }), fallbackModelRef, null, availableModels);
+
+    expect(form.modelId).toBe(fallbackModelRef);
   });
 
   test('does not assign a model when editing a system-event task', () => {

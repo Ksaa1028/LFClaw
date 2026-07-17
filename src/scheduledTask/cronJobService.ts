@@ -214,11 +214,13 @@ function isDeliveryOnlyError(opts: {
   error?: string;
   deliveryError?: string;
   deliveryStatus?: string;
+  allowMissingTargetError?: boolean;
 }): boolean {
   if (opts.status !== GatewayStatus.Error) return false;
   if (!opts.error) return false;
   // The error is delivery-only when its text matches the deliveryError exactly.
-  return !!opts.deliveryError && opts.error === opts.deliveryError;
+  if (opts.deliveryError && opts.error === opts.deliveryError) return true;
+  return !!opts.allowMissingTargetError && /delivering to .+ requires target/i.test(opts.error);
 }
 
 export function mapGatewaySchedule(schedule: GatewaySchedule): Schedule {
@@ -347,6 +349,7 @@ export function mapGatewayTaskState(
       error: state.lastError,
       deliveryError: state.lastDeliveryError,
       deliveryStatus: state.lastDeliveryStatus,
+      allowMissingTargetError: true,
     })
   ) {
     lastStatus = TaskStatus.Success;
@@ -439,7 +442,10 @@ export function mapGatewayJob(job: GatewayJob): ScheduledTask {
   };
 }
 
-export function mapGatewayRun(entry: GatewayRunLogEntry): ScheduledTaskRun {
+export function mapGatewayRun(
+  entry: GatewayRunLogEntry,
+  deliveryMode?: DeliveryModeType,
+): ScheduledTaskRun {
   let status =
     entry.action && entry.action !== 'finished'
       ? TaskStatus.Running
@@ -454,6 +460,7 @@ export function mapGatewayRun(entry: GatewayRunLogEntry): ScheduledTaskRun {
       error: entry.error,
       deliveryError: entry.deliveryError,
       deliveryStatus: entry.deliveryStatus,
+      allowMissingTargetError: deliveryMode === DeliveryMode.None,
     })
   ) {
     status = TaskStatus.Success;
@@ -736,7 +743,10 @@ export class CronJobService {
       if (entries.length === 0) break;
 
       for (const entry of entries) {
-        const run = mapGatewayRun(entry);
+        const run = mapGatewayRun(
+          entry,
+          job?.delivery?.mode ?? this.getJobDeliverySync(jobId)?.mode ?? undefined,
+        );
         if (!matchesRunFilter(run, filter)) continue;
         if (skippedVisible < visibleOffset) {
           skippedVisible += 1;
@@ -787,6 +797,9 @@ export class CronJobService {
       jobs.filter(job => isInternalScheduledTaskJob(job)).map(job => job.id),
     );
     const nameMap = new Map(jobs.map(job => [job.id, job.name]));
+    const deliveryModeMap = new Map(
+      jobs.map(job => [job.id, job.delivery?.mode ?? DeliveryMode.None]),
+    );
     const visibleRuns: Array<{ entry: GatewayRunLogEntry; run: ScheduledTaskRun }> = [];
     let skippedVisible = 0;
     let rawOffset = 0;
@@ -806,7 +819,7 @@ export class CronJobService {
 
       for (const entry of entries) {
         if (internalJobIds.has(entry.jobId)) continue;
-        const run = mapGatewayRun(entry);
+        const run = mapGatewayRun(entry, deliveryModeMap.get(entry.jobId));
         if (!matchesRunFilter(run, filter)) continue;
         if (skippedVisible < visibleOffset) {
           skippedVisible += 1;

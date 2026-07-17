@@ -381,6 +381,33 @@ describe('mapGatewayRun', () => {
     expect(run.status).toBe(TaskStatus.Error);
     expect(run.error).toBe('timeout');
   });
+
+  test('suppresses missing delivery target error when delivery mode is none', () => {
+    const run = mapGatewayRun(
+      {
+        ...baseEntry,
+        status: GatewayStatus.Error,
+        error: 'Delivering to openclaw-weixin requires target',
+        summary: 'Agent produced a valid summary',
+      },
+      DeliveryMode.None,
+    );
+    expect(run.status).toBe(TaskStatus.Success);
+    expect(run.error).toBeNull();
+  });
+
+  test('keeps missing delivery target error when delivery mode is announce', () => {
+    const run = mapGatewayRun(
+      {
+        ...baseEntry,
+        status: GatewayStatus.Error,
+        error: 'Delivering to openclaw-weixin requires target',
+      },
+      DeliveryMode.Announce,
+    );
+    expect(run.status).toBe(TaskStatus.Error);
+    expect(run.error).toBe('Delivering to openclaw-weixin requires target');
+  });
 });
 
 describe('mapGatewayJob', () => {
@@ -514,5 +541,27 @@ describe('mapGatewayTaskState', () => {
     );
     expect(state.lastStatus).toBe(TaskStatus.Error);
     expect(state.lastError).toBe('agent timeout');
+  });
+
+  test('suppresses missing delivery target error only for none delivery mode', () => {
+    const noneState = mapGatewayTaskState(
+      {
+        lastRunStatus: GatewayStatus.Error,
+        lastError: 'Delivering to openclaw-weixin requires target',
+      },
+      DeliveryMode.None,
+    );
+    expect(noneState.lastStatus).toBe(TaskStatus.Success);
+    expect(noneState.lastError).toBeNull();
+
+    const announceState = mapGatewayTaskState(
+      {
+        lastRunStatus: GatewayStatus.Error,
+        lastError: 'Delivering to openclaw-weixin requires target',
+      },
+      DeliveryMode.Announce,
+    );
+    expect(announceState.lastStatus).toBe(TaskStatus.Error);
+    expect(announceState.lastError).toBe('Delivering to openclaw-weixin requires target');
   });
 });

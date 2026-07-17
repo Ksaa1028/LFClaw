@@ -36,9 +36,13 @@ import {
 const AUTO_CHANNEL_TITLE_RE = /^\[[^\]]*\]\s/;
 const DINGTALK_PLATFORM: Platform = 'dingtalk';
 const WECOM_PLATFORM: Platform = 'wecom';
+const WEIXIN_PLATFORM: Platform = 'weixin';
 const CASE_SENSITIVE_GROUP_TARGET_PLATFORMS = new Set<Platform>([
   DINGTALK_PLATFORM,
   WECOM_PLATFORM,
+]);
+const CASE_SENSITIVE_PEER_TARGET_PLATFORMS = new Set<Platform>([
+  WEIXIN_PLATFORM,
 ]);
 
 type ConversationMappingForList = {
@@ -330,26 +334,24 @@ async function restoreAnnounceDeliveryHintsFromGateway(
         const selectedAccountId = typeof delivery.accountId === 'string'
           ? delivery.accountId
           : undefined;
-        if (!options?.casingOnly) {
-          const hints = resolveImDeliveryHintsFromSessions({
-            sessions,
-            channel: delivery.channel,
-            peerId: delivery.to,
-            preferredAccountId: context.parsedConversation.accountId,
-          });
-          if (hints) {
-            if (hints.to !== delivery.to) {
-              console.log(
-                '[ScheduledTask] restored delivery.to casing from gateway session:',
-                delivery.to,
-                '->',
-                hints.to,
-              );
-              delivery.to = hints.to;
-            }
-            if (!delivery.accountId && hints.accountId) {
-              delivery.accountId = hints.accountId;
-            }
+        const hints = resolveImDeliveryHintsFromSessions({
+          sessions,
+          channel: delivery.channel,
+          peerId: delivery.to,
+          preferredAccountId: context.parsedConversation.accountId,
+        });
+        if (hints) {
+          if (hints.to !== delivery.to) {
+            console.log(
+              '[ScheduledTask] restored delivery.to casing from gateway session:',
+              delivery.to,
+              '->',
+              hints.to,
+            );
+            delivery.to = hints.to;
+          }
+          if (!options?.casingOnly && !delivery.accountId && hints.accountId) {
+            delivery.accountId = hints.accountId;
           }
         }
 
@@ -444,11 +446,14 @@ async function buildAnnounceNormalizationPatch(
     ? normalizedInput.delivery.to.trim()
     : '';
   if (
-    CASE_SENSITIVE_GROUP_TARGET_PLATFORMS.has(context.platform) &&
+    (
+      CASE_SENSITIVE_GROUP_TARGET_PLATFORMS.has(context.platform) ||
+      CASE_SENSITIVE_PEER_TARGET_PLATFORMS.has(context.platform)
+    ) &&
     normalizedTo &&
     normalizedTo === normalizedTo.toLowerCase()
   ) {
-    // Historical repair must only restore the case-sensitive native group id;
+    // Historical repair must only restore the case-sensitive native target;
     // it must not infer or change account routing from gateway metadata.
     await restoreAnnounceDeliveryHintsFromGateway(normalizedInput, context, deps, {
       casingOnly: true,
