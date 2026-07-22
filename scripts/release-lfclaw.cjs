@@ -205,9 +205,9 @@ function main() {
   run('build skills', 'npm', ['run', 'build:skills'], env);
 
   if (options.platform === 'win') {
-    run('package Windows installer', 'npx', ['electron-builder', '--win', '--x64', '--config', 'scripts/electron-builder-config.cjs'], env);
+    run('package Windows installer', 'npx', ['electron-builder', '--win', '--x64', '--config', 'scripts/electron-builder-config.cjs', '--publish', 'never'], env);
   } else {
-    run(`package macOS ${options.arch} dmg`, 'npx', ['electron-builder', '--mac', `--${options.arch}`, '--config', 'scripts/electron-builder-config.cjs'], env);
+    run(`package macOS ${options.arch} dmg`, 'npx', ['electron-builder', '--mac', `--${options.arch}`, '--config', 'scripts/electron-builder-config.cjs', '--publish', 'never'], env);
   }
 
   verifyRelease(version, options.platform, options.arch);
