@@ -35,6 +35,12 @@ jobs:
         with:
           node-version: '24.x'
 
+      - name: Setup pnpm for OpenClaw runtime
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.2.2 --activate
+          pnpm --version
+
       - name: Install dependencies
         run: npm install
 

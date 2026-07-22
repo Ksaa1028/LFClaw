@@ -76,6 +76,8 @@ need_cmd() {
 
 need_cmd node
 need_cmd npm
+corepack enable >/dev/null 2>&1 || true
+corepack prepare pnpm@11.2.2 --activate >/dev/null 2>&1 || true
 need_cmd pnpm
 need_cmd tar
 
@@ -143,7 +145,6 @@ fi
 
 echo "[1/7] Building OpenClaw from source: $OPENCLAW_SRC"
 pushd "$OPENCLAW_SRC" >/dev/null
-corepack enable >/dev/null 2>&1 || true
 pnpm install --frozen-lockfile
 pnpm build
 # Skip release:check — it validates the openclaw npm package for publishing and
