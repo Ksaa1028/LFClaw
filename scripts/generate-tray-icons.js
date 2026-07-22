@@ -49,7 +49,7 @@ function buildIco(entries, outputPath) {
   fs.writeFileSync(outputPath, ico);
 }
 
-function resizeIcons() {
+function resizeIconsWithPowerShell() {
   fs.mkdirSync(outputDir, { recursive: true });
 
   const script = `
@@ -85,6 +85,27 @@ try {
   execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], { stdio: 'inherit' });
 }
 
+function resizeIconWithSips(size, outputPath) {
+  execFileSync('/usr/bin/sips', [
+    '-s',
+    'format',
+    'png',
+    '-z',
+    String(size),
+    String(size),
+    inputPath,
+    '--out',
+    outputPath,
+  ], { stdio: 'inherit' });
+}
+
+function resizeIconsWithSips() {
+  fs.mkdirSync(outputDir, { recursive: true });
+  resizeIconWithSips(48, path.join(outputDir, 'tray-icon.png'));
+  resizeIconWithSips(18, path.join(outputDir, 'tray-icon-mac.png'));
+  resizeIconWithSips(36, path.join(outputDir, 'tray-icon-mac@2x.png'));
+}
+
 function writeWindowsTrayIco() {
   const entries = [16, 32, 48].map((size) => ({
     size,
@@ -95,8 +116,14 @@ function writeWindowsTrayIco() {
 
 function main() {
   assertInputExists();
-  resizeIcons();
-  writeWindowsTrayIco();
+  if (process.platform === 'win32') {
+    resizeIconsWithPowerShell();
+    writeWindowsTrayIco();
+  } else if (process.platform === 'darwin') {
+    resizeIconsWithSips();
+  } else {
+    throw new Error('Tray icon generation currently supports Windows and macOS hosts only.');
+  }
   fs.rmSync(tmpDir, { recursive: true, force: true });
   console.log(`Generated tray icons from ${inputPath} -> ${outputDir}`);
 }
