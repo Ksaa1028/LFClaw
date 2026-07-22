@@ -51,7 +51,7 @@ jobs:
           find github-artifacts -maxdepth 1 -type f -print
 
       - name: Upload macOS package artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: LFClaw-mac-${{ matrix.arch }}
           path: github-artifacts/*
