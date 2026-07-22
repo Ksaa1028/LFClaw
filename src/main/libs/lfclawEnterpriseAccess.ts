@@ -4,6 +4,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
+import type { AsrRealtimeSessionData, AsrRealtimeSessionRequest } from '../../shared/asr/constants';
 import { AuthSubscriptionStatus } from '../../shared/auth/constants';
 import type {
   EnterpriseActivateInput,
@@ -68,6 +69,10 @@ const normalizeApiFormat = (value: unknown): 'openai' | 'anthropic' | 'gemini' =
 
 const normalizeMcpTransportType = (value: unknown): 'stdio' | 'sse' | 'http' | 'streamable-http' => (
   value === 'stdio' || value === 'http' || value === 'streamable-http' ? value : 'sse'
+);
+
+const normalizeAsrFormat = (value: unknown): 'wav' | 'pcm' => (
+  value === 'pcm' ? 'pcm' : 'wav'
 );
 
 export class LFClawEnterpriseAccess {
@@ -193,6 +198,35 @@ export class LFClawEnterpriseAccess {
         ...(input.credits !== undefined ? { credits: input.credits } : {}),
       },
     });
+  }
+
+  async createAsrRealtimeSession(options?: AsrRealtimeSessionRequest): Promise<AsrRealtimeSessionData> {
+    const current = await this.requireActiveAccess();
+    const payload = await this.request(current.serverUrl, '/api/enterprise/asr/realtime/sessions', {
+      method: 'POST',
+      accessToken: current.accessToken,
+      body: {
+        langType: options?.langType,
+      },
+    });
+
+    const requestId = typeof payload.requestId === 'string' ? payload.requestId : '';
+    const wsUrl = typeof payload.wsUrl === 'string' ? payload.wsUrl : '';
+    if (!requestId || !wsUrl) {
+      throw new Error('Enterprise ASR server did not return a valid realtime session.');
+    }
+
+    return {
+      requestId,
+      wsUrl,
+      expiresInSeconds: numberValue(payload.expiresInSeconds) || 120,
+      chunkIntervalMillis: numberValue(payload.chunkIntervalMillis) || 200,
+      maxSessionSeconds: numberValue(payload.maxSessionSeconds) || 60,
+      maxConcurrentSessions: numberValue(payload.maxConcurrentSessions) || 1,
+      usedSecondsToday: numberValue(payload.usedSecondsToday),
+      remainingSecondsToday: numberValue(payload.remainingSecondsToday) || 86400,
+      limitSecondsToday: numberValue(payload.limitSecondsToday) || 86400,
+    };
   }
 
   isModelAllowed(modelId: string): boolean {
@@ -332,6 +366,7 @@ export class LFClawEnterpriseAccess {
       allowedModelProviderIds: stringList(raw.allowedModelProviderIds ?? fallback?.allowedModelProviderIds),
       allowedMcpServerIds: stringList(raw.allowedMcpServerIds ?? fallback?.allowedMcpServerIds),
       allowedSkillIds: stringList(raw.allowedSkillIds ?? fallback?.allowedSkillIds),
+      asr: this.normalizeAsrPolicy(raw.asr ?? fallback?.asr),
       modelProviders: recordList(raw.modelProviders ?? fallback?.modelProviders).map(provider => ({
         id: String(provider.id || '').trim(),
         name: String(provider.name || provider.id || '').trim(),
@@ -377,6 +412,25 @@ export class LFClawEnterpriseAccess {
       })).filter(skill => skill.id),
       adminUrl: typeof raw.adminUrl === 'string' && raw.adminUrl.trim() ? raw.adminUrl.trim() : fallback?.adminUrl,
       enterpriseName: typeof raw.enterpriseName === 'string' && raw.enterpriseName.trim() ? raw.enterpriseName.trim() : fallback?.enterpriseName,
+    };
+  }
+
+  private normalizeAsrPolicy(value: unknown): EnterprisePolicy['asr'] {
+    const raw = isRecord(value) ? value : {};
+    const provider = raw.provider === 'aliyun-dashscope' ? raw.provider : 'aliyun-dashscope';
+    return {
+      provider,
+      name: typeof raw.name === 'string' ? raw.name : undefined,
+      workspaceId: typeof raw.workspaceId === 'string' ? raw.workspaceId : undefined,
+      region: typeof raw.region === 'string' ? raw.region : undefined,
+      apiHost: typeof raw.apiHost === 'string' ? raw.apiHost : undefined,
+      websocketUrl: typeof raw.websocketUrl === 'string' ? raw.websocketUrl : undefined,
+      model: typeof raw.model === 'string' ? raw.model : undefined,
+      format: normalizeAsrFormat(raw.format),
+      sampleRate: numberValue(raw.sampleRate) || undefined,
+      chunkIntervalMillis: numberValue(raw.chunkIntervalMillis) || undefined,
+      maxSessionSeconds: numberValue(raw.maxSessionSeconds) || undefined,
+      configured: raw.configured === true,
     };
   }
 

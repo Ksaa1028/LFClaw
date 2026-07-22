@@ -10076,6 +10076,7 @@ if (!gotTheLock) {
     getAuthTokens,
     fetchWithAuth,
     getServerApiBaseUrl,
+    createEnterpriseRealtimeSession: options => getLFClawEnterpriseAccess().createAsrRealtimeSession(options),
   });
 
   // ---- artifact file watching ----

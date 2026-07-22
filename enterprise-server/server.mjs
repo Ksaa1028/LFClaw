@@ -3,6 +3,7 @@ import fs from 'fs';
 import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { WebSocket, WebSocketServer } from 'ws';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HOST = process.env.LFCLAW_ENTERPRISE_HOST || '127.0.0.1';
@@ -15,6 +16,8 @@ const STORAGE_DIR = process.env.LFCLAW_ENTERPRISE_STORAGE || path.join(ROOT_DIR,
 const SKILL_DIR = path.join(STORAGE_DIR, 'skills');
 const BACKUP_DIR = process.env.LFCLAW_ENTERPRISE_BACKUP_DIR || path.join(DATA_DIR, 'backups');
 const RELEASE_DIR = process.env.LFCLAW_ENTERPRISE_RELEASE_DIR || path.join(ROOT_DIR, 'releases');
+const asrProxySessions = new Map();
+const ASR_PROXY_SESSION_TTL_MS = 2 * 60 * 1000;
 
 const nowIso = () => new Date().toISOString();
 const id = prefix => `${prefix}_${crypto.randomBytes(6).toString('hex')}`;
@@ -32,6 +35,94 @@ const json = (res, status, payload) => {
 };
 const ok = (res, data = {}) => json(res, 200, { code: 0, data });
 const fail = (res, status, message) => json(res, status, { code: status, message });
+
+const asrDefault = () => ({
+  provider: 'aliyun-dashscope',
+  name: '阿里云实时语音识别',
+  workspaceId: '',
+  region: 'cn-beijing',
+  apiHost: '',
+  websocketUrl: '',
+  apiKey: '',
+  model: 'fun-asr-realtime',
+  format: 'wav',
+  sampleRate: 16000,
+  chunkIntervalMillis: 200,
+  maxSessionSeconds: 60,
+  priceNote: '',
+});
+
+const normalizeAsr = (input = {}, existing = {}) => {
+  const source = input && typeof input === 'object' ? input : {};
+  const previous = existing && typeof existing === 'object' ? existing : {};
+  const next = { ...asrDefault(), ...previous };
+  const apiKeyText = String(source.apiKey ?? '').trim();
+  return {
+    ...next,
+    provider: 'aliyun-dashscope',
+    name: String(source.name ?? next.name ?? '').trim() || asrDefault().name,
+    workspaceId: String(source.workspaceId ?? next.workspaceId ?? '').trim(),
+    region: String(source.region ?? next.region ?? 'cn-beijing').trim() || 'cn-beijing',
+    apiHost: String(source.apiHost ?? next.apiHost ?? '').trim().replace(/^https?:\/\//, '').replace(/\/.*$/, ''),
+    websocketUrl: String(source.websocketUrl ?? next.websocketUrl ?? '').trim(),
+    apiKey: apiKeyText && !/^\*+$/.test(apiKeyText) ? apiKeyText : String(next.apiKey || ''),
+    model: String(source.model ?? next.model ?? 'fun-asr-realtime').trim() || 'fun-asr-realtime',
+    format: source.format === 'pcm' ? 'pcm' : 'wav',
+    sampleRate: toNumber(source.sampleRate ?? next.sampleRate, 16000),
+    chunkIntervalMillis: toNumber(source.chunkIntervalMillis ?? next.chunkIntervalMillis, 200),
+    maxSessionSeconds: toNumber(source.maxSessionSeconds ?? next.maxSessionSeconds, 60),
+    priceNote: String(source.priceNote ?? next.priceNote ?? '').trim(),
+  };
+};
+
+const resolveAsrWsUrl = asr => {
+  const config = normalizeAsr(asr);
+  if (config.websocketUrl) return config.websocketUrl;
+  if (config.workspaceId) return `wss://${config.workspaceId}.${config.region || 'cn-beijing'}.maas.aliyuncs.com/api-ws/v1/inference/`;
+  if (config.apiHost) return `wss://${config.apiHost}/api-ws/v1/inference/`;
+  return '';
+};
+
+const publicAsr = asr => {
+  const config = normalizeAsr(asr);
+  return {
+    provider: config.provider,
+    name: config.name,
+    workspaceId: config.workspaceId,
+    region: config.region,
+    apiHost: config.apiHost,
+    websocketUrl: config.websocketUrl,
+    model: config.model,
+    format: config.format,
+    sampleRate: config.sampleRate,
+    chunkIntervalMillis: config.chunkIntervalMillis,
+    maxSessionSeconds: config.maxSessionSeconds,
+    configured: Boolean(config.apiKey && resolveAsrWsUrl(config)),
+  };
+};
+
+const redactAsr = asr => {
+  const config = normalizeAsr(asr);
+  return {
+    ...config,
+    apiKey: config.apiKey ? '********' : '',
+    configured: Boolean(config.apiKey && resolveAsrWsUrl(config)),
+  };
+};
+
+const closeWebSocket = socket => {
+  if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+    socket.close();
+  }
+};
+
+const sendAsrEvent = (socket, payload) => {
+  if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload));
+};
+
+const sendAsrError = (socket, requestId, code, message) => {
+  sendAsrEvent(socket, { type: 'error', requestId, code, message });
+};
 
 const releaseMimeType = filePath => {
   const ext = path.extname(filePath).toLowerCase();
@@ -199,6 +290,7 @@ const detectAutoRelease = origin => {
 
 const defaultData = () => ({
   enterpriseName: 'LfClaw Enterprise',
+  asr: asrDefault(),
   modelProviders: [],
   mcpServers: [],
   skills: [],
@@ -226,6 +318,7 @@ const ensureData = data => ({
   employees: Array.isArray(data.employees) ? data.employees : Array.isArray(data.activations) ? data.activations : [],
   sessions: data.sessions && typeof data.sessions === 'object' ? data.sessions : {},
   usageEvents: Array.isArray(data.usageEvents) ? data.usageEvents : [],
+  asr: normalizeAsr(data.asr || {}, defaultData().asr),
   release: data.release && typeof data.release === 'object' ? { ...defaultData().release, ...data.release } : defaultData().release,
 });
 
@@ -462,6 +555,7 @@ const adminState = data => ({
   enterpriseName: data.enterpriseName,
   modelProviders: data.modelProviders.map(redactModel),
   models: data.modelProviders.map(redactModel),
+  asr: redactAsr(data.asr),
   mcpServers: data.mcpServers,
   skills: data.skills.map(skill => ({ ...skill, packagePath: undefined })),
   employees: data.employees.map(employeeView),
@@ -504,6 +598,7 @@ const clientPayload = (data, employee, accessToken, req) => {
       modelProviders,
       mcpServers,
       skills,
+      asr: publicAsr(data.asr),
       adminUrl: `${requestOrigin(req)}/admin`,
     },
   };
@@ -526,27 +621,30 @@ const adminHtml = () => String.raw`<!doctype html><html lang="zh-CN"><head><meta
 :root{font-family:Inter,"Microsoft YaHei",Arial,sans-serif;color:#0b1833;background:#f4f7fb}body{margin:0}main{max-width:1320px;margin:0 auto;padding:28px}header{display:flex;justify-content:space-between;gap:16px;align-items:flex-end;margin-bottom:16px}h1{margin:0;font-size:28px}.hint{color:#66758a;margin:6px 0 0}.token{display:flex;gap:8px;align-items:end}.token input{width:260px}nav{display:flex;gap:8px;margin:16px 0;flex-wrap:wrap}button{border:0;border-radius:6px;padding:9px 13px;font-weight:750;cursor:pointer;background:#0b1833;color:white}button.secondary,nav button{background:#e9eef5;color:#0b1833}button.danger{background:#df2626}.active-tab{background:#0b1833!important;color:#fff!important}section{display:none;background:#fff;border:1px solid #dce3ec;border-radius:8px;padding:18px;box-shadow:0 10px 30px rgba(15,23,42,.04)}section.active{display:block}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.grid-3{grid-template-columns:repeat(3,1fr)}.grid-5{grid-template-columns:repeat(5,1fr)}label{font-size:13px;font-weight:650;color:#24324a}input,textarea,select{width:100%;box-sizing:border-box;border:1px solid #c8d2df;border-radius:6px;padding:9px 10px;font:inherit;background:#fff}textarea{min-height:72px}.multi-select{position:relative}.multi-trigger{width:100%;height:40px;border:1px solid #c8d2df;border-radius:6px;background:#fff;color:#0b1833;text-align:left;font-weight:650;display:flex;align-items:center;justify-content:space-between}.multi-trigger:after{content:"▾";color:#66758a}.multi-options{display:none;max-height:220px;overflow:auto;border:1px solid #c8d2df;border-radius:8px;background:#fff;box-shadow:0 8px 18px rgba(15,23,42,.08);padding:6px;margin-top:6px}.multi-select.open .multi-options{display:block}.multi-option{display:flex;align-items:center;gap:8px;padding:8px;border-radius:6px;font-size:13px;font-weight:500;cursor:pointer}.multi-option:hover{background:#f4f7fb}.multi-option input{width:auto}.model-type-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px;border:1px solid #c8d2df;border-radius:8px;padding:6px;background:#fff}.field-title{font-size:13px;font-weight:650;color:#24324a;margin-bottom:4px}.multi-empty{padding:10px;color:#66758a}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.card{border:1px solid #dce3ec;border-radius:8px;padding:14px;background:#fbfcfe}.num{font-size:24px;font-weight:800}table{width:100%;border-collapse:collapse;font-size:13px;margin-top:14px}th,td{border-bottom:1px solid #e2e8f0;padding:10px;text-align:left;vertical-align:top}code{font-family:Consolas,monospace}.formula{margin:12px 0;padding:12px;border:1px solid #dce3ec;border-radius:8px;background:#fbfcfe;color:#24324a;font-size:13px;line-height:1.7}.edit-box{display:none;margin:14px 0;padding:14px;border:1px solid #cfd9e6;border-radius:8px;background:#fbfcfe}.pill{display:inline-block;background:#eef2f7;border-radius:999px;padding:3px 8px;margin:2px}@media(max-width:960px){.grid,.grid-3,.grid-5,.cards{grid-template-columns:1fr}header{display:block}.token{margin-top:12px}}
 </style></head><body><main>
 <header><div><h1>LfClaw 企业管理</h1><p class="hint">维护模型、MCP 服务和技能包，再给员工分配激活码、积分和能力。</p></div><div class="token"><label>管理员 Token<input id="token" type="password" placeholder="LFCLAW_ADMIN_TOKEN"></label><button class="secondary" id="refreshBtn">刷新</button></div></header>
-<nav><button data-tab="overview" class="active-tab">总览</button><button data-tab="employees">员工与激活码</button><button data-tab="models">模型配置</button><button data-tab="mcp">MCP 服务</button><button data-tab="skills">技能包</button><button data-tab="usage">用量监控</button><button data-tab="backup">数据备份</button><button data-tab="release">版本更新</button></nav>
+<nav><button data-tab="overview" class="active-tab">总览</button><button data-tab="employees">员工与激活码</button><button data-tab="models">模型配置</button><button data-tab="mcp">MCP 服务</button><button data-tab="skills">技能包</button><button data-tab="asr">语音识别</button><button data-tab="usage">用量监控</button><button data-tab="backup">数据备份</button><button data-tab="release">版本更新</button></nav>
 <section id="overview" class="active"><div class="cards"><div class="card"><div class="hint">员工数</div><div class="num" id="statEmployees">0</div></div><div class="card"><div class="hint">模型配置</div><div class="num" id="statModels">0</div></div><div class="card"><div class="hint">调用次数</div><div class="num" id="statCalls">0</div></div><div class="card"><div class="hint">已用积分</div><div class="num" id="statCredits">0</div></div></div><table><thead><tr><th>员工</th><th>积分</th><th>授权</th><th>最近使用</th></tr></thead><tbody id="overviewRows"></tbody></table></section>
 <section id="employees"><div class="grid"><label>中文姓名<input id="employeeName" placeholder="张三"></label><label>员工 ID<input id="employeeId" placeholder="自动生成"></label><label>积分额度<input id="creditsLimit" type="number" value="1000"></label><label>备注<input id="notes"></label></div><div class="grid grid-3" style="margin-top:12px"><label>可用模型<div id="employeeModels" class="multi-select"></div></label><label>可用 MCP<div id="employeeMcps" class="multi-select"></div></label><label>可用技能<div id="employeeSkills" class="multi-select"></div></label></div><p class="hint">预览：<code id="employeePreview">输入中文姓名后自动生成员工 ID 与激活码前缀</code></p><div class="row"><button id="addEmployeeBtn">添加员工并生成激活码</button><button class="secondary" id="saveEmployeeBtn" style="display:none">保存员工授权</button><button class="secondary" id="cancelEmployeeBtn" style="display:none">取消编辑</button></div><table><thead><tr><th>状态</th><th>激活码</th><th>员工</th><th>积分/使用</th><th>授权</th><th>设备</th><th>操作</th></tr></thead><tbody id="employeeRows"></tbody></table></section>
 <section id="models"><div class="grid"><label>模型 ID<input id="modelId" placeholder="glm-5.2"></label><label>模型名称<input id="modelName" placeholder="智谱 GLM-5.2"></label><label>Base URL<input id="modelBaseUrl" placeholder="https://open.bigmodel.cn/api/paas/v4"></label><label>API Key<input id="modelApiKey" type="password" placeholder="sk-..."></label></div><div class="grid" style="margin-top:12px"><label>计价货币<select id="billingCurrency"><option value="USD">USD</option><option value="CNY">CNY</option></select></label><label>输入价格 / 100万token<input id="inputPricePerMillionTokens" type="number" step="0.000001" value="0"></label><label>输出价格 / 100万token<input id="outputPricePerMillionTokens" type="number" step="0.000001" value="0"></label><label>1货币单位=企业积分<input id="creditsPerCurrencyUnit" type="number" step="0.01" value="10"></label></div><div class="grid" style="margin-top:12px"><label>缓存写入 / 100万token<input id="cacheWritePricePerMillionTokens" type="number" step="0.000001" value="0"></label><label>缓存读取 / 100万token<input id="cacheReadPricePerMillionTokens" type="number" step="0.000001" value="0"></label><label>固定积分/次<input id="fixedCreditsPerCall" type="number" step="0.01" value="0"></label><label>最低扣费积分<input id="minimumCreditsPerCall" type="number" step="0.01" value="1"></label><label>上下文窗口 / token<input id="modelContextWindow" type="number" step="1" min="0" placeholder="如 1000000"></label></div><div class="grid grid-3" style="margin-top:12px"><label>图片价格备注<input id="imagePriceNote"></label><label>语音价格备注<input id="audioPriceNote"></label><label>视频价格备注<input id="videoPriceNote"></label></div><div><div class="field-title">模型类型（可多选）</div><div id="modelTypes" class="model-type-options"><label class="multi-option"><input type="checkbox" data-model-type="text"> <span>文本模型</span></label><label class="multi-option"><input type="checkbox" data-model-type="multimodal-understanding"> <span>多模态理解</span></label><label class="multi-option"><input type="checkbox" data-model-type="image-generation"> <span>图片生成</span></label><label class="multi-option"><input type="checkbox" data-model-type="video-generation"> <span>视频生成</span></label><label class="multi-option"><input type="checkbox" data-model-type="speech-to-text"> <span>语音识别</span></label><label class="multi-option"><input type="checkbox" data-model-type="text-to-speech"> <span>语音合成</span></label><label class="multi-option"><input type="checkbox" data-model-type="audio-understanding"> <span>音频理解</span></label><label class="multi-option"><input type="checkbox" data-model-type="embedding"> <span>向量模型</span></label><label class="multi-option"><input type="checkbox" data-model-type="rerank"> <span>重排序模型</span></label><label class="multi-option"><input type="checkbox" data-model-type="ocr-document"> <span>OCR/文档解析</span></label></div></div><label>官方价格来源 URL<input id="priceSourceUrl" placeholder="官网 pricing 页面 URL"></label><div class="formula"><b>积分计算公式：</b>积分=max(最低扣费积分, 固定积分/次 + ((输入token×输入价格 + 输出token×输出价格 + 缓存写入token×缓存写入价格 + 缓存读取token×缓存读取价格) / 1000000) × 积分换算比例)</div><div class="row"><button id="saveModelBtn">保存模型</button><button class="secondary" id="cancelModelBtn">取消编辑</button></div><table><thead><tr><th>模型 ID</th><th>名称</th><th>Base URL / 价格</th><th>Key</th><th>操作</th></tr></thead><tbody id="modelRows"></tbody></table></section>
 <section id="mcp"><div class="grid"><label>MCP ID<input id="mcpId" placeholder="qdrant-search"></label><label>名称<input id="mcpName"></label><label>类型<select id="mcpTransport"><option value="sse">SSE</option><option value="streamable-http">Streamable HTTP</option><option value="http">HTTP</option><option value="stdio">stdio</option></select></label><label>说明<input id="mcpDesc"></label></div><div class="grid" style="margin-top:12px"><label>服务 URL<input id="mcpUrl" placeholder="https://mcp.example.com/sse 或 /mcp"></label><label>Headers(JSON)<textarea id="mcpHeaders" placeholder='{"Authorization":"Bearer xxx"}'></textarea></label><label>命令(stdio)<input id="mcpCommand" placeholder="npx"></label><label>参数/环境变量<textarea id="mcpArgs" placeholder="参数每行一个；环境变量可后续补"></textarea></label></div><div class="row" style="margin-top:12px"><button id="saveMcpBtn">保存 MCP</button><button class="secondary" id="cancelMcpBtn">取消编辑</button></div><table><thead><tr><th>ID</th><th>名称</th><th>类型</th><th>连接</th><th>操作</th></tr></thead><tbody id="mcpRows"></tbody></table></section>
 <section id="skills"><div class="grid"><label>技能 ID<input id="skillId" placeholder="sales-report"></label><label>名称<input id="skillName"></label><label>版本<input id="skillVersion" value="1.0.0"></label><label>说明<input id="skillDesc"></label></div><div class="grid" style="margin-top:12px"><label>技能压缩包(.zip)<input id="skillZip" type="file" accept=".zip,application/zip"></label><div><p class="hint">上传后服务端保存 zip，客户端按员工权限下载。</p><button id="uploadSkillBtn">上传/保存技能包</button><button class="secondary" id="cancelSkillBtn">取消编辑</button></div></div><table><thead><tr><th>ID</th><th>名称</th><th>版本</th><th>包</th><th>操作</th></tr></thead><tbody id="skillRows"></tbody></table></section>
+<section id="asr"><div class="formula"><b>全局语音输入：</b>语音能力不按员工单独授权。所有已激活员工都可使用；API Key 只保存在服务端，客户端只拿临时代理地址。</div><div class="grid"><label>显示名称<input id="asrName" placeholder="阿里云实时语音识别"></label><label>Workspace ID<input id="asrWorkspaceId" placeholder="llm-xxxx"></label><label>地域<input id="asrRegion" placeholder="cn-beijing"></label><label>模型<input id="asrModel" placeholder="fun-asr-realtime"></label></div><div class="grid" style="margin-top:12px"><label>API Host<input id="asrApiHost" placeholder="llm-xxx.cn-beijing.maas.aliyuncs.com"></label><label>WebSocket URL<input id="asrWebsocketUrl" placeholder="留空则按 Workspace 自动生成"></label><label>API Key<input id="asrApiKey" type="password" placeholder="sk-..."></label><label>音频格式<select id="asrFormat"><option value="wav">wav</option><option value="pcm">pcm</option></select></label></div><div class="grid" style="margin-top:12px"><label>采样率<input id="asrSampleRate" type="number" value="16000"></label><label>分片间隔(ms)<input id="asrChunkIntervalMillis" type="number" value="200"></label><label>单次最长录音(s)<input id="asrMaxSessionSeconds" type="number" value="60"></label><label>价格备注<input id="asrPriceNote" placeholder="如按秒/分钟计费"></label></div><div id="asrStatus" class="formula"></div><div class="row"><button id="saveAsrBtn">保存语音配置</button><button class="secondary" id="cancelAsrBtn">重置表单</button></div></section>
 <section id="usage"><div class="formula"><b>用量扣费说明：</b>客户端上报模型调用后，服务端按模型价格计算积分，并按天汇总展示。</div><div class="grid grid-5"><label>员工筛选<select id="usageEmployeeFilter"><option value="">全部员工</option></select></label><label>模型筛选<select id="usageModelFilter"><option value="">全部模型</option></select></label><div class="card"><div class="hint">调用次数</div><div class="num" id="usageCalls">0</div></div><div class="card"><div class="hint">消耗积分</div><div class="num" id="usageCredits">0</div></div><div class="card"><div class="hint">折算金额</div><div class="num" id="usageMoney">-</div></div></div><table><thead><tr><th>时间（天）</th><th>员工</th><th>模型</th><th>使用 token</th><th>积分</th><th>折算金额</th></tr></thead><tbody id="usageRows"></tbody></table></section>
 <section id="backup"><div class="formula"><b>数据位置：</b>当前企业数据固定保存在 data/enterprise-data.json；备份保存在 data/backups，更新 server.mjs 不会覆盖这里。</div><div class="row"><button id="createBackupBtn">创建备份</button><button class="secondary" id="exportDataBtn">导出当前数据</button></div><table><thead><tr><th>备份文件</th><th>大小</th><th>时间</th><th>操作</th></tr></thead><tbody id="backupRows"></tbody></table></section>
 <section id="release"><div class="formula"><b>自动更新源：</b>把安装包上传到 <code>/opt/LfClaw/releases</code>，文件名带日期流水号即可自动识别，无需手动填写下载地址。示例：<code>LfClaw-Setup-2026071501-win-x64-official.exe</code>、<code>LfClaw-2026071501-mac-arm64-official.dmg</code>。更新日志可放 <code>changelog-2026071501.zh.txt</code>，一行一条。</div><div id="releaseSummary" class="formula"></div><input id="releaseVersion" type="hidden"><input id="releaseDate" type="hidden"><input id="releaseWinUrl" type="hidden"><input id="releaseMacArmUrl" type="hidden"><input id="releaseMacIntelUrl" type="hidden"><input id="releaseManualUrl" type="hidden"><textarea id="releaseNotesZh" style="display:none"></textarea><textarea id="releaseNotesEn" style="display:none"></textarea><div class="row" style="margin-top:12px"><button class="secondary" id="testReleaseBtn">查看自动生成的更新 JSON</button><button id="saveReleaseBtn" style="display:none">保存更新信息</button></div></section>
 </main><script>
-var state={modelProviders:[],mcpServers:[],skills:[],employees:[],usageEvents:[],backups:[],release:{}};var editingEmployee='';var $=function(id){return document.getElementById(id);};var esc=function(v){return String(v==null?'':v).replace(/[&<>"']/g,function(s){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s];});};var headers=function(json){localStorage.setItem('lfclaw_admin_token',$('token').value);var h={authorization:'Bearer '+$('token').value};if(json!==false)h['content-type']='application/json';return h;};var api=async function(path,opt){opt=opt||{};var res=await fetch(path,Object.assign({},opt,{headers:Object.assign({},headers(),opt.headers||{})}));var text=await res.text();var body=text?JSON.parse(text):{};if(!res.ok||body.code!==0)throw new Error(body.message||'请求失败');return body.data;};var run=async function(fn){try{await fn();}catch(e){alert(e.message||String(e));}};var multiItems={employeeModels:[],employeeMcps:[],employeeSkills:[]};var multiValues={employeeModels:[],employeeMcps:[],employeeSkills:[]};var selected=function(id){return multiValues[id]||[];};var setSelected=function(id,values){multiValues[id]=Array.from(new Set(values||[]));renderMultiSelect(id);};var set=function(id,v){$(id).value=v==null?'':v;};
+var state={modelProviders:[],mcpServers:[],skills:[],employees:[],usageEvents:[],backups:[],release:{},asr:{}};var editingEmployee='';var $=function(id){return document.getElementById(id);};var esc=function(v){return String(v==null?'':v).replace(/[&<>"']/g,function(s){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s];});};var headers=function(json){localStorage.setItem('lfclaw_admin_token',$('token').value);var h={authorization:'Bearer '+$('token').value};if(json!==false)h['content-type']='application/json';return h;};var api=async function(path,opt){opt=opt||{};var res=await fetch(path,Object.assign({},opt,{headers:Object.assign({},headers(),opt.headers||{})}));var text=await res.text();var body=text?JSON.parse(text):{};if(!res.ok||body.code!==0)throw new Error(body.message||'请求失败');return body.data;};var run=async function(fn){try{await fn();}catch(e){alert(e.message||String(e));}};var multiItems={employeeModels:[],employeeMcps:[],employeeSkills:[]};var multiValues={employeeModels:[],employeeMcps:[],employeeSkills:[]};var selected=function(id){return multiValues[id]||[];};var setSelected=function(id,values){multiValues[id]=Array.from(new Set(values||[]));renderMultiSelect(id);};var set=function(id,v){$(id).value=v==null?'':v;};
 function showTab(tab){document.querySelectorAll('section').forEach(function(s){s.classList.toggle('active',s.id===tab);});document.querySelectorAll('nav button').forEach(function(b){b.classList.toggle('active-tab',b.dataset.tab===tab);});}
 function renderMultiSelect(id){var items=multiItems[id]||[];var values=new Set(multiValues[id]||[]);var selectedItems=items.filter(function(x){return values.has(x.id);});var title=selectedItems.length?selectedItems.map(function(x){return x.name||x.id;}).join(', '):'未选择';$(id).innerHTML='<button type="button" class="multi-trigger" data-multi-toggle="'+id+'">'+esc(title)+'</button><div class="multi-options">'+(items.length?items.map(function(x){return '<label class="multi-option"><input type="checkbox" data-multi-id="'+id+'" data-multi-value="'+esc(x.id)+'" '+(values.has(x.id)?'checked':'')+'> <span>'+esc(x.name||x.id)+' ('+esc(x.id)+')</span></label>';}).join(''):'<div class="multi-empty">暂无可选项</div>')+'</div>';}function fillSelect(id,items){multiItems[id]=(items||[]).filter(function(x){return x.enabled!==false;});multiValues[id]=(multiValues[id]||[]).filter(function(value){return multiItems[id].some(function(item){return item.id===value;});});renderMultiSelect(id);}
 async function loadAll(){state=await api('/api/admin/state');state.modelProviders=state.modelProviders||state.models||[];renderAll();}
-function renderAll(){fillSelect('employeeModels',state.modelProviders);fillSelect('employeeMcps',state.mcpServers);fillSelect('employeeSkills',state.skills);renderOverview();renderEmployees();renderModels();renderMcp();renderSkills();renderUsageFilters();renderUsage();renderBackups();renderRelease();}
+function renderAll(){fillSelect('employeeModels',state.modelProviders);fillSelect('employeeMcps',state.mcpServers);fillSelect('employeeSkills',state.skills);renderOverview();renderEmployees();renderModels();renderMcp();renderSkills();renderAsr();renderUsageFilters();renderUsage();renderBackups();renderRelease();}
 function authText(v){return (v&&v.length)?v.join(', '):'未授权';}
 function renderOverview(){$('statEmployees').textContent=state.employees.length;$('statModels').textContent=state.modelProviders.length;$('statCalls').textContent=state.usageEvents.length;$('statCredits').textContent=state.usageEvents.reduce(function(s,e){return s+Number(e.credits||0);},0).toFixed(2);$('overviewRows').innerHTML=state.employees.map(function(e){return '<tr><td>'+esc(e.employeeName)+'<br><code>'+esc(e.employeeId)+'</code></td><td>'+esc(e.creditsUsed||0)+'/'+esc(e.creditsLimit||0)+'</td><td>模型: '+esc(authText(e.allowedModelProviderIds))+'<br>MCP: '+esc(authText(e.allowedMcpServerIds))+'<br>技能: '+esc(authText(e.allowedSkillIds))+'</td><td>'+esc(e.lastUsedAt||'-')+'</td></tr>';}).join('');}
 function renderEmployees(){$('employeeRows').innerHTML=state.employees.map(function(e){return '<tr><td>'+esc(e.status)+'</td><td><code>'+esc(e.activationCode)+'</code></td><td>'+esc(e.employeeName)+'<br><code>'+esc(e.employeeId)+'</code></td><td>'+esc(Math.max(0,(e.creditsLimit||0)-(e.creditsUsed||0)))+'/'+esc(e.creditsLimit||0)+'<br><button class="secondary" data-act="credits" data-code="'+esc(e.activationCode)+'">改积分</button></td><td>模型: '+esc(authText(e.allowedModelProviderIds))+'<br>MCP: '+esc(authText(e.allowedMcpServerIds))+'<br>技能: '+esc(authText(e.allowedSkillIds))+'</td><td><code>'+esc(e.deviceToken||'-')+'</code><br>'+esc(e.lastUsedAt||'-')+'</td><td><div class="row"><button class="secondary" data-act="editEmployee" data-code="'+esc(e.activationCode)+'">编辑</button><button class="secondary" data-act="copy" data-code="'+esc(e.activationCode)+'">复制</button><button class="secondary" data-act="toggle" data-code="'+esc(e.activationCode)+'" data-status="'+esc(e.status)+'">'+(e.status==='active'?'禁用':'启用')+'</button><button class="danger" data-act="deleteEmployee" data-code="'+esc(e.activationCode)+'">删除</button></div></td></tr>';}).join('');}
 function renderModels(){$('modelRows').innerHTML=state.modelProviders.map(function(x){var m=(x.models||[])[0]||{};var b=x.billing||{};return '<tr><td><code>'+esc(m.id||x.id)+'</code></td><td>'+esc(m.name||x.name)+'</td><td>'+esc(x.baseUrl)+'<br><span class="hint">'+esc(b.currency||'')+' 输入 '+esc(b.inputPricePerMillionTokens||0)+'/M，输出 '+esc(b.outputPricePerMillionTokens||0)+'/M</span></td><td>'+esc(x.apiKey?'********':'-')+'</td><td><div class="row"><button class="secondary" data-act="editModel" data-id="'+esc(x.id)+'">编辑</button><button class="danger" data-act="delete" data-path="/api/admin/model-providers" data-id="'+esc(x.id)+'">删除</button></div></td></tr>';}).join('');}
 function renderMcp(){$('mcpRows').innerHTML=state.mcpServers.map(function(x){var link=x.transportType==='stdio'?(x.command+' '+(x.args||[]).join(' ')):x.url;return '<tr><td><code>'+esc(x.id)+'</code></td><td>'+esc(x.name)+'</td><td>'+esc(x.transportType)+'</td><td>'+esc(link)+'</td><td><div class="row"><button class="secondary" data-act="editMcp" data-id="'+esc(x.id)+'">编辑</button><button class="danger" data-act="delete" data-path="/api/admin/mcp" data-id="'+esc(x.id)+'">删除</button></div></td></tr>';}).join('');}
 function renderSkills(){$('skillRows').innerHTML=state.skills.map(function(x){return '<tr><td><code>'+esc(x.id)+'</code></td><td>'+esc(x.name)+'</td><td>'+esc(x.version||'-')+'</td><td>'+esc(x.packageFileName||'-')+'</td><td><div class="row"><button class="secondary" data-act="editSkill" data-id="'+esc(x.id)+'">编辑</button><button class="danger" data-act="delete" data-path="/api/admin/skills" data-id="'+esc(x.id)+'">删除</button></div></td></tr>';}).join('');}
+function renderAsr(){var x=state.asr||{};set('asrName',x.name||'阿里云实时语音识别');set('asrWorkspaceId',x.workspaceId||'');set('asrRegion',x.region||'cn-beijing');set('asrApiHost',x.apiHost||'');set('asrWebsocketUrl',x.websocketUrl||'');set('asrApiKey','');$('asrApiKey').placeholder=x.apiKey?'已保存，留空则不修改':'sk-...';set('asrModel',x.model||'fun-asr-realtime');set('asrFormat',x.format||'wav');set('asrSampleRate',x.sampleRate||16000);set('asrChunkIntervalMillis',x.chunkIntervalMillis||200);set('asrMaxSessionSeconds',x.maxSessionSeconds||60);set('asrPriceNote',x.priceNote||'');$('asrStatus').innerHTML=x.configured?'<b>当前状态：</b>已配置，客户端企业激活后即可使用语音输入。':'<b>当前状态：</b>未配置，请填写 API Key，并填写 Workspace ID / API Host / WebSocket URL 之一。';}
+function asrPayload(){return{name:$('asrName').value,workspaceId:$('asrWorkspaceId').value,region:$('asrRegion').value,apiHost:$('asrApiHost').value,websocketUrl:$('asrWebsocketUrl').value,apiKey:$('asrApiKey').value,model:$('asrModel').value,format:$('asrFormat').value,sampleRate:Number($('asrSampleRate').value),chunkIntervalMillis:Number($('asrChunkIntervalMillis').value),maxSessionSeconds:Number($('asrMaxSessionSeconds').value),priceNote:$('asrPriceNote').value};}
 function selectedModelTypes(){return Array.from(document.querySelectorAll('[data-model-type]:checked')).map(function(o){return o.getAttribute('data-model-type');}).filter(Boolean);}
 function modelTypesSupportImage(types){return types.indexOf('multimodal-understanding')>=0||types.indexOf('ocr-document')>=0;}
 function modelPayload(){var mid=$('modelId').value.trim();var modelTypes=selectedModelTypes();return{id:mid,modelId:mid,name:$('modelName').value||mid,modelName:$('modelName').value||mid,baseUrl:$('modelBaseUrl').value,apiKey:$('modelApiKey').value,apiFormat:'openai',supportsImage:modelTypesSupportImage(modelTypes),modelTypes:modelTypes,currency:$('billingCurrency').value,inputPricePerMillionTokens:Number($('inputPricePerMillionTokens').value),outputPricePerMillionTokens:Number($('outputPricePerMillionTokens').value),cacheWritePricePerMillionTokens:Number($('cacheWritePricePerMillionTokens').value),cacheReadPricePerMillionTokens:Number($('cacheReadPricePerMillionTokens').value),creditsPerCurrencyUnit:Number($('creditsPerCurrencyUnit').value),fixedCreditsPerCall:Number($('fixedCreditsPerCall').value),minimumCreditsPerCall:Number($('minimumCreditsPerCall').value),contextWindow:Number($('modelContextWindow').value),imagePriceNote:$('imagePriceNote').value,audioPriceNote:$('audioPriceNote').value,videoPriceNote:$('videoPriceNote').value,priceSourceUrl:$('priceSourceUrl').value};}
@@ -565,7 +663,7 @@ function renderUsage(){var eid=$('usageEmployeeFilter').value;var mid=$('usageMo
 function downloadAdmin(path,name){return run(async function(){var res=await fetch(path,{headers:headers(false)});if(!res.ok)throw new Error('下载失败');var blob=await res.blob();var url=URL.createObjectURL(blob);var a=document.createElement('a');a.href=url;a.download=name||'';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);});}
 function renderBackups(){if(!$('backupRows'))return;var backups=state.backups||[];$('backupRows').innerHTML=backups.map(function(b){return '<tr><td><code>'+esc(b.name)+'</code></td><td>'+Math.ceil(Number(b.size||0)/1024)+' KB</td><td>'+esc(b.createdAt||'-')+'</td><td><button class="secondary" data-act="downloadBackup" data-name="'+esc(b.name)+'">下载</button></td></tr>';}).join('')||'<tr><td colspan="4" class="hint">暂无备份</td></tr>';}
 async function renderRelease(){if(!$('releaseVersion'))return;var r=state.release||{};set('releaseVersion',r.version||'');set('releaseDate',r.date||'');set('releaseWinUrl',r.windowsX64Url||'');set('releaseMacArmUrl',r.macArmUrl||'');set('releaseMacIntelUrl',r.macIntelUrl||'');set('releaseManualUrl',r.manualUrl||'');set('releaseNotesZh',r.notesZh||'');set('releaseNotesEn',r.notesEn||'');if($('releaseSummary')){try{var res=await fetch('/api/enterprise/update');var body=await res.json();var v=(body.data||{}).value||{};$('releaseSummary').innerHTML='<b>当前自动生成：</b><br>版本：<code>'+esc(v.version||'未检测到安装包')+'</code><br>发布日期：'+esc(v.date||'-')+'<br>Windows：'+esc((v.windowsX64||{}).url||'-')+'<br>macOS Apple Silicon：'+esc((v.macArm||{}).url||'-')+'<br>macOS Intel：'+esc((v.macIntel||{}).url||'-')+'<br>更新日志：'+esc((((v.changeLog||{}).ch||{}).content||[]).join('；')||'-');}catch(e){$('releaseSummary').textContent='暂时无法读取更新 JSON：'+(e.message||e);}}}
-document.querySelector('nav').onclick=function(e){if(e.target.dataset.tab)showTab(e.target.dataset.tab);};$('refreshBtn').onclick=function(){run(loadAll);};$('token').value=localStorage.getItem('lfclaw_admin_token')||'lfclaw-admin';$('employeeName').oninput=function(){run(async function(){var d=await api('/api/admin/pinyin?name='+encodeURIComponent($('employeeName').value));$('employeePreview').textContent=d.employeeId+' / '+d.activationPrefix;if(!$('employeeId').value)$('employeeId').placeholder=d.employeeId;});};$('addEmployeeBtn').onclick=function(){run(async function(){await api('/api/admin/employees',{method:'POST',body:JSON.stringify({employeeName:$('employeeName').value,employeeId:$('employeeId').value,creditsLimit:Number($('creditsLimit').value),notes:$('notes').value,allowedModelProviderIds:selected('employeeModels'),allowedMcpServerIds:selected('employeeMcps'),allowedSkillIds:selected('employeeSkills')})});clearEmployee();await loadAll();});};$('saveEmployeeBtn').onclick=function(){run(async function(){await api('/api/admin/employees/'+encodeURIComponent(editingEmployee),{method:'PATCH',body:JSON.stringify({employeeName:$('employeeName').value,employeeId:$('employeeId').value,creditsLimit:Number($('creditsLimit').value),notes:$('notes').value,allowedModelProviderIds:selected('employeeModels'),allowedMcpServerIds:selected('employeeMcps'),allowedSkillIds:selected('employeeSkills')})});clearEmployee();await loadAll();});};$('cancelEmployeeBtn').onclick=clearEmployee;$('saveModelBtn').onclick=function(){run(async function(){await api('/api/admin/model-providers',{method:'POST',body:JSON.stringify(modelPayload())});clearModel();await loadAll();});};$('cancelModelBtn').onclick=clearModel;$('saveMcpBtn').onclick=function(){run(async function(){await api('/api/admin/mcp',{method:'POST',body:JSON.stringify({id:$('mcpId').value.trim(),name:$('mcpName').value,description:$('mcpDesc').value,transportType:$('mcpTransport').value,url:$('mcpUrl').value,headers:$('mcpHeaders').value,command:$('mcpCommand').value,args:$('mcpArgs').value.split(/\r?\n|,/).map(function(x){return x.trim();}).filter(Boolean)} )});clearMcp();await loadAll();});};$('cancelMcpBtn').onclick=clearMcp;$('uploadSkillBtn').onclick=function(){run(async function(){var fd=new FormData();fd.set('id',$('skillId').value.trim());fd.set('name',$('skillName').value);fd.set('version',$('skillVersion').value);fd.set('description',$('skillDesc').value);if($('skillZip').files[0])fd.set('package',$('skillZip').files[0]);var res=await fetch('/api/admin/skills/upload',{method:'POST',headers:headers(false),body:fd});var text=await res.text();var body=text?JSON.parse(text):{};if(!res.ok||body.code!==0)throw new Error(body.message||'上传失败');clearSkill();await loadAll();});};$('cancelSkillBtn').onclick=clearSkill;$('usageEmployeeFilter').onchange=renderUsage;$('usageModelFilter').onchange=renderUsage;$('createBackupBtn').onclick=function(){run(async function(){await api('/api/admin/backups',{method:'POST',body:'{}'});await loadAll();alert('备份已创建');});};$('exportDataBtn').onclick=function(){downloadAdmin('/api/admin/export','enterprise-data.json');};$('saveReleaseBtn').onclick=function(){run(async function(){await api('/api/admin/release',{method:'POST',body:JSON.stringify({version:$('releaseVersion').value,date:$('releaseDate').value,windowsX64Url:$('releaseWinUrl').value,macArmUrl:$('releaseMacArmUrl').value,macIntelUrl:$('releaseMacIntelUrl').value,manualUrl:$('releaseManualUrl').value,notesZh:$('releaseNotesZh').value,notesEn:$('releaseNotesEn').value})});await loadAll();alert('更新信息已保存');});};$('testReleaseBtn').onclick=function(){window.open('/api/enterprise/update','_blank');};
+document.querySelector('nav').onclick=function(e){if(e.target.dataset.tab)showTab(e.target.dataset.tab);};$('refreshBtn').onclick=function(){run(loadAll);};$('token').value=localStorage.getItem('lfclaw_admin_token')||'lfclaw-admin';$('employeeName').oninput=function(){run(async function(){var d=await api('/api/admin/pinyin?name='+encodeURIComponent($('employeeName').value));$('employeePreview').textContent=d.employeeId+' / '+d.activationPrefix;if(!$('employeeId').value)$('employeeId').placeholder=d.employeeId;});};$('addEmployeeBtn').onclick=function(){run(async function(){await api('/api/admin/employees',{method:'POST',body:JSON.stringify({employeeName:$('employeeName').value,employeeId:$('employeeId').value,creditsLimit:Number($('creditsLimit').value),notes:$('notes').value,allowedModelProviderIds:selected('employeeModels'),allowedMcpServerIds:selected('employeeMcps'),allowedSkillIds:selected('employeeSkills')})});clearEmployee();await loadAll();});};$('saveEmployeeBtn').onclick=function(){run(async function(){await api('/api/admin/employees/'+encodeURIComponent(editingEmployee),{method:'PATCH',body:JSON.stringify({employeeName:$('employeeName').value,employeeId:$('employeeId').value,creditsLimit:Number($('creditsLimit').value),notes:$('notes').value,allowedModelProviderIds:selected('employeeModels'),allowedMcpServerIds:selected('employeeMcps'),allowedSkillIds:selected('employeeSkills')})});clearEmployee();await loadAll();});};$('cancelEmployeeBtn').onclick=clearEmployee;$('saveModelBtn').onclick=function(){run(async function(){await api('/api/admin/model-providers',{method:'POST',body:JSON.stringify(modelPayload())});clearModel();await loadAll();});};$('cancelModelBtn').onclick=clearModel;$('saveMcpBtn').onclick=function(){run(async function(){await api('/api/admin/mcp',{method:'POST',body:JSON.stringify({id:$('mcpId').value.trim(),name:$('mcpName').value,description:$('mcpDesc').value,transportType:$('mcpTransport').value,url:$('mcpUrl').value,headers:$('mcpHeaders').value,command:$('mcpCommand').value,args:$('mcpArgs').value.split(/\r?\n|,/).map(function(x){return x.trim();}).filter(Boolean)} )});clearMcp();await loadAll();});};$('cancelMcpBtn').onclick=clearMcp;$('uploadSkillBtn').onclick=function(){run(async function(){var fd=new FormData();fd.set('id',$('skillId').value.trim());fd.set('name',$('skillName').value);fd.set('version',$('skillVersion').value);fd.set('description',$('skillDesc').value);if($('skillZip').files[0])fd.set('package',$('skillZip').files[0]);var res=await fetch('/api/admin/skills/upload',{method:'POST',headers:headers(false),body:fd});var text=await res.text();var body=text?JSON.parse(text):{};if(!res.ok||body.code!==0)throw new Error(body.message||'上传失败');clearSkill();await loadAll();});};$('cancelSkillBtn').onclick=clearSkill;$('saveAsrBtn').onclick=function(){run(async function(){await api('/api/admin/asr',{method:'POST',body:JSON.stringify(asrPayload())});await loadAll();alert('语音识别配置已保存');});};$('cancelAsrBtn').onclick=renderAsr;$('usageEmployeeFilter').onchange=renderUsage;$('usageModelFilter').onchange=renderUsage;$('createBackupBtn').onclick=function(){run(async function(){await api('/api/admin/backups',{method:'POST',body:'{}'});await loadAll();alert('备份已创建');});};$('exportDataBtn').onclick=function(){downloadAdmin('/api/admin/export','enterprise-data.json');};$('saveReleaseBtn').onclick=function(){run(async function(){await api('/api/admin/release',{method:'POST',body:JSON.stringify({version:$('releaseVersion').value,date:$('releaseDate').value,windowsX64Url:$('releaseWinUrl').value,macArmUrl:$('releaseMacArmUrl').value,macIntelUrl:$('releaseMacIntelUrl').value,manualUrl:$('releaseManualUrl').value,notesZh:$('releaseNotesZh').value,notesEn:$('releaseNotesEn').value})});await loadAll();alert('更新信息已保存');});};$('testReleaseBtn').onclick=function(){window.open('/api/enterprise/update','_blank');};
 document.body.onchange=function(e){var t=e.target;if(!t.dataset.multiId)return;var id=t.dataset.multiId;var value=t.dataset.multiValue;var set=new Set(multiValues[id]||[]);if(t.checked)set.add(value);else set.delete(value);multiValues[id]=Array.from(set);renderMultiSelect(id);$(id).classList.add('open');};
 document.body.onclick=function(e){var t=e.target;if(t.dataset.multiToggle){$(t.dataset.multiToggle).classList.toggle('open');return;}var a=t.dataset.act;if(!a)return;run(async function(){if(a==='editEmployee')editEmployee(t.dataset.code);if(a==='copy')await copyCode(t.dataset.code);if(a==='toggle'){await api('/api/admin/employees/'+encodeURIComponent(t.dataset.code),{method:'PATCH',body:JSON.stringify({status:t.dataset.status==='active'?'disabled':'active'})});await loadAll();}if(a==='credits'){var v=prompt('新积分额度');if(v!==null){await api('/api/admin/employees/'+encodeURIComponent(t.dataset.code),{method:'PATCH',body:JSON.stringify({creditsLimit:Number(v)})});await loadAll();}}if(a==='deleteEmployee'){if(confirm('确定删除？')){await api('/api/admin/employees/'+encodeURIComponent(t.dataset.code),{method:'DELETE'});await loadAll();}}if(a==='editModel')editModel(t.dataset.id);if(a==='editMcp')editMcp(t.dataset.id);if(a==='editSkill')editSkill(t.dataset.id);if(a==='downloadBackup')downloadAdmin('/api/admin/backups/'+encodeURIComponent(t.dataset.name)+'/download',t.dataset.name);if(a==='delete'){if(confirm('确定删除？')){await api(t.dataset.path+'/'+encodeURIComponent(t.dataset.id),{method:'DELETE'});await loadAll();}}});};
 loadAll().catch(function(e){alert(e.message);});
@@ -657,6 +755,12 @@ const handleAdmin = async (req, res, url, data) => {
   if (!url.pathname.startsWith('/api/admin/')) return false;
   if (!requireAdmin(req, res)) return true;
   if (url.pathname === '/api/admin/state' && req.method === 'GET') return ok(res, adminState(data)), true;
+  if (url.pathname === '/api/admin/asr' && req.method === 'POST') {
+    const body = await readBody(req);
+    data.asr = normalizeAsr(body, data.asr);
+    writeData(data);
+    return ok(res, redactAsr(data.asr)), true;
+  }
   if (url.pathname === '/api/admin/export' && req.method === 'GET') {
     sendJsonDownload(res, `enterprise-data-${backupTimestamp()}.json`, data);
     return true;
@@ -811,6 +915,192 @@ const findEmployeeByToken = (data, token) => {
   return data.employees.find(employee => employee.activationCode === session.activationCode) || null;
 };
 
+const cleanupAsrProxySessions = () => {
+  const expiresBefore = Date.now() - ASR_PROXY_SESSION_TTL_MS;
+  for (const [requestId, session] of asrProxySessions) {
+    if (!session || session.createdAt < expiresBefore) asrProxySessions.delete(requestId);
+  }
+};
+
+const createDashScopeRunTask = (asr, taskId) => ({
+  header: {
+    action: 'run-task',
+    task_id: taskId,
+    streaming: 'duplex',
+  },
+  payload: {
+    task_group: 'audio',
+    task: 'asr',
+    function: 'recognition',
+    model: asr.model || 'fun-asr-realtime',
+    parameters: {
+      format: asr.format || 'wav',
+      sample_rate: toNumber(asr.sampleRate, 16000),
+    },
+    input: {},
+  },
+});
+
+const createDashScopeFinishTask = taskId => ({
+  header: {
+    action: 'finish-task',
+    task_id: taskId,
+    streaming: 'duplex',
+  },
+  payload: {
+    input: {},
+  },
+});
+
+const dashScopeTextFromMessage = message => {
+  const sentence = message?.payload?.output?.sentence;
+  if (typeof sentence?.text === 'string') return sentence.text;
+  if (typeof message?.payload?.output?.text === 'string') return message.payload.output.text;
+  if (Array.isArray(message?.payload?.output?.sentences)) {
+    return message.payload.output.sentences.map(item => item?.text || '').join('');
+  }
+  return '';
+};
+
+const handleAsrProxyWebSocket = (client, req, url) => {
+  cleanupAsrProxySessions();
+  const requestId = decodeURIComponent(url.pathname.match(/^\/api\/enterprise\/asr\/realtime\/ws\/([^/]+)$/)?.[1] || '');
+  const proxyToken = url.searchParams.get('token') || '';
+  const session = asrProxySessions.get(requestId);
+  if (!session || session.proxyToken !== proxyToken || Date.now() - session.createdAt > ASR_PROXY_SESSION_TTL_MS) {
+    sendAsrError(client, requestId, 401, 'Enterprise ASR session expired.');
+    closeWebSocket(client);
+    return;
+  }
+
+  const data = readData();
+  const employee = findEmployeeByToken(data, session.token);
+  if (!employee || employee.status !== 'active') {
+    sendAsrError(client, requestId, 403, 'Activation code is disabled.');
+    closeWebSocket(client);
+    return;
+  }
+
+  const asr = normalizeAsr(data.asr);
+  const upstreamUrl = resolveAsrWsUrl(asr);
+  if (!asr.apiKey || !upstreamUrl) {
+    sendAsrError(client, requestId, 400, 'Enterprise ASR is not configured.');
+    closeWebSocket(client);
+    return;
+  }
+
+  const taskId = randomHex(16);
+  const pendingAudio = [];
+  let upstreamStarted = false;
+  let upstreamClosed = false;
+  const upstream = new WebSocket(upstreamUrl, {
+    headers: {
+      Authorization: `bearer ${asr.apiKey}`,
+    },
+  });
+
+  const flushAudio = () => {
+    if (!upstreamStarted || upstream.readyState !== WebSocket.OPEN) return;
+    while (pendingAudio.length > 0) upstream.send(pendingAudio.shift());
+  };
+
+  const finishUpstream = () => {
+    if (upstreamClosed || upstream.readyState !== WebSocket.OPEN) return;
+    upstreamClosed = true;
+    upstream.send(JSON.stringify(createDashScopeFinishTask(taskId)));
+  };
+
+  const cleanup = () => {
+    asrProxySessions.delete(requestId);
+  };
+
+  upstream.on('open', () => {
+    upstream.send(JSON.stringify(createDashScopeRunTask(asr, taskId)));
+  });
+
+  upstream.on('message', raw => {
+    let message;
+    try {
+      message = JSON.parse(raw.toString('utf8'));
+    } catch {
+      return;
+    }
+    const event = message?.header?.event || message?.header?.action || '';
+    if (event === 'task-started') {
+      upstreamStarted = true;
+      sendAsrEvent(client, { type: 'started', requestId });
+      flushAudio();
+      return;
+    }
+    if (event === 'result-generated') {
+      const text = dashScopeTextFromMessage(message);
+      if (!text) return;
+      sendAsrEvent(client, {
+        type: 'recognition',
+        requestId,
+        text,
+        raw: {
+          action: event,
+          result: [{
+            seg_id: toNumber(message?.payload?.output?.sentence?.begin_time, Date.now()),
+            st: {
+              sentence: text,
+              partial: message?.payload?.output?.sentence?.sentence_end !== true,
+            },
+          }],
+        },
+      });
+      return;
+    }
+    if (event === 'task-finished') {
+      sendAsrEvent(client, { type: 'closed', requestId });
+      closeWebSocket(client);
+      closeWebSocket(upstream);
+      cleanup();
+      return;
+    }
+    if (event === 'task-failed') {
+      sendAsrError(client, requestId, 50201, message?.header?.error_message || 'Enterprise ASR upstream failed.');
+      closeWebSocket(client);
+      closeWebSocket(upstream);
+      cleanup();
+    }
+  });
+
+  upstream.on('error', error => {
+    console.warn('[ASR] enterprise upstream websocket failed:', error);
+    sendAsrError(client, requestId, 50201, 'Enterprise ASR upstream failed.');
+    closeWebSocket(client);
+    cleanup();
+  });
+
+  upstream.on('close', () => {
+    if (client.readyState === WebSocket.OPEN) sendAsrEvent(client, { type: 'closed', requestId });
+    cleanup();
+  });
+
+  client.on('message', (raw, isBinary) => {
+    if (!isBinary) {
+      const text = raw.toString('utf8');
+      if (text.includes('"end"') || text.includes("'end'")) {
+        finishUpstream();
+      }
+      return;
+    }
+    if (upstreamStarted && upstream.readyState === WebSocket.OPEN) {
+      upstream.send(raw);
+    } else {
+      pendingAudio.push(raw);
+    }
+  });
+
+  client.on('close', () => {
+    finishUpstream();
+    closeWebSocket(upstream);
+    cleanup();
+  });
+};
+
 const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') return json(res, 204, {});
   const url = new URL(req.url || '/', `http://${req.headers.host}`);
@@ -841,6 +1131,31 @@ const server = http.createServer(async (req, res) => {
       if (!employee) return fail(res, 401, 'Enterprise session is invalid.');
       if (employee.status !== 'active') return fail(res, 403, 'Activation code is disabled.');
       return ok(res, clientPayload(data, employee, token, req));
+    }
+    if (url.pathname === '/api/enterprise/asr/realtime/sessions' && req.method === 'POST') {
+      const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
+      const employee = findEmployeeByToken(data, token);
+      if (!employee) return fail(res, 401, 'Enterprise session is invalid.');
+      if (employee.status !== 'active') return fail(res, 403, 'Activation code is disabled.');
+      const asr = normalizeAsr(data.asr);
+      const upstreamUrl = resolveAsrWsUrl(asr);
+      if (!asr.apiKey || !upstreamUrl) return fail(res, 400, 'Enterprise ASR is not configured.');
+      const requestId = id('asr');
+      const proxyToken = randomHex(16);
+      asrProxySessions.set(requestId, { token, proxyToken, createdAt: Date.now() });
+      const origin = requestOrigin(req).replace(/\/+$/, '');
+      const wsOrigin = origin.replace(/^https:/i, 'wss:').replace(/^http:/i, 'ws:');
+      return ok(res, {
+        requestId,
+        wsUrl: `${wsOrigin}/api/enterprise/asr/realtime/ws/${encodeURIComponent(requestId)}?token=${encodeURIComponent(proxyToken)}`,
+        expiresInSeconds: Math.floor(ASR_PROXY_SESSION_TTL_MS / 1000),
+        chunkIntervalMillis: toNumber(asr.chunkIntervalMillis, 200),
+        maxSessionSeconds: toNumber(asr.maxSessionSeconds, 60),
+        maxConcurrentSessions: 1,
+        usedSecondsToday: 0,
+        remainingSecondsToday: 86400,
+        limitSecondsToday: 86400,
+      });
     }
     const skillMatch = url.pathname.match(/^\/api\/enterprise\/skills\/([^/]+)\/download$/);
     if (skillMatch && req.method === 'GET') {
@@ -894,6 +1209,22 @@ const server = http.createServer(async (req, res) => {
     fail(res, 404, 'Not found.');
   } catch (error) {
     fail(res, 500, error instanceof Error ? error.message : String(error));
+  }
+});
+
+const asrWss = new WebSocketServer({ noServer: true });
+server.on('upgrade', (req, socket, head) => {
+  try {
+    const url = new URL(req.url || '/', `http://${req.headers.host}`);
+    if (!/^\/api\/enterprise\/asr\/realtime\/ws\/[^/]+$/.test(url.pathname)) {
+      socket.destroy();
+      return;
+    }
+    asrWss.handleUpgrade(req, socket, head, client => {
+      handleAsrProxyWebSocket(client, req, url);
+    });
+  } catch {
+    socket.destroy();
   }
 });
 

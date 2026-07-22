@@ -11,6 +11,7 @@ interface VoiceInputButtonProps {
   isQuotaExhausted: boolean;
   isRecording: boolean;
   isRecognizing: boolean;
+  unavailableTitle?: string;
   onClick: () => void;
 }
 
@@ -22,13 +23,14 @@ const VoiceInputButton: React.FC<VoiceInputButtonProps> = ({
   isQuotaExhausted,
   isRecording,
   isRecognizing,
+  unavailableTitle,
   onClick,
 }) => {
   const loginRequired = !isLoggedIn;
   const unavailable = disabled;
   const buttonDisabled = !isRecording && (unavailable || isRecognizing);
   const title = !isLoggedIn
-    ? i18nService.t('voiceInputLoginRequired')
+    ? unavailableTitle || i18nService.t('voiceInputLoginRequired')
     : isRecording
       ? i18nService.t('voiceInputStopRecording')
       : isRecognizing

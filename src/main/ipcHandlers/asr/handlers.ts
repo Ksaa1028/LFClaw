@@ -40,12 +40,14 @@ export interface AsrHandlerDeps {
   getAuthTokens: () => AuthTokens | null;
   fetchWithAuth: (url: string, options?: RequestInit) => Promise<Response>;
   getServerApiBaseUrl: () => string;
+  createEnterpriseRealtimeSession?: (options?: AsrRealtimeSessionRequest) => Promise<AsrRealtimeSessionData | null>;
 }
 
 export function registerAsrIpcHandlers({
   getAuthTokens,
   fetchWithAuth,
   getServerApiBaseUrl,
+  createEnterpriseRealtimeSession,
 }: AsrHandlerDeps): void {
   ipcMain.handle(
     AsrIpcChannel.CreateRealtimeSession,
@@ -53,7 +55,12 @@ export function registerAsrIpcHandlers({
       try {
         const tokens = getAuthTokens();
         if (!tokens) {
-          console.warn('[ASR] realtime session request was rejected because no auth tokens are available');
+          const enterpriseSession = await createEnterpriseRealtimeSession?.(options);
+          if (enterpriseSession) {
+            console.log(`[ASR] enterprise realtime session request succeeded; requestId=${enterpriseSession.requestId}, wsEndpoint=${getSafeWebSocketEndpoint(enterpriseSession.wsUrl)}, maxSessionSeconds=${enterpriseSession.maxSessionSeconds}`);
+            return { success: true, data: enterpriseSession };
+          }
+          console.warn('[ASR] realtime session request was rejected because no auth tokens or enterprise ASR session are available');
           return { success: false, code: AsrApiCode.Unauthorized, error: 'Unauthorized' };
         }
 

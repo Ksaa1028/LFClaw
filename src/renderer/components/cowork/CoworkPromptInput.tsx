@@ -527,6 +527,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const [modelAccessPrompt, setModelAccessPrompt] = useState<ModelAccessPromptKind | null>(null);
     const [showVoiceLoginPrompt, setShowVoiceLoginPrompt] = useState(false);
     const [showVoiceQuotaPrompt, setShowVoiceQuotaPrompt] = useState(false);
+    const [enterpriseVoiceReady, setEnterpriseVoiceReady] = useState(false);
     const [isLargeToolbarCompact, setIsLargeToolbarCompact] = useState(false);
 
     const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -722,12 +723,13 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     textareaRef,
     minHeight,
     maxHeight,
-    isLoggedIn,
+    isLoggedIn: isLoggedIn || enterpriseVoiceReady,
     disabled,
     onQuotaExhausted: () => setShowVoiceQuotaPrompt(true),
   });
 
   const isAsrSubscribed = authQuota?.subscriptionStatus === AuthSubscriptionStatus.Active;
+  const canUseVoiceInput = isLoggedIn || enterpriseVoiceReady;
   const isAsrQuotaExhaustedToday = asrQuota.status === AsrQuotaStatus.Exhausted
     && asrQuota.dayKey === getLocalAsrQuotaDayKey();
   const voiceInputLocksEditing = isVoiceRecording || isVoiceRecognizing;
@@ -818,12 +820,32 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   }, [dispatch]);
 
   useEffect(() => {
-    if (!isLoggedIn) {
+    if (!canUseVoiceInput) {
       dispatch(resetAsrQuota());
       return;
     }
     ensureFreshAsrQuota();
-  }, [dispatch, ensureFreshAsrQuota, isLoggedIn]);
+  }, [canUseVoiceInput, dispatch, ensureFreshAsrQuota]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refreshEnterpriseVoiceStatus = async () => {
+      try {
+        const result = await window.electron.enterprise.getStatus();
+        if (!cancelled) {
+          setEnterpriseVoiceReady(Boolean(result.success && result.status?.access));
+        }
+      } catch {
+        if (!cancelled) setEnterpriseVoiceReady(false);
+      }
+    };
+    void refreshEnterpriseVoiceStatus();
+    const interval = window.setInterval(refreshEnterpriseVoiceStatus, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, []);
 
   const handleVoiceInputClick = useCallback(() => {
     if (isVoiceRecording) {
@@ -839,9 +861,9 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       });
       return;
     }
-    if (!isLoggedIn) {
+    if (!canUseVoiceInput) {
       reportPromptControl('voice_record_blocked', {
-        blockedReason: 'login_required',
+        blockedReason: 'voice_unavailable',
       });
       setShowVoiceLoginPrompt(true);
       return;
@@ -868,8 +890,8 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     disabled,
     dispatch,
     handleVoiceInput,
+    canUseVoiceInput,
     isAsrSubscribed,
-    isLoggedIn,
     isVoiceRecording,
     recordingElapsedSeconds,
     reportPromptControl,
@@ -2872,7 +2894,8 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     <VoiceInputButton
       buttonClassName={buttonClassName}
       iconClassName={iconClassName}
-      isLoggedIn={isLoggedIn}
+      isLoggedIn={canUseVoiceInput}
+      unavailableTitle={i18nService.t('voiceInputEnterpriseRequired')}
       disabled={disabled}
       isQuotaExhausted={isAsrQuotaExhaustedToday}
       isRecording={isVoiceRecording}
@@ -3792,8 +3815,8 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       {showVoiceLoginPrompt && (
         <ModelAccessPromptModal
           promptKind={ModelAccessPromptKind.Login}
-          titleKey="voiceInputLoginTitle"
-          descriptionKey="voiceInputLoginDesc"
+          titleKey="voiceInputEnterpriseRequiredTitle"
+          descriptionKey="voiceInputEnterpriseRequiredDesc"
           showLearnMore={false}
           onClose={() => setShowVoiceLoginPrompt(false)}
         />

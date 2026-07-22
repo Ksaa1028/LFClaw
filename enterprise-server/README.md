@@ -51,6 +51,13 @@ https://git.code.tencent.com/tongkai/LfClaw.git
 
 ## 3. 启动服务
 
+企业服务现在依赖 `ws` 做语音识别 WebSocket 代理。首次部署或更新到包含语音识别能力的版本后，需要在企业服务目录安装依赖：
+
+```bash
+cd /opt/LfClaw/enterprise-server
+npm install --omit=dev
+```
+
 本地调试：
 
 ```bash
@@ -139,6 +146,35 @@ tail -f /opt/LfClaw/server.log
 9. 在“版本更新”里维护客户端最新版本、下载地址和更新日志。
 
 ## 6. 技能包闭环
+
+## 6.1 语音识别配置
+
+语音输入是企业全局能力，不按员工单独授权。所有已激活员工都可以使用，客户端只拿临时代理地址，阿里云 API Key 只保存在企业服务端。
+
+阿里云百炼实时语音识别推荐配置：
+
+```text
+显示名称：阿里云实时语音识别
+Workspace ID：填写百炼业务空间 ID，例如 llm-xxxx
+地域：cn-beijing
+模型：fun-asr-realtime
+API Host：填写百炼业务空间域名，例如 llm-xxxx.cn-beijing.maas.aliyuncs.com
+WebSocket URL：留空，服务端会自动按 Workspace ID 和地域生成
+API Key：填写百炼 API Key
+音频格式：pcm
+采样率：16000
+分片间隔(ms)：200
+单次最长录音(s)：60
+价格备注：可选
+```
+
+保存后，后台状态显示“已配置”即可。客户端完成企业激活后会自动同步语音策略；如果刚保存完配置，建议重启客户端或等待下一次策略同步后再测试麦克风。
+
+部署注意：
+
+- 如果服务器提示 `Cannot find package 'ws'` 或 `Could not read package.json`，请确认 `/opt/LfClaw/enterprise-server/package.json` 已上传，并在 `/opt/LfClaw/enterprise-server` 下执行 `npm install --omit=dev`。
+- 不要在 `/opt/LfClaw` 根目录执行 `npm install`，根目录不需要 `package.json`。
+- 更新 `server.mjs` 不会覆盖 `/opt/LfClaw/data/enterprise-data.json`，语音配置会随企业数据保存在 data 目录。
 
 技能包流程：
 
@@ -310,6 +346,7 @@ macOS 首次发版必须重点验证：
 - `POST /api/enterprise/activate`
 - `GET /api/enterprise/me`
 - `GET /api/enterprise/skills/:id/download`
+- `POST /api/enterprise/asr/realtime/sessions`
 - `POST /api/enterprise/usage`
 - `GET /api/enterprise/update`
 - `GET /api/enterprise/update-manual`
@@ -322,6 +359,7 @@ macOS 首次发版必须重点验证：
 - `POST /api/admin/backups`
 - `GET /api/admin/backups/:name/download`
 - `POST /api/admin/release`
+- `POST /api/admin/asr`
 - `GET /api/admin/pinyin`
 - `POST /api/admin/model-providers`
 - `DELETE /api/admin/model-providers/:id`

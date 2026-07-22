@@ -30,6 +30,20 @@ export interface EnterprisePolicy {
   allowedModelProviderIds?: string[];
   allowedMcpServerIds: string[];
   allowedSkillIds: string[];
+  asr?: {
+    provider: 'aliyun-dashscope';
+    name?: string;
+    workspaceId?: string;
+    region?: string;
+    apiHost?: string;
+    websocketUrl?: string;
+    model?: string;
+    format?: 'wav' | 'pcm';
+    sampleRate?: number;
+    chunkIntervalMillis?: number;
+    maxSessionSeconds?: number;
+    configured?: boolean;
+  };
   modelProviders?: Array<{
     id: string;
     name: string;
