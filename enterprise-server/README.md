@@ -176,6 +176,14 @@ API Key：填写百炼 API Key
 - 不要在 `/opt/LfClaw` 根目录执行 `npm install`，根目录不需要 `package.json`。
 - 更新 `server.mjs` 不会覆盖 `/opt/LfClaw/data/enterprise-data.json`，语音配置会随企业数据保存在 data 目录。
 
+2026-07-22 验证结论：
+
+- 语音输入走企业服务统一配置，不需要给每个员工单独授权。
+- 客户端只读取企业服务下发的临时语音会话，不在本地保存阿里云 API Key。
+- 服务端配置保存后，只要企业服务已重启并能访问阿里云实时语音识别 WebSocket，客户端无需重新打包即可生效。
+- 当前建议使用 `pcm`、`16000` 采样率、`200ms` 分片间隔，先保证链路稳定，再考虑更多格式。
+- 如果客户端提示“语音识别服务暂不可用”，先看企业服务日志，再检查 API Key、Workspace ID、地域、API Host 和 `ws` 依赖。
+
 技能包流程：
 
 ```text
