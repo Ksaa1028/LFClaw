@@ -24,8 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [arm64, x64]
-    if: ${{ inputs.arch == 'both' || inputs.arch == matrix.arch }}
+        arch: ${{ fromJSON(inputs.arch == 'both' && '["arm64","x64"]' || format('["{0}"]', inputs.arch)) }}
 
     steps:
       - name: Checkout source
