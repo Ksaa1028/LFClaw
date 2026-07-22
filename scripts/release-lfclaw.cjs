@@ -102,8 +102,10 @@ function run(label, command, args, env) {
     shell: true,
     stdio: 'inherit',
   });
-  if (result.status !== 0) {
-    throw new Error(`${label} failed with exit code ${result.status ?? 'unknown'}.`);
+  if (result.status !== 0 || result.signal) {
+    const exitCode = result.status ?? 'unknown';
+    const signal = result.signal ? `, signal ${result.signal}` : '';
+    throw new Error(`${label} failed with exit code ${exitCode}${signal}.`);
   }
 }
 
@@ -174,6 +176,7 @@ function main() {
   const env = ensureChangelogEnv({
     ...process.env,
     LFCLAW_BUILD_VERSION: version,
+    NODE_OPTIONS: process.env.NODE_OPTIONS || '--max-old-space-size=4096',
   });
   const target = runtimeTarget(options.platform, options.arch);
 
