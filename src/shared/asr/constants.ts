@@ -38,6 +38,7 @@ export interface AsrRealtimeSessionData {
   expiresInSeconds: number;
   chunkIntervalMillis: number;
   maxSessionSeconds: number;
+  audioFormat?: 'wav' | 'pcm';
   maxConcurrentSessions: number;
   usedSecondsToday: number;
   remainingSecondsToday: number;

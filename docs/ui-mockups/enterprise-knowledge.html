@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LFClaw 企业知识库 UI 原型</title>
+  <style>
+    :root {
+      --bg: #f5f7fb;
+      --panel: #fff;
+      --line: #e5ebf3;
+      --text: #071a36;
+      --muted: #66758c;
+      --brand: #061a3d;
+      --blue: #2f74ff;
+      --blue-soft: #edf4ff;
+      --green: #19a974;
+      --yellow: #f5b800;
+      --shadow: 0 18px 46px rgba(15, 30, 60, .08);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: 236px 1fr;
+      min-height: 100vh;
+    }
+
+    aside {
+      background: #eef2f7;
+      border-right: 1px solid var(--line);
+      padding: 18px 14px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 800;
+      font-size: 18px;
+      margin-bottom: 26px;
+    }
+
+    .logo {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      background: radial-gradient(circle at 42% 38%, #ffd947, #ffb700 42%, transparent 44%),
+        conic-gradient(from 20deg, #d6d9dd, #fff, #d6d9dd, #fff, #d6d9dd);
+      box-shadow: inset 0 0 0 4px #fff;
+    }
+
+    .nav-item {
+      height: 36px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 10px;
+      border-radius: 8px;
+      color: #0b1d39;
+      margin-bottom: 4px;
+    }
+
+    .nav-item.active {
+      background: #dfe7f2;
+      font-weight: 700;
+    }
+
+    main {
+      padding: 28px 36px 48px;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 20px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 28px;
+      line-height: 1.2;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      margin-top: 6px;
+    }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    button {
+      border: 0;
+      border-radius: 8px;
+      height: 38px;
+      padding: 0 14px;
+      font-weight: 700;
+      cursor: default;
+    }
+
+    .primary { background: var(--brand); color: white; }
+    .ghost { background: #eaf0f8; color: var(--text); }
+
+    .tabs {
+      display: flex;
+      gap: 8px;
+      margin: 16px 0;
+    }
+
+    .tab {
+      height: 36px;
+      display: inline-flex;
+      align-items: center;
+      border-radius: 8px;
+      background: #eaf0f8;
+      padding: 0 14px;
+      font-weight: 700;
+    }
+
+    .tab.active {
+      color: white;
+      background: var(--brand);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1.2fr .8fr;
+      gap: 16px;
+      align-items: start;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .panel-head {
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      align-items: center;
+    }
+
+    .panel-title {
+      font-size: 17px;
+      font-weight: 800;
+    }
+
+    .search {
+      width: 280px;
+      height: 34px;
+      border: 1px solid #cdd7e5;
+      border-radius: 8px;
+      padding: 0 12px;
+      color: var(--muted);
+      background: #fbfcfe;
+    }
+
+    .summary-list {
+      padding: 10px 18px 18px;
+    }
+
+    .summary-card {
+      border-bottom: 1px solid var(--line);
+      padding: 16px 0;
+    }
+
+    .summary-card:last-child { border-bottom: 0; }
+
+    .summary-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 8px;
+    }
+
+    .summary-title {
+      font-weight: 800;
+      font-size: 16px;
+    }
+
+    .meta {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .desc {
+      color: #344154;
+      margin-bottom: 10px;
+    }
+
+    .tags {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .tag {
+      border: 1px solid #d9e3f0;
+      background: #f7faff;
+      color: #42526b;
+      border-radius: 6px;
+      padding: 3px 8px;
+      font-size: 12px;
+    }
+
+    .side-card {
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .side-card:last-child { border-bottom: 0; }
+
+    .project-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      margin-top: 10px;
+      background: #fbfcff;
+    }
+
+    .num {
+      font-size: 22px;
+      font-weight: 900;
+    }
+
+    .hint {
+      border: 1px solid #cfe0ff;
+      background: var(--blue-soft);
+      color: #254a85;
+      border-radius: 8px;
+      padding: 12px 14px;
+      margin-bottom: 14px;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .flow-step {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcff;
+      padding: 12px;
+      min-height: 84px;
+    }
+
+    .flow-step b { display: block; margin-bottom: 6px; }
+
+    .mock-input {
+      margin-top: 16px;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+    }
+
+    .input-toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 16px;
+      color: var(--muted);
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      background: #eef4ff;
+      border: 1px solid #d6e4ff;
+      color: #2457a6;
+      padding: 5px 10px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    @media (max-width: 980px) {
+      .app { grid-template-columns: 1fr; }
+      aside { display: none; }
+      main { padding: 18px; }
+      .grid, .flow { grid-template-columns: 1fr; }
+      header { display: block; }
+      .actions { margin-top: 14px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside>
+      <div class="brand"><div class="logo"></div> LFClaw</div>
+      <div class="nav-item">新建任务</div>
+      <div class="nav-item">搜索任务</div>
+      <div class="nav-item">定时任务</div>
+      <div class="nav-item">专家套件</div>
+      <div class="nav-item">技能</div>
+      <div class="nav-item">MCP</div>
+      <div class="nav-item">企业激活</div>
+      <div class="nav-item active">企业知识</div>
+    </aside>
+
+    <main>
+      <header>
+        <div>
+          <h1>企业知识库</h1>
+          <div class="subtitle">把员工与 AI 协作后的关键结论沉淀为企业资产，可按项目引用，不共享完整聊天隐私。</div>
+        </div>
+        <div class="actions">
+          <button class="ghost">引用知识</button>
+          <button class="primary">沉淀当前会话</button>
+        </div>
+      </header>
+
+      <div class="hint">
+        人管能力，项目管知识。模型、MCP、技能仍按员工授权；项目只负责组织摘要、结论、文件和待办。
+      </div>
+
+      <div class="tabs">
+        <div class="tab active">项目知识</div>
+        <div class="tab">我的沉淀</div>
+        <div class="tab">知识项目</div>
+        <div class="tab">引用记录</div>
+      </div>
+
+      <div class="grid">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <div class="panel-title">销售系统</div>
+              <div class="subtitle">项目内可引用的共享摘要与关键结论</div>
+            </div>
+            <input class="search" value="搜索接口、楼层、日报、MCP" readonly />
+          </div>
+
+          <div class="summary-list">
+            <article class="summary-card">
+              <div class="summary-top">
+                <div class="summary-title">楼层销售日报查询口径</div>
+                <div class="meta">佟凯 · 今天 10:30</div>
+              </div>
+              <div class="desc">确认了按日期和楼层查询销售额、订单数、连带率等指标；后续前端和日报机器人都复用这套口径。</div>
+              <div class="tags">
+                <span class="tag">销售日报</span>
+                <span class="tag">楼层</span>
+                <span class="tag">MCP 查询</span>
+                <span class="tag">项目可见</span>
+              </div>
+            </article>
+
+            <article class="summary-card">
+              <div class="summary-top">
+                <div class="summary-title">飞书消息推送参数约定</div>
+                <div class="meta">李祺 · 昨天 18:12</div>
+              </div>
+              <div class="desc">整理了机器人通知需要的 open_id、群 ID、消息模板和失败重试规则，定时任务推送可直接引用。</div>
+              <div class="tags">
+                <span class="tag">飞书</span>
+                <span class="tag">通知</span>
+                <span class="tag">定时任务</span>
+              </div>
+            </article>
+
+            <article class="summary-card">
+              <div class="summary-top">
+                <div class="summary-title">智谱 GLM-5.2 积分换算规则</div>
+                <div class="meta">企业管理员 · 7月21日</div>
+              </div>
+              <div class="desc">输入、输出、缓存命中和缓存写入分别按模型价格换算积分；历史用量不重算，仅新调用使用新规则。</div>
+              <div class="tags">
+                <span class="tag">模型价格</span>
+                <span class="tag">积分</span>
+                <span class="tag">规则说明</span>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <aside class="panel">
+          <div class="side-card">
+            <div class="panel-title">知识项目</div>
+            <div class="project-row">
+              <div>
+                <b>销售系统</b>
+                <div class="meta">8 条知识 · 5 名成员</div>
+              </div>
+              <span class="pill">当前</span>
+            </div>
+            <div class="project-row">
+              <div>
+                <b>客户运营</b>
+                <div class="meta">3 条知识 · 2 名成员</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="side-card">
+            <div class="panel-title">本周沉淀</div>
+            <div class="flow">
+              <div class="flow-step">
+                <b class="num">12</b>
+                知识摘要
+              </div>
+              <div class="flow-step">
+                <b class="num">7</b>
+                被引用
+              </div>
+              <div class="flow-step">
+                <b class="num">4</b>
+                待办
+              </div>
+              <div class="flow-step">
+                <b class="num">2</b>
+                待确认
+              </div>
+            </div>
+          </div>
+
+          <div class="side-card">
+            <div class="panel-title">新对话引用效果</div>
+            <div class="mock-input">
+              帮我写一个楼层销售日报接口文档
+              <div class="input-toolbar">
+                <span class="pill">已引用：销售系统 · 3 条知识</span>
+                <button class="primary">发送</button>
+              </div>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

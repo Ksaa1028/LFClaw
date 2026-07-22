@@ -71,9 +71,7 @@ const normalizeMcpTransportType = (value: unknown): 'stdio' | 'sse' | 'http' | '
   value === 'stdio' || value === 'http' || value === 'streamable-http' ? value : 'sse'
 );
 
-const normalizeAsrFormat = (value: unknown): 'wav' | 'pcm' => (
-  value === 'pcm' ? 'pcm' : 'wav'
-);
+const normalizeAsrFormat = (_value: unknown): 'pcm' => 'pcm';
 
 export class LFClawEnterpriseAccess {
   constructor(private readonly store: SqliteStore) {}
@@ -222,6 +220,7 @@ export class LFClawEnterpriseAccess {
       expiresInSeconds: numberValue(payload.expiresInSeconds) || 120,
       chunkIntervalMillis: numberValue(payload.chunkIntervalMillis) || 200,
       maxSessionSeconds: numberValue(payload.maxSessionSeconds) || 60,
+      audioFormat: normalizeAsrFormat(payload.audioFormat ?? payload.format),
       maxConcurrentSessions: numberValue(payload.maxConcurrentSessions) || 1,
       usedSecondsToday: numberValue(payload.usedSecondsToday),
       remainingSecondsToday: numberValue(payload.remainingSecondsToday) || 86400,

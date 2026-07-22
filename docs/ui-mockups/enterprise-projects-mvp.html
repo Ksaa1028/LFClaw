@@ -1,0 +1,717 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LFClaw 企业项目 MVP 原型</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f7fb;
+      --panel: #ffffff;
+      --line: #d9e2ef;
+      --text: #071933;
+      --muted: #607089;
+      --soft: #eef3f9;
+      --primary: #071933;
+      --blue: #2f78ff;
+      --green: #15a36a;
+      --amber: #d99100;
+      --danger: #e5252a;
+      --shadow: 0 16px 40px rgba(14, 35, 68, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      color: var(--text);
+      background: var(--bg);
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: 240px 1fr;
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      background: #eef2f7;
+      border-right: 1px solid var(--line);
+      padding: 24px 16px;
+    }
+
+    .brand {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 28px;
+      font-weight: 800;
+      font-size: 20px;
+    }
+
+    .logo {
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #fff 0%, #f9d454 45%, #ffc400 100%);
+      border: 1px solid #f4dfa0;
+      box-shadow: inset 0 0 0 5px rgba(255, 255, 255, 0.55);
+    }
+
+    .nav-title {
+      color: var(--muted);
+      font-size: 13px;
+      margin: 20px 12px 8px;
+    }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 11px 12px;
+      border-radius: 8px;
+      color: #263851;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .nav-item.active {
+      color: #fff;
+      background: var(--primary);
+    }
+
+    .main {
+      padding: 28px 36px 48px;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 24px;
+      margin-bottom: 18px;
+    }
+
+    h1, h2, h3, p {
+      margin: 0;
+    }
+
+    h1 {
+      font-size: 30px;
+      line-height: 1.2;
+      margin-bottom: 8px;
+    }
+
+    .sub {
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    button {
+      border: 0;
+      border-radius: 8px;
+      padding: 10px 16px;
+      font-weight: 700;
+      color: var(--text);
+      background: var(--soft);
+      cursor: default;
+    }
+
+    .primary {
+      color: #fff;
+      background: var(--primary);
+    }
+
+    .tabs {
+      display: flex;
+      gap: 8px;
+      margin: 18px 0;
+      flex-wrap: wrap;
+    }
+
+    .tab {
+      padding: 10px 14px;
+      border-radius: 8px;
+      background: #e9eff7;
+      font-weight: 800;
+    }
+
+    .tab.active {
+      color: #fff;
+      background: var(--primary);
+    }
+
+    .section {
+      display: none;
+    }
+
+    .section.active {
+      display: block;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 18px;
+      margin-bottom: 16px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 14px;
+    }
+
+    .col-3 { grid-column: span 3; }
+    .col-4 { grid-column: span 4; }
+    .col-5 { grid-column: span 5; }
+    .col-6 { grid-column: span 6; }
+    .col-7 { grid-column: span 7; }
+    .col-8 { grid-column: span 8; }
+    .col-12 { grid-column: span 12; }
+
+    label {
+      display: block;
+      font-size: 13px;
+      font-weight: 800;
+      margin-bottom: 6px;
+    }
+
+    input, textarea, select {
+      width: 100%;
+      border: 1px solid #c9d5e5;
+      border-radius: 6px;
+      padding: 10px 11px;
+      min-height: 38px;
+      font: inherit;
+      background: #fff;
+      color: var(--text);
+    }
+
+    textarea {
+      min-height: 128px;
+      resize: vertical;
+      line-height: 1.6;
+    }
+
+    .hint {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+      margin-top: 6px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    th, td {
+      text-align: left;
+      border-bottom: 1px solid var(--line);
+      padding: 13px 10px;
+      vertical-align: top;
+    }
+
+    th {
+      font-size: 13px;
+      color: #19314f;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      height: 24px;
+      padding: 0 9px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 800;
+      background: #edf3ff;
+      color: #1d5fd1;
+      margin-right: 6px;
+    }
+
+    .badge.green {
+      color: #087548;
+      background: #e8f8f1;
+    }
+
+    .badge.amber {
+      color: #8a5a00;
+      background: #fff4d8;
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 16px;
+    }
+
+    .card h3 {
+      font-size: 17px;
+      margin-bottom: 8px;
+    }
+
+    .meta {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .overview {
+      white-space: pre-line;
+      line-height: 1.7;
+      color: #263851;
+    }
+
+    .activity {
+      display: grid;
+      gap: 12px;
+    }
+
+    .activity-row {
+      display: grid;
+      grid-template-columns: 82px 1fr auto;
+      gap: 12px;
+      align-items: start;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 12px;
+    }
+
+    .chat-shell {
+      display: grid;
+      grid-template-columns: 1fr 340px;
+      gap: 16px;
+    }
+
+    .chat {
+      min-height: 520px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      gap: 14px;
+    }
+
+    .bubble {
+      max-width: 72%;
+      border-radius: 12px;
+      padding: 12px 14px;
+      line-height: 1.6;
+      background: #f3f6fa;
+    }
+
+    .bubble.user {
+      margin-left: auto;
+      background: #e9f1ff;
+    }
+
+    .composer {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px;
+      background: #fff;
+    }
+
+    .composer textarea {
+      border: 0;
+      min-height: 82px;
+      padding: 0;
+      outline: none;
+    }
+
+    .composer-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 10px;
+      gap: 10px;
+    }
+
+    .switch {
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      font-weight: 800;
+      color: #19314f;
+      font-size: 13px;
+    }
+
+    .switch::before {
+      content: "";
+      width: 34px;
+      height: 20px;
+      border-radius: 999px;
+      background: var(--blue);
+      box-shadow: inset 14px 0 0 rgba(255, 255, 255, 0.9);
+    }
+
+    .modal-demo {
+      max-width: 720px;
+      margin: 0 auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      box-shadow: var(--shadow);
+      padding: 18px;
+    }
+
+    .small-title {
+      font-size: 18px;
+      font-weight: 900;
+      margin-bottom: 12px;
+    }
+
+    @media (max-width: 1100px) {
+      .shell {
+        grid-template-columns: 1fr;
+      }
+      .sidebar {
+        display: none;
+      }
+      .col-3, .col-4, .col-5, .col-6, .col-7, .col-8 {
+        grid-column: span 12;
+      }
+      .cards, .chat-shell {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="logo"></span><span>LFClaw</span></div>
+      <div class="nav-title">企业能力</div>
+      <div class="nav-item">员工与激活码</div>
+      <div class="nav-item">模型配置</div>
+      <div class="nav-item">MCP 服务</div>
+      <div class="nav-item">技能包</div>
+      <div class="nav-item active">企业项目</div>
+      <div class="nav-title">客户端</div>
+      <div class="nav-item">新建任务</div>
+      <div class="nav-item">企业项目</div>
+      <div class="nav-item">企业激活</div>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <div>
+          <h1>LFClaw 企业项目 MVP</h1>
+          <p class="sub">第一版只做项目、成员、项目总览、项目动态、项目沉淀和对话引用项目总览。</p>
+        </div>
+        <div class="actions">
+          <button>预览说明</button>
+          <button class="primary">新建项目</button>
+        </div>
+      </div>
+
+      <div class="tabs" id="tabs">
+        <div class="tab active" data-target="admin">服务端：项目管理</div>
+        <div class="tab" data-target="client-list">客户端：项目列表</div>
+        <div class="tab" data-target="project-detail">客户端：项目详情</div>
+        <div class="tab" data-target="chat">对话：引用项目资料</div>
+        <div class="tab" data-target="deposit">沉淀到项目</div>
+      </div>
+
+      <section class="section active" id="admin">
+        <div class="panel">
+          <div class="grid">
+            <div class="col-4">
+              <label>项目名称</label>
+              <input value="LFClaw 企业平台" />
+            </div>
+            <div class="col-8">
+              <label>项目描述</label>
+              <input value="企业内部统一管理 AI 模型、MCP、技能、积分和项目协作知识。" />
+            </div>
+            <div class="col-6">
+              <label>项目成员</label>
+              <select>
+                <option>佟凯 / u_kai_feb3、张三 / u_zhangsan_ab12、李四 / u_lisi_878d</option>
+              </select>
+              <p class="hint">第一版只从企业员工里选择成员，不单独配置模型、MCP、技能。</p>
+            </div>
+            <div class="col-6">
+              <label>成员权限</label>
+              <select>
+                <option>项目管理员：佟凯；项目成员：张三、李四</option>
+              </select>
+              <p class="hint">管理员可编辑项目和总览，成员可查看和提交沉淀。</p>
+            </div>
+            <div class="col-12">
+              <label>项目总览</label>
+              <textarea>项目目标：建设企业内部统一分发与管理的 AI 办公平台。
+当前进展：企业激活、模型配置、MCP 授权、技能授权、积分用量和客户端自动更新已形成基础闭环。
+关键规则：模型、MCP、技能跟员工授权走，不跟项目走；项目只提供协作上下文。
+接口/配置：企业服务部署在 /opt/LfClaw，数据保存在 /opt/LfClaw/data。
+注意事项：AI 对话只引用项目总览，不读取成员原始对话。</textarea>
+              <p class="hint">项目总览是 AI 可引用的唯一项目上下文，建议控制在 1000-3000 字。</p>
+            </div>
+          </div>
+          <div class="actions" style="margin-top: 16px;">
+            <button class="primary">保存项目</button>
+            <button>取消</button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="small-title">项目列表</div>
+          <table>
+            <thead>
+              <tr>
+                <th>项目</th>
+                <th>成员</th>
+                <th>总览状态</th>
+                <th>最近动态</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><b>LFClaw 企业平台</b><br><span class="meta">企业 AI 管理与客户端接入</span></td>
+                <td>3 人</td>
+                <td><span class="badge green">已维护</span></td>
+                <td>佟凯更新了项目总览 · 10:42</td>
+                <td><button>编辑</button> <button>成员</button></td>
+              </tr>
+              <tr>
+                <td><b>销售数据助手</b><br><span class="meta">楼层销售分析、日报、IM 推送</span></td>
+                <td>5 人</td>
+                <td><span class="badge amber">待完善</span></td>
+                <td>李四提交了接口说明 · 昨天</td>
+                <td><button>编辑</button> <button>成员</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section" id="client-list">
+        <div class="panel">
+          <div class="topbar" style="margin-bottom: 14px;">
+            <div>
+              <h2>企业项目</h2>
+              <p class="sub">展示当前员工参与的项目。项目只做协作上下文，不改变员工模型、MCP、技能授权。</p>
+            </div>
+            <button>刷新</button>
+          </div>
+          <div class="cards">
+            <div class="card">
+              <h3>LFClaw 企业平台</h3>
+              <p class="meta">企业内部统一 AI 办公平平台，包含激活、模型、MCP、技能、积分和更新。</p>
+              <p class="meta" style="margin-top: 12px;">成员 3 人 · 最近更新 10:42</p>
+              <div style="margin-top: 12px;">
+                <span class="badge green">总览已维护</span>
+                <span class="badge">我参与</span>
+              </div>
+            </div>
+            <div class="card">
+              <h3>销售数据助手</h3>
+              <p class="meta">用于查询楼层销售情况、生成日报，并通过 IM 渠道发送消息。</p>
+              <p class="meta" style="margin-top: 12px;">成员 5 人 · 最近更新 昨天</p>
+              <div style="margin-top: 12px;">
+                <span class="badge amber">总览待完善</span>
+                <span class="badge">我参与</span>
+              </div>
+            </div>
+            <div class="card">
+              <h3>暂无更多项目</h3>
+              <p class="meta">管理员将你加入项目后，会自动显示在这里。</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="project-detail">
+        <div class="grid">
+          <div class="col-8">
+            <div class="panel">
+              <div class="topbar" style="margin-bottom: 12px;">
+                <div>
+                  <h2>LFClaw 企业平台</h2>
+                  <p class="sub">企业 AI 管理与客户端接入</p>
+                </div>
+                <span class="badge green">项目成员</span>
+              </div>
+              <div class="small-title">项目总览</div>
+              <p class="overview">项目目标：建设企业内部统一分发与管理的 AI 办公平台。
+当前进展：企业激活、模型配置、MCP 授权、技能授权、积分用量和客户端自动更新已形成基础闭环。
+关键规则：模型、MCP、技能跟员工授权走，不跟项目走；项目只提供协作上下文。
+注意事项：AI 对话只引用项目总览，不读取成员原始对话。</p>
+            </div>
+            <div class="panel">
+              <div class="small-title">项目沉淀</div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>类型</th>
+                    <th>标题</th>
+                    <th>创建人</th>
+                    <th>状态</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><span class="badge">决策</span></td>
+                    <td>语音输入作为企业全员能力，不按员工单独授权</td>
+                    <td>佟凯</td>
+                    <td><span class="badge green">已确认</span></td>
+                  </tr>
+                  <tr>
+                    <td><span class="badge">接口</span></td>
+                    <td>企业服务新增 ASR 实时会话代理接口</td>
+                    <td>张三</td>
+                    <td><span class="badge amber">建议写入总览</span></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="col-4">
+            <div class="panel">
+              <div class="small-title">成员</div>
+              <p class="meta">佟凯 · 项目管理员</p>
+              <p class="meta">张三 · 项目成员</p>
+              <p class="meta">李四 · 项目成员</p>
+            </div>
+            <div class="panel">
+              <div class="small-title">项目动态</div>
+              <div class="activity">
+                <div class="activity-row">
+                  <span class="meta">10:42</span>
+                  <span>佟凯更新了项目总览</span>
+                  <span class="badge">总览</span>
+                </div>
+                <div class="activity-row">
+                  <span class="meta">09:16</span>
+                  <span>张三提交了 ASR 接口说明</span>
+                  <span class="badge">接口</span>
+                </div>
+                <div class="activity-row">
+                  <span class="meta">昨天</span>
+                  <span>李四加入项目</span>
+                  <span class="badge">成员</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="chat">
+        <div class="chat-shell">
+          <div class="panel chat">
+            <div class="bubble user">企业语音输入失败，应该先检查哪里？</div>
+            <div class="bubble">优先检查企业服务里的语音识别配置：Workspace ID、地域、API Key、模型和 ws 依赖。当前项目总览说明了 API Key 只保存在服务端，客户端只请求临时 ASR 会话。</div>
+            <div class="composer">
+              <textarea placeholder="分配一个任务或提问任何问题"></textarea>
+              <div class="composer-bar">
+                <div class="actions">
+                  <select style="width: 220px;">
+                    <option>当前项目：LFClaw 企业平台</option>
+                    <option>不关联项目</option>
+                  </select>
+                  <span class="switch">引用项目资料</span>
+                </div>
+                <button class="primary">发送</button>
+              </div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="small-title">本次引用内容</div>
+            <p class="meta">只引用项目总览，不引用所有项目沉淀，也不读取成员原始对话。</p>
+            <div class="card" style="margin-top: 12px;">
+              <h3>项目总览</h3>
+              <p class="meta">项目目标、当前进展、关键规则、接口/配置、注意事项。</p>
+            </div>
+            <div class="card" style="margin-top: 12px;">
+              <h3>引用策略</h3>
+              <p class="meta">开关关闭时不带项目资料；开关打开时只附带这一份总览。</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="deposit">
+        <div class="modal-demo">
+          <div class="topbar" style="margin-bottom: 12px;">
+            <div>
+              <h2>沉淀到项目</h2>
+              <p class="sub">把有价值的对话整理成结构化项目资料。</p>
+            </div>
+            <button>关闭</button>
+          </div>
+          <div class="grid">
+            <div class="col-8">
+              <label>标题</label>
+              <input value="企业语音输入失败排查顺序" />
+            </div>
+            <div class="col-4">
+              <label>类型</label>
+              <select>
+                <option>问题</option>
+                <option>需求</option>
+                <option>决策</option>
+                <option>接口</option>
+                <option>总结</option>
+              </select>
+            </div>
+            <div class="col-12">
+              <label>内容</label>
+              <textarea>背景：客户端麦克风入口需要走企业语音识别能力。
+结论：优先检查企业服务语音配置、ws 依赖、API Key、Workspace ID 和地域是否正确。
+关键细节：客户端不保存 API Key，只通过企业服务创建临时 ASR 会话。</textarea>
+            </div>
+            <div class="col-12">
+              <label>建议</label>
+              <select>
+                <option>建议写入项目总览</option>
+                <option>只作为项目沉淀保存</option>
+              </select>
+              <p class="hint">写入项目总览后，后续打开“引用项目资料”的对话才会带给 AI。</p>
+            </div>
+          </div>
+          <div class="actions" style="margin-top: 16px;">
+            <button class="primary">保存沉淀</button>
+            <button>取消</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const tabs = document.querySelectorAll('.tab');
+    const sections = document.querySelectorAll('.section');
+    tabs.forEach((tab) => {
+      tab.addEventListener('click', () => {
+        tabs.forEach((item) => item.classList.remove('active'));
+        sections.forEach((item) => item.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById(tab.dataset.target).classList.add('active');
+      });
+    });
+  </script>
+</body>
+</html>

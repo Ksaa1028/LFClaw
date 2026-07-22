@@ -1,0 +1,59 @@
+name: LFClaw macOS Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: 'macOS package architecture'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - arm64
+          - x64
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  CSC_IDENTITY_AUTO_DISCOVERY: false
+
+jobs:
+  build-mac:
+    name: Build macOS ${{ matrix.arch }}
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+    if: ${{ inputs.arch == 'both' || inputs.arch == matrix.arch }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.x'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build LFClaw macOS package
+        run: npm run release:mac:${{ matrix.arch }}:runtime
+
+      - name: Collect release files
+        run: |
+          mkdir -p github-artifacts
+          cp release/LFClaw-* github-artifacts/ || true
+          cp release/changelog-*.zh.txt github-artifacts/ || true
+          find github-artifacts -maxdepth 1 -type f -print
+
+      - name: Upload macOS package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LFClaw-mac-${{ matrix.arch }}
+          path: github-artifacts/*
+          if-no-files-found: error
+          retention-days: 14

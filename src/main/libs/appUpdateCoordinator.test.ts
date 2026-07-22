@@ -108,9 +108,11 @@ describe('AppUpdateCoordinator', () => {
     mocks.getPath.mockReturnValue(tmpDir);
     mocks.getVersion.mockReturnValue('1.0.0');
     mocks.cancelActiveDownload.mockReturnValue(false);
+    process.env.LOBSTERAI_UPDATE_CURRENT_VERSION = '1.0.0';
   });
 
   afterEach(() => {
+    delete process.env.LOBSTERAI_UPDATE_CURRENT_VERSION;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -182,6 +184,38 @@ describe('AppUpdateCoordinator', () => {
     expect(result.state.status).toBe(AppUpdateStatus.Ready);
     expect(result.state.source).toBe(AppUpdateSource.Manual);
     expect(result.state.readyFilePath).toBe(filePath);
+    expect(mocks.downloadUpdate).not.toHaveBeenCalled();
+  });
+
+  test('does not report an update when the current platform has no package url', async () => {
+    const store = createStoreStub();
+    const coordinator = new AppUpdateCoordinator(store);
+
+    mocks.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        code: 0,
+        data: {
+          value: {
+            version: READY_VERSION,
+            date: '2026-06-10',
+            changeLog: {
+              ch: { title: '', content: [] },
+              en: { title: '', content: [] },
+            },
+            macIntel: { url: 'https://updates.example.com/lfclaw.dmg' },
+            macArm: { url: 'https://updates.example.com/lfclaw-arm64.dmg' },
+            windowsX64: { url: '' },
+          },
+        },
+      }),
+    });
+
+    const result = await coordinator.checkNow({ manual: true });
+
+    expect(result.success).toBe(true);
+    expect(result.updateFound).toBe(false);
+    expect(result.state.status).toBe(AppUpdateStatus.Idle);
     expect(mocks.downloadUpdate).not.toHaveBeenCalled();
   });
 

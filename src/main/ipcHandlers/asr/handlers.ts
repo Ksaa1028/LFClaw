@@ -53,14 +53,28 @@ export function registerAsrIpcHandlers({
     AsrIpcChannel.CreateRealtimeSession,
     async (_event, options?: AsrRealtimeSessionRequest): Promise<AsrRealtimeSessionResult> => {
       try {
+        let enterpriseError: unknown = null;
+        const enterpriseSession = await createEnterpriseRealtimeSession?.(options).catch((error): null => {
+          enterpriseError = error;
+          console.warn('[ASR] enterprise realtime session request failed:', error);
+          return null;
+        });
+        if (enterpriseSession) {
+          console.log(`[ASR] enterprise realtime session request succeeded; requestId=${enterpriseSession.requestId}, wsEndpoint=${getSafeWebSocketEndpoint(enterpriseSession.wsUrl)}, maxSessionSeconds=${enterpriseSession.maxSessionSeconds}`);
+          return { success: true, data: enterpriseSession };
+        }
+
         const tokens = getAuthTokens();
         if (!tokens) {
-          const enterpriseSession = await createEnterpriseRealtimeSession?.(options);
-          if (enterpriseSession) {
-            console.log(`[ASR] enterprise realtime session request succeeded; requestId=${enterpriseSession.requestId}, wsEndpoint=${getSafeWebSocketEndpoint(enterpriseSession.wsUrl)}, maxSessionSeconds=${enterpriseSession.maxSessionSeconds}`);
-            return { success: true, data: enterpriseSession };
-          }
           console.warn('[ASR] realtime session request was rejected because no auth tokens or enterprise ASR session are available');
+          if (enterpriseError instanceof Error && enterpriseError.message) {
+            return {
+              success: false,
+              code: AsrApiCode.ConfigInvalid,
+              error: enterpriseError.message,
+              message: enterpriseError.message,
+            };
+          }
           return { success: false, code: AsrApiCode.Unauthorized, error: 'Unauthorized' };
         }
 

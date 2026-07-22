@@ -35,6 +35,7 @@ interface RealtimeAudioFrameBuildOptions {
   chunk: Uint8Array;
   isFirstFrame: boolean;
   maxBinaryFrameBytes: number;
+  audioFormat?: 'wav' | 'pcm';
 }
 
 interface RealtimeAudioFrameBuildResult {
@@ -53,9 +54,20 @@ export const buildRealtimeAsrAudioFrames = ({
   chunk,
   isFirstFrame,
   maxBinaryFrameBytes,
+  audioFormat = 'pcm',
 }: RealtimeAudioFrameBuildOptions): RealtimeAudioFrameBuildResult => {
   const frames: Uint8Array[] = [];
   const safeMaxBinaryFrameBytes = Math.max(45, maxBinaryFrameBytes);
+  if (audioFormat === 'pcm') {
+    let offset = 0;
+    while (offset < chunk.byteLength) {
+      const frameBytes = Math.min(chunk.byteLength - offset, safeMaxBinaryFrameBytes);
+      frames.push(chunk.slice(offset, offset + frameBytes));
+      offset += frameBytes;
+    }
+    return { frames, isFirstFrame: false };
+  }
+
   let nextIsFirstFrame = isFirstFrame;
   let offset = 0;
   while (offset < chunk.byteLength) {
@@ -160,13 +172,15 @@ export const startRealtimeVoiceInput = async ({
     langType: AsrLangType.ZhChs,
   });
   if (!session.success) {
-    console.warn(`[VoiceInput] realtime ASR session request failed with code ${session.code ?? 'unknown'} and message: ${session.message || session.error || 'No response message'}`);
-    throw new AsrClientError(getFallbackAsrErrorMessage(session.code), session.code);
+    const message = session.message || session.error || getFallbackAsrErrorMessage(session.code);
+    console.warn(`[VoiceInput] realtime ASR session request failed with code ${session.code ?? 'unknown'} and message: ${message}`);
+    throw new AsrClientError(message, session.code);
   }
 
   const socket = new WebSocket(session.data.wsUrl);
   socket.binaryType = 'arraybuffer';
   const chunkIntervalMillis = session.data.chunkIntervalMillis || 200;
+  const audioFormat = 'pcm';
   const maxBinaryFrameBytes = Math.max(
     45,
     Math.floor(VOICE_INPUT_TARGET_SAMPLE_RATE * PCM16_BYTES_PER_SAMPLE * (chunkIntervalMillis / 1000)),
@@ -201,7 +215,7 @@ export const startRealtimeVoiceInput = async ({
     if (message.type === AsrRealtimeEventType.Error) {
       console.warn(`[VoiceInput] realtime ASR WebSocket reported error; requestId=${message.requestId || session.data.requestId}, code=${message.code ?? 'unknown'}, message=${message.message || 'No response message'}`);
       terminalError = new AsrClientError(
-        getFallbackAsrErrorMessage(message.code),
+        message.message || getFallbackAsrErrorMessage(message.code),
         message.code,
       );
       recorder?.cancel();
@@ -284,6 +298,7 @@ export const startRealtimeVoiceInput = async ({
       chunk,
       isFirstFrame: firstAudioFrame,
       maxBinaryFrameBytes,
+      audioFormat,
     });
     firstAudioFrame = result.isFirstFrame;
     for (const frame of result.frames) {

@@ -567,6 +567,12 @@ export class AppUpdateCoordinator {
     }
 
     const result = this.buildUpdateInfo(value, latestVersion);
+    if (!result) {
+      console.log(
+        `[AppUpdate] no update available for current platform, latestVersion=${latestVersion}, currentVersion=${currentVersion}, platform=${process.platform}, arch=${process.arch}`,
+      );
+      return null;
+    }
     console.log(
       `[AppUpdate] update available: ${currentVersion} -> ${latestVersion}, downloadUrl=${result.url}`,
     );
@@ -576,7 +582,10 @@ export class AppUpdateCoordinator {
   private buildUpdateInfo(
     value: NonNullable<NonNullable<UpdateApiResponse['data']>['value']> | undefined,
     latestVersion: string,
-  ): AppUpdateInfo {
+  ): AppUpdateInfo | null {
+    const platformDownload = this.getPlatformDownload(value);
+    if (!platformDownload) return null;
+
     const toEntry = (log?: ChangeLogLang) => ({
       title: typeof log?.title === 'string' ? log.title : '',
       content: Array.isArray(log?.content) ? log.content : [],
@@ -589,7 +598,7 @@ export class AppUpdateCoordinator {
         zh: toEntry(value?.changeLog?.ch),
         en: toEntry(value?.changeLog?.en),
       },
-      ...this.getPlatformDownload(value),
+      ...platformDownload,
     };
   }
 
@@ -610,12 +619,16 @@ export class AppUpdateCoordinator {
 
   private getPlatformDownload(
     value: NonNullable<NonNullable<UpdateApiResponse['data']>['value']> | undefined,
-  ): Pick<AppUpdateInfo, 'url' | 'packageSize' | 'packageSha256'> {
-    const normalize = (download?: PlatformDownload) => ({
-      url: download?.url?.trim() || getFallbackDownloadUrl(),
-      packageSize: typeof download?.size === 'number' && Number.isFinite(download.size) ? download.size : undefined,
-      packageSha256: typeof download?.sha256 === 'string' && download.sha256 ? download.sha256.trim().toLowerCase() : undefined,
-    });
+  ): Pick<AppUpdateInfo, 'url' | 'packageSize' | 'packageSha256'> | null {
+    const normalize = (download?: PlatformDownload) => {
+      const url = download?.url?.trim();
+      if (!url) return null;
+      return {
+        url,
+        packageSize: typeof download?.size === 'number' && Number.isFinite(download.size) ? download.size : undefined,
+        packageSha256: typeof download?.sha256 === 'string' && download.sha256 ? download.sha256.trim().toLowerCase() : undefined,
+      };
+    };
     if (process.platform === 'darwin') {
       const download = process.arch === 'arm64' ? value?.macArm : value?.macIntel;
       return normalize(download);
@@ -674,10 +687,14 @@ export class AppUpdateCoordinator {
 
   private readPackagedBuildVersion(): string | null {
     const candidatePaths = [
-      path.join(process.resourcesPath, LFCLAW_BUILD_VERSION_FILE),
-      path.join(app.getAppPath(), '.lfclaw-build', LFCLAW_BUILD_VERSION_FILE),
+      typeof process.resourcesPath === 'string' && process.resourcesPath
+        ? path.join(process.resourcesPath, LFCLAW_BUILD_VERSION_FILE)
+        : null,
+      typeof app.getAppPath === 'function'
+        ? path.join(app.getAppPath(), '.lfclaw-build', LFCLAW_BUILD_VERSION_FILE)
+        : null,
       path.join(process.cwd(), '.lfclaw-build', LFCLAW_BUILD_VERSION_FILE),
-    ];
+    ].filter((filePath): filePath is string => Boolean(filePath));
 
     for (const filePath of candidatePaths) {
       try {

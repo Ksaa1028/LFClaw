@@ -47,9 +47,6 @@ export const getAsrErrorMessage = (error: unknown): string => {
     return i18nService.t('voiceInputMicrophoneUnavailable');
   }
   if (error instanceof AsrClientError) {
-    if (error.code !== undefined) {
-      return getFallbackAsrErrorMessage(error.code);
-    }
     return error.message || getFallbackAsrErrorMessage(error.code);
   }
   return i18nService.t('voiceInputFailed');

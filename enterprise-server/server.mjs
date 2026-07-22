@@ -18,6 +18,7 @@ const BACKUP_DIR = process.env.LFCLAW_ENTERPRISE_BACKUP_DIR || path.join(DATA_DI
 const RELEASE_DIR = process.env.LFCLAW_ENTERPRISE_RELEASE_DIR || path.join(ROOT_DIR, 'releases');
 const asrProxySessions = new Map();
 const ASR_PROXY_SESSION_TTL_MS = 2 * 60 * 1000;
+const ASR_INFERENCE_PATH = '/api-ws/v1/inference';
 
 const nowIso = () => new Date().toISOString();
 const id = prefix => `${prefix}_${crypto.randomBytes(6).toString('hex')}`;
@@ -67,7 +68,7 @@ const normalizeAsr = (input = {}, existing = {}) => {
     websocketUrl: String(source.websocketUrl ?? next.websocketUrl ?? '').trim(),
     apiKey: apiKeyText && !/^\*+$/.test(apiKeyText) ? apiKeyText : String(next.apiKey || ''),
     model: String(source.model ?? next.model ?? 'fun-asr-realtime').trim() || 'fun-asr-realtime',
-    format: source.format === 'pcm' ? 'pcm' : 'wav',
+    format: 'pcm',
     sampleRate: toNumber(source.sampleRate ?? next.sampleRate, 16000),
     chunkIntervalMillis: toNumber(source.chunkIntervalMillis ?? next.chunkIntervalMillis, 200),
     maxSessionSeconds: toNumber(source.maxSessionSeconds ?? next.maxSessionSeconds, 60),
@@ -77,9 +78,9 @@ const normalizeAsr = (input = {}, existing = {}) => {
 
 const resolveAsrWsUrl = asr => {
   const config = normalizeAsr(asr);
-  if (config.websocketUrl) return config.websocketUrl;
-  if (config.workspaceId) return `wss://${config.workspaceId}.${config.region || 'cn-beijing'}.maas.aliyuncs.com/api-ws/v1/inference/`;
-  if (config.apiHost) return `wss://${config.apiHost}/api-ws/v1/inference/`;
+  if (config.websocketUrl) return config.websocketUrl.replace(/\/+$/, '');
+  if (config.workspaceId) return `wss://${config.workspaceId}.${config.region || 'cn-beijing'}.maas.aliyuncs.com${ASR_INFERENCE_PATH}`;
+  if (config.apiHost) return `wss://${config.apiHost}${ASR_INFERENCE_PATH}`;
   return '';
 };
 
@@ -727,17 +728,17 @@ const releaseResponse = (data, req) => {
           en: { title: version ? `LfClaw ${version}` : '', content: notesEn },
         },
         windowsX64: {
-          url: autoRelease.windowsX64Url || release.windowsX64Url || release.manualUrl || '',
+          url: autoRelease.windowsX64Url || release.windowsX64Url || '',
           size: autoRelease.windowsX64Size,
           sha256: autoRelease.windowsX64Sha256,
         },
         macArm: {
-          url: autoRelease.macArmUrl || release.macArmUrl || release.manualUrl || '',
+          url: autoRelease.macArmUrl || release.macArmUrl || '',
           size: autoRelease.macArmSize,
           sha256: autoRelease.macArmSha256,
         },
         macIntel: {
-          url: autoRelease.macIntelUrl || release.macIntelUrl || release.manualUrl || '',
+          url: autoRelease.macIntelUrl || release.macIntelUrl || '',
           size: autoRelease.macIntelSize,
           sha256: autoRelease.macIntelSha256,
         },
@@ -1060,7 +1061,7 @@ const handleAsrProxyWebSocket = (client, req, url) => {
       return;
     }
     if (event === 'task-failed') {
-      sendAsrError(client, requestId, 50201, message?.header?.error_message || 'Enterprise ASR upstream failed.');
+      sendAsrError(client, requestId, 50201, message?.header?.error_message || message?.header?.error_code || 'Enterprise ASR upstream failed.');
       closeWebSocket(client);
       closeWebSocket(upstream);
       cleanup();
@@ -1069,7 +1070,7 @@ const handleAsrProxyWebSocket = (client, req, url) => {
 
   upstream.on('error', error => {
     console.warn('[ASR] enterprise upstream websocket failed:', error);
-    sendAsrError(client, requestId, 50201, 'Enterprise ASR upstream failed.');
+    sendAsrError(client, requestId, 50201, error?.message || 'Enterprise ASR upstream failed.');
     closeWebSocket(client);
     cleanup();
   });
@@ -1151,6 +1152,8 @@ const server = http.createServer(async (req, res) => {
         expiresInSeconds: Math.floor(ASR_PROXY_SESSION_TTL_MS / 1000),
         chunkIntervalMillis: toNumber(asr.chunkIntervalMillis, 200),
         maxSessionSeconds: toNumber(asr.maxSessionSeconds, 60),
+        audioFormat: asr.format || 'wav',
+        format: asr.format || 'wav',
         maxConcurrentSessions: 1,
         usedSecondsToday: 0,
         remainingSecondsToday: 86400,

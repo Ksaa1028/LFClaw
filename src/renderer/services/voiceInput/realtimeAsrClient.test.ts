@@ -26,12 +26,27 @@ const concat = (chunks: Uint8Array[]): Uint8Array => {
 };
 
 describe('buildRealtimeAsrAudioFrames', () => {
+  test('defaults to raw PCM frames for enterprise realtime ASR', () => {
+    const pcm = makePcmBytes(8192);
+    const result = buildRealtimeAsrAudioFrames({
+      chunk: pcm,
+      isFirstFrame: true,
+      maxBinaryFrameBytes: 6400,
+    });
+
+    expect(result.isFirstFrame).toBe(false);
+    expect(result.frames.map(frame => frame.byteLength)).toEqual([6400, 1792]);
+    expect(ascii(result.frames[0], 0, 4)).not.toBe('RIFF');
+    expect(concat(result.frames)).toEqual(pcm);
+  });
+
   test('keeps the WAV header inside the first binary frame size limit', () => {
     const pcm = makePcmBytes(8192);
     const result = buildRealtimeAsrAudioFrames({
       chunk: pcm,
       isFirstFrame: true,
       maxBinaryFrameBytes: 6400,
+      audioFormat: 'wav',
     });
 
     expect(result.isFirstFrame).toBe(false);
@@ -62,12 +77,28 @@ describe('buildRealtimeAsrAudioFrames', () => {
     expect(concat(result.frames)).toEqual(pcm);
   });
 
+  test('sends raw PCM frames when the realtime session uses pcm format', () => {
+    const pcm = makePcmBytes(8192);
+    const result = buildRealtimeAsrAudioFrames({
+      chunk: pcm,
+      isFirstFrame: true,
+      maxBinaryFrameBytes: 6400,
+      audioFormat: 'pcm',
+    });
+
+    expect(result.isFirstFrame).toBe(false);
+    expect(result.frames.map(frame => frame.byteLength)).toEqual([6400, 1792]);
+    expect(ascii(result.frames[0], 0, 4)).not.toBe('RIFF');
+    expect(concat(result.frames)).toEqual(pcm);
+  });
+
   test('normalizes too-small frame limits so splitting still makes progress', () => {
     const pcm = makePcmBytes(4);
     const result = buildRealtimeAsrAudioFrames({
       chunk: pcm,
       isFirstFrame: true,
       maxBinaryFrameBytes: 0,
+      audioFormat: 'wav',
     });
 
     expect(result.frames.map(frame => frame.byteLength)).toEqual([45, 3]);
