@@ -193,3 +193,25 @@ test('leaves non-Gemini package model request bodies unchanged', () => {
 
   expect(testUtils.hydrateGeminiChatCompletionsBody(requestBody)).toBe(requestBody);
 });
+
+test('detects terminal SSE done packets while preserving partial data', () => {
+  const scanResult = testUtils.scanProxySSEBuffer(
+    'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\ndata: {"partial"',
+  );
+
+  expect(scanResult).toEqual({
+    remaining: 'data: {"partial"',
+    sawTerminalEvent: true,
+  });
+});
+
+test('detects terminal finish reason packets', () => {
+  const analysis = testUtils.analyzeProxySSEPacket(
+    'data: {"choices":[{"finish_reason":"stop"}]}',
+  );
+
+  expect(analysis).toEqual({
+    quotaError: null,
+    isTerminal: true,
+  });
+});

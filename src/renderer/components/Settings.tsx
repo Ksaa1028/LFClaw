@@ -1,4 +1,4 @@
-import { ArchiveBoxIcon, ArrowPathIcon, ArrowPathRoundedSquareIcon, ChatBubbleLeftIcon, CheckCircleIcon, CpuChipIcon, CubeIcon, EnvelopeIcon, ExclamationTriangleIcon, GlobeAltIcon, InformationCircleIcon, MagnifyingGlassIcon, SignalIcon, SunIcon, TrashIcon, WrenchScrewdriverIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { ArchiveBoxIcon, ArrowPathIcon, ArrowPathRoundedSquareIcon, ArrowTopRightOnSquareIcon, BookOpenIcon, ChatBubbleLeftIcon, CheckCircleIcon, CpuChipIcon, CubeIcon, EnvelopeIcon, ExclamationTriangleIcon, GlobeAltIcon, InformationCircleIcon, MagnifyingGlassIcon, SignalIcon, SunIcon, TrashIcon, WrenchScrewdriverIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import React, { useCallback,useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 
@@ -75,7 +75,9 @@ import ModelSettingsSection, { DeleteProviderConfirmDialog, ModelEditorDialog } 
 import EmailSkillConfig from './skills/EmailSkillConfig';
 import ThemedSelect from './ui/ThemedSelect';
 
-type TabType = 'general' | 'appearance' | 'coworkAgentEngine' | 'model' | 'browserWebAccess' | 'coworkMemory' | 'coworkDreaming' | 'shortcuts' | 'im' | 'email' | 'plugins' | 'about';
+type TabType = 'general' | 'appearance' | 'coworkAgentEngine' | 'model' | 'browserWebAccess' | 'coworkMemory' | 'coworkDreaming' | 'shortcuts' | 'im' | 'email' | 'plugins' | 'userGuide' | 'about';
+
+const LFCLAW_USER_GUIDE_URL = 'https://bxz6lqekwy.feishu.cn/docx/GB7DddjXJobjuwxqHtfcQM8nntv';
 
 const LFCLAW_HIDDEN_SETTINGS_TABS = new Set<TabType>([
   'model',
@@ -4052,6 +4054,7 @@ const Settings: React.FC<SettingsProps> = ({
       { key: 'coworkDreaming' as TabType, label: i18nService.t('coworkMemoryTabDreaming'), icon: <DreamingTabIcon className="h-5 w-5" /> },
       { key: 'plugins' as TabType,        label: i18nService.t('pluginsTab'),     icon: <PlugIcon className="h-5 w-5" /> },
       { key: 'shortcuts' as TabType,      label: i18nService.t('shortcuts'),      icon: <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-5 w-5"><rect x="2" y="4" width="20" height="14" rx="2" /><line x1="6" y1="8" x2="8" y2="8" /><line x1="10" y1="8" x2="12" y2="8" /><line x1="14" y1="8" x2="16" y2="8" /><line x1="6" y1="12" x2="8" y2="12" /><line x1="10" y1="12" x2="14" y2="12" /><line x1="16" y1="12" x2="18" y2="12" /><line x1="8" y1="15.5" x2="16" y2="15.5" /></svg> },
+      { key: 'userGuide' as TabType,      label: i18nService.t('userGuide'),      icon: <BookOpenIcon className="h-5 w-5" /> },
       { key: 'about' as TabType,          label: i18nService.t('about'),          icon: <InformationCircleIcon className="h-5 w-5" /> },
     ];
     const visibleTabs = allTabs.filter(tab => !LFCLAW_HIDDEN_SETTINGS_TABS.has(tab.key));
@@ -4432,6 +4435,45 @@ const Settings: React.FC<SettingsProps> = ({
 
       case 'appearance':
         return renderAppearanceSettings();
+
+      case 'userGuide':
+        return (
+          <div className="space-y-6">
+            <div className="rounded-xl border border-border bg-surface p-6">
+              <div className="flex items-start gap-4">
+                <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                  <BookOpenIcon className="h-6 w-6" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <h4 className="text-base font-medium text-foreground">
+                    {i18nService.t('userGuideTitle')}
+                  </h4>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const result = await window.electron.shell.openExternal(LFCLAW_USER_GUIDE_URL);
+                        if (!result.success) {
+                          setError(result.error || i18nService.t('userGuideOpenFailed'));
+                        }
+                      } catch (err) {
+                        console.error('[Settings] Failed to open user guide', err);
+                        setError(i18nService.t('userGuideOpenFailed'));
+                      }
+                    }}
+                    className="mt-4 inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-primary-hover active:scale-[0.98]"
+                  >
+                    {i18nService.t('userGuideOpen')}
+                    <ArrowTopRightOnSquareIcon className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            </div>
+            <p className="text-xs leading-5 text-secondary">
+              {i18nService.t('userGuideOnlineHint')}
+            </p>
+          </div>
+        );
 
       case 'email':
         return <EmailSkillConfig />;

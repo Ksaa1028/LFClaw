@@ -63,6 +63,19 @@ const recordList = (value: unknown): Record<string, unknown>[] => (
   Array.isArray(value) ? value.filter(isRecord) : []
 );
 
+const normalizeEnterpriseSkills = (value: unknown): NonNullable<EnterprisePolicy['skills']> => (
+  recordList(value).map(skill => ({
+    id: String(skill.id || '').trim(),
+    name: String(skill.name || skill.id || '').trim(),
+    description: typeof skill.description === 'string' ? skill.description : undefined,
+    version: typeof skill.version === 'string' ? skill.version : undefined,
+    packageFileName: typeof skill.packageFileName === 'string' ? skill.packageFileName : undefined,
+    packageSha256: typeof skill.packageSha256 === 'string' ? skill.packageSha256 : undefined,
+    packageSize: typeof skill.packageSize === 'number' ? skill.packageSize : undefined,
+    downloadUrl: typeof skill.downloadUrl === 'string' ? skill.downloadUrl : undefined,
+  })).filter(skill => skill.id)
+);
+
 const normalizeApiFormat = (value: unknown): 'openai' | 'anthropic' | 'gemini' => (
   value === 'anthropic' || value === 'gemini' ? value : 'openai'
 );
@@ -74,7 +87,10 @@ const normalizeMcpTransportType = (value: unknown): 'stdio' | 'sse' | 'http' | '
 const normalizeAsrFormat = (_value: unknown): 'pcm' => 'pcm';
 
 export class LFClawEnterpriseAccess {
-  constructor(private readonly store: SqliteStore) {}
+  constructor(
+    private readonly store: SqliteStore,
+    private readonly getClientVersion: () => string = () => app.getVersion(),
+  ) {}
 
   getServerUrl(): string {
     return normalizeUrl(process.env[ENTERPRISE_SERVER_URL_ENV])
@@ -126,6 +142,7 @@ export class LFClawEnterpriseAccess {
         deviceToken: this.getDeviceToken(),
         deviceName: os.hostname(),
         platform: process.platform,
+        clientVersion: this.getClientVersion(),
       },
     });
 
@@ -138,7 +155,8 @@ export class LFClawEnterpriseAccess {
     const current = this.getCurrentAccess();
     if (!current) return null;
 
-    const payload = await this.request(current.serverUrl, '/api/enterprise/me', {
+    const clientVersion = encodeURIComponent(this.getClientVersion());
+    const payload = await this.request(current.serverUrl, `/api/enterprise/me?clientVersion=${clientVersion}`, {
       method: 'GET',
       accessToken: current.accessToken,
     });
@@ -262,7 +280,10 @@ export class LFClawEnterpriseAccess {
       accessToken?: string;
     },
   ): Promise<Record<string, unknown>> {
-    const headers: Record<string, string> = { Accept: 'application/json' };
+    const headers: Record<string, string> = {
+      Accept: 'application/json',
+      'X-LFClaw-Client-Version': this.getClientVersion(),
+    };
     if (options.body) headers['Content-Type'] = 'application/json';
     if (options.accessToken) headers.Authorization = `Bearer ${options.accessToken}`;
 
@@ -399,18 +420,36 @@ export class LFClawEnterpriseAccess {
         url: typeof server.url === 'string' ? server.url : undefined,
         headers: isRecord(server.headers) ? Object.fromEntries(Object.entries(server.headers).map(([key, val]) => [key, String(val)])) : undefined,
       })).filter(server => server.id),
-      skills: recordList(raw.skills ?? fallback?.skills).map(skill => ({
-        id: String(skill.id || '').trim(),
-        name: String(skill.name || skill.id || '').trim(),
-        description: typeof skill.description === 'string' ? skill.description : undefined,
-        version: typeof skill.version === 'string' ? skill.version : undefined,
-        packageFileName: typeof skill.packageFileName === 'string' ? skill.packageFileName : undefined,
-        packageSha256: typeof skill.packageSha256 === 'string' ? skill.packageSha256 : undefined,
-        packageSize: typeof skill.packageSize === 'number' ? skill.packageSize : undefined,
-        downloadUrl: typeof skill.downloadUrl === 'string' ? skill.downloadUrl : undefined,
-      })).filter(skill => skill.id),
+      skills: normalizeEnterpriseSkills(raw.skills ?? fallback?.skills),
+      enterpriseSkills: normalizeEnterpriseSkills(
+        raw.enterpriseSkills
+          ?? raw.skillsCatalog
+          ?? fallback?.enterpriseSkills
+          ?? fallback?.skillsCatalog,
+      ),
+      skillsCatalog: normalizeEnterpriseSkills(
+        raw.skillsCatalog
+          ?? raw.enterpriseSkills
+          ?? fallback?.skillsCatalog
+          ?? fallback?.enterpriseSkills,
+      ),
+      skillDelivery: this.normalizeSkillDelivery(raw.skillDelivery ?? fallback?.skillDelivery),
       adminUrl: typeof raw.adminUrl === 'string' && raw.adminUrl.trim() ? raw.adminUrl.trim() : fallback?.adminUrl,
       enterpriseName: typeof raw.enterpriseName === 'string' && raw.enterpriseName.trim() ? raw.enterpriseName.trim() : fallback?.enterpriseName,
+    };
+  }
+
+  private normalizeSkillDelivery(value: unknown): EnterprisePolicy['skillDelivery'] | undefined {
+    const raw = isRecord(value) ? value : {};
+    if (!('enabled' in raw) && !('clientVersion' in raw) && !('minimumClientVersion' in raw) && !('guarded' in raw)) {
+      return undefined;
+    }
+    return {
+      enabled: raw.enabled !== false,
+      clientVersion: typeof raw.clientVersion === 'string' ? raw.clientVersion : undefined,
+      minimumClientVersion: typeof raw.minimumClientVersion === 'string' ? raw.minimumClientVersion : undefined,
+      guarded: raw.guarded === true,
+      reason: typeof raw.reason === 'string' ? raw.reason : undefined,
     };
   }
 

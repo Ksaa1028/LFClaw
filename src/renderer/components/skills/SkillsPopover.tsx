@@ -1,10 +1,11 @@
 import { CheckIcon } from '@heroicons/react/24/outline';
 import React, { useEffect, useRef, useState } from 'react';
-import { useSelector } from 'react-redux';
+import { useDispatch, useSelector } from 'react-redux';
 
 import { i18nService } from '../../services/i18n';
 import { skillService } from '../../services/skill';
 import { RootState } from '../../store';
+import { setSkills } from '../../store/slices/skillSlice';
 import { Skill } from '../../types/skill';
 import Cog6ToothIcon from '../icons/Cog6ToothIcon';
 import SearchIcon from '../icons/SearchIcon';
@@ -22,6 +23,12 @@ interface SkillsPopoverProps {
   onMouseLeave?: () => void;
 }
 
+interface EnterpriseSkillSearchAlias {
+  id: string;
+  name?: string;
+  description?: string;
+}
+
 const SkillsPopover: React.FC<SkillsPopoverProps> = ({
   isOpen,
   onClose,
@@ -36,34 +43,116 @@ const SkillsPopover: React.FC<SkillsPopoverProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [maxListHeight, setMaxListHeight] = useState(256); // default max-h-64 = 256px
   const [i18nReady, setI18nReady] = useState(() => skillService.hasLocalizedSkillDescriptions());
+  const [enterpriseSkillSearchAliases, setEnterpriseSkillSearchAliases] = useState<
+    Record<string, EnterpriseSkillSearchAlias[]>
+  >({});
   const popoverRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const dispatch = useDispatch();
   const skills = useSelector((state: RootState) => state.skill.skills);
   const activeSkillIds = useSelector((state: RootState) => state.skill.activeSkillIds);
   const shouldUseFallbackDescription = i18nReady || i18nService.getLanguage() !== 'zh';
 
   // Filter enabled skills based on search query
   const filteredSkills = skills
-    .filter(s => s.enabled && !(s.enterpriseManaged === true && s.enterpriseAllowed === false))
+    .filter(s => (s.enabled || s.enterpriseManaged === true) && !(s.enterpriseManaged === true && s.enterpriseAllowed === false))
     .filter(s => {
       const query = searchQuery.toLowerCase();
       const description = shouldUseFallbackDescription
         ? skillService.getLocalizedSkillDescription(s.id, s.name, s.description)
         : '';
-      return s.name.toLowerCase().includes(query) || description.toLowerCase().includes(query);
+      const enterpriseAliases = enterpriseSkillSearchAliases[s.id] ?? [];
+      const searchTerms = [
+        s.id,
+        s.name,
+        description,
+        ...enterpriseAliases.flatMap(alias => [alias.id, alias.name ?? '', alias.description ?? '']),
+      ];
+      return searchTerms.some(term => term.toLowerCase().includes(query));
     });
 
   // Load localized skill descriptions from marketplace/localSkill metadata.
   useEffect(() => {
     if (!isOpen) return;
-    if (skillService.hasLocalizedSkillDescriptions()) {
-      setI18nReady(true);
-      return;
-    }
-    skillService.fetchMarketplaceSkills()
-      .then(() => setI18nReady(true))
-      .catch(() => setI18nReady(true));
-  }, [isOpen]);
+    let isActive = true;
+
+    const refreshSkills = async () => {
+      let enterpriseAccess = null;
+      let enterpriseInstallations: Array<{
+        serverSkillId: string;
+        installedSkillId?: string;
+        packageSkillIds?: string[];
+      }> = [];
+
+      try {
+        const enterprise = window.electron?.enterprise;
+        if (enterprise) {
+          const syncResult = await enterprise.syncPolicy();
+          enterpriseAccess = syncResult.success ? syncResult.access ?? null : null;
+
+          const statusResult = await enterprise.getStatus();
+          if (!enterpriseAccess && statusResult.success) {
+            enterpriseAccess = statusResult.status?.access ?? null;
+          }
+          if (statusResult.success) {
+            enterpriseInstallations = statusResult.status?.enterpriseSkillInstallations ?? [];
+          }
+        }
+
+        const refreshedSkills = await skillService.loadSkills();
+        if (isActive) {
+          dispatch(setSkills(refreshedSkills));
+
+          const installedSkillIds = new Set(refreshedSkills.map(skill => skill.id));
+          const installationByServerSkillId = new Map(
+            enterpriseInstallations.map(installation => [installation.serverSkillId, installation]),
+          );
+          const enterpriseSkills = enterpriseAccess?.policy.skills
+            ?? enterpriseAccess?.policy.enterpriseSkills
+            ?? enterpriseAccess?.policy.skillsCatalog
+            ?? [];
+          const aliases = enterpriseSkills.reduce<Record<string, EnterpriseSkillSearchAlias[]>>(
+            (result, enterpriseSkill) => {
+              const installation = installationByServerSkillId.get(enterpriseSkill.id);
+              const localSkillId = installation?.installedSkillId && installedSkillIds.has(installation.installedSkillId)
+                ? installation.installedSkillId
+                : installation?.packageSkillIds?.find(skillId => installedSkillIds.has(skillId))
+                  ?? (installedSkillIds.has(enterpriseSkill.id) ? enterpriseSkill.id : undefined);
+              if (!localSkillId) return result;
+
+              result[localSkillId] ??= [];
+              result[localSkillId].push({
+                id: enterpriseSkill.id,
+                name: enterpriseSkill.name,
+                description: enterpriseSkill.description,
+              });
+              return result;
+            },
+            {},
+          );
+          setEnterpriseSkillSearchAliases(aliases);
+        }
+      } catch (error) {
+        console.warn('[SkillsPopover] failed to refresh skills:', error);
+      }
+
+      if (skillService.hasLocalizedSkillDescriptions()) {
+        if (isActive) setI18nReady(true);
+        return;
+      }
+
+      try {
+        await skillService.fetchMarketplaceSkills();
+      } finally {
+        if (isActive) setI18nReady(true);
+      }
+    };
+
+    void refreshSkills();
+    return () => {
+      isActive = false;
+    };
+  }, [dispatch, isOpen]);
 
   // Calculate available height and focus search input when popover opens
   useEffect(() => {

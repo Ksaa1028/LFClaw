@@ -83,6 +83,33 @@ export interface EnterprisePolicy {
     packageSize?: number;
     downloadUrl?: string;
   }>;
+  enterpriseSkills?: Array<{
+    id: string;
+    name: string;
+    description?: string;
+    version?: string;
+    packageFileName?: string;
+    packageSha256?: string;
+    packageSize?: number;
+    downloadUrl?: string;
+  }>;
+  skillsCatalog?: Array<{
+    id: string;
+    name: string;
+    description?: string;
+    version?: string;
+    packageFileName?: string;
+    packageSha256?: string;
+    packageSize?: number;
+    downloadUrl?: string;
+  }>;
+  skillDelivery?: {
+    enabled: boolean;
+    clientVersion?: string;
+    minimumClientVersion?: string;
+    guarded?: boolean;
+    reason?: string;
+  };
   adminUrl?: string;
   enterpriseName?: string;
 }
@@ -99,10 +126,20 @@ export interface EnterpriseCurrentAccess {
   syncedAt: string;
 }
 
+export interface EnterpriseSkillInstallation {
+  serverSkillId: string;
+  installedSkillId?: string;
+  packageSha256?: string;
+  packageFileName?: string;
+  packageSkillIds?: string[];
+  installedAt?: string;
+}
+
 export interface EnterpriseStatus {
   serverUrl: string;
   lastActivationCode?: string;
   access: EnterpriseCurrentAccess | null;
+  enterpriseSkillInstallations?: EnterpriseSkillInstallation[];
 }
 
 export interface EnterpriseActivateInput {

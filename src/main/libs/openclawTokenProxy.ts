@@ -157,6 +157,16 @@ type ParsedProxySSEPacket = {
   payload: string;
 };
 
+type ProxySSEScanResult = {
+  remaining: string;
+  sawTerminalEvent: boolean;
+};
+
+type ProxySSEPacketAnalysis = {
+  quotaError: Omit<OpenClawTokenProxyQuotaError, 'capturedAt'> | null;
+  isTerminal: boolean;
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
@@ -346,20 +356,7 @@ function extractQuotaErrorFromProxyErrorPayload(
 
   try {
     const parsed = JSON.parse(payload) as unknown;
-    if (!isRecord(parsed)) {
-      return null;
-    }
-
-    const message = getErrorMessage(parsed);
-    const code = getErrorCode(parsed);
-    const isErrorPayload = event === 'error' || parsed.type === 'error' || parsed.error != null;
-    const searchable = `${message} ${code ?? ''} ${payload}`;
-    if (isErrorPayload && isLobsterAIQuotaExhaustedError(searchable)) {
-      return {
-        message: message || payload,
-        ...(code !== undefined ? { code } : {}),
-      };
-    }
+    return extractQuotaErrorFromParsedProxyPayload(parsed, payload, event);
   } catch {
     if (event === 'error' && isLobsterAIQuotaExhaustedError(payload)) {
       return { message: payload };
@@ -369,11 +366,72 @@ function extractQuotaErrorFromProxyErrorPayload(
   return null;
 }
 
+function extractQuotaErrorFromParsedProxyPayload(
+  parsed: unknown,
+  payload: string,
+  event = '',
+): Omit<OpenClawTokenProxyQuotaError, 'capturedAt'> | null {
+  if (!isRecord(parsed)) {
+    return null;
+  }
+
+  const message = getErrorMessage(parsed);
+  const code = getErrorCode(parsed);
+  const isErrorPayload = event === 'error' || parsed.type === 'error' || parsed.error != null;
+  const searchable = `${message} ${code ?? ''} ${payload}`;
+  if (!isErrorPayload || !isLobsterAIQuotaExhaustedError(searchable)) {
+    return null;
+  }
+
+  return {
+    message: message || payload,
+    ...(code !== undefined ? { code } : {}),
+  };
+}
+
+function isTerminalParsedProxyPayload(parsed: unknown): boolean {
+  if (!isRecord(parsed)) {
+    return false;
+  }
+
+  return toArray(parsed.choices).some((choice) => {
+    const choiceRecord = toOptionalRecord(choice);
+    return typeof choiceRecord?.finish_reason === 'string'
+      && choiceRecord.finish_reason.trim().length > 0;
+  });
+}
+
+function analyzeProxySSEPacket(packet: string): ProxySSEPacketAnalysis {
+  const parsedPacket = parseProxySSEPacket(packet);
+  const event = parsedPacket.event.trim().toLowerCase();
+  const payload = parsedPacket.payload.trim();
+  if (!payload) {
+    return { quotaError: null, isTerminal: false };
+  }
+  if (payload === '[DONE]') {
+    return { quotaError: null, isTerminal: event !== 'error' };
+  }
+
+  try {
+    const parsedPayload = JSON.parse(payload) as unknown;
+    return {
+      quotaError: extractQuotaErrorFromParsedProxyPayload(parsedPayload, payload, event),
+      isTerminal: event !== 'error' && isTerminalParsedProxyPayload(parsedPayload),
+    };
+  } catch {
+    return {
+      quotaError: event === 'error' && isLobsterAIQuotaExhaustedError(payload)
+        ? { message: payload }
+        : null,
+      isTerminal: false,
+    };
+  }
+}
+
 function extractQuotaErrorFromProxySSEPacket(
   packet: string,
 ): Omit<OpenClawTokenProxyQuotaError, 'capturedAt'> | null {
-  const parsed = parseProxySSEPacket(packet);
-  return extractQuotaErrorFromProxyErrorPayload(parsed.payload, parsed.event);
+  return analyzeProxySSEPacket(packet).quotaError;
 }
 
 function rememberQuotaError(error: Omit<OpenClawTokenProxyQuotaError, 'capturedAt'>, now = Date.now()): void {
@@ -383,34 +441,46 @@ function rememberQuotaError(error: Omit<OpenClawTokenProxyQuotaError, 'capturedA
   };
 }
 
-function scanProxySSEBufferForQuotaError(buffer: string, now = Date.now()): string {
+function scanProxySSEBuffer(buffer: string, now = Date.now()): ProxySSEScanResult {
   let remaining = buffer;
   let boundary = findSSEPacketBoundary(remaining);
+  let sawTerminalEvent = false;
 
   while (boundary) {
     const packet = remaining.slice(0, boundary.index);
     remaining = remaining.slice(boundary.index + boundary.separatorLength);
 
-    const quotaError = extractQuotaErrorFromProxySSEPacket(packet);
-    if (quotaError) {
-      rememberQuotaError(quotaError, now);
+    const analysis = analyzeProxySSEPacket(packet);
+    if (analysis.quotaError) {
+      rememberQuotaError(analysis.quotaError, now);
     }
+    sawTerminalEvent = sawTerminalEvent || analysis.isTerminal;
 
     boundary = findSSEPacketBoundary(remaining);
   }
 
-  return remaining;
+  return { remaining, sawTerminalEvent };
+}
+
+function scanProxySSEBufferForQuotaError(buffer: string, now = Date.now()): string {
+  return scanProxySSEBuffer(buffer, now).remaining;
 }
 
 function flushProxySSEBufferForQuotaError(buffer: string, now = Date.now()): void {
-  const remaining = scanProxySSEBufferForQuotaError(buffer, now);
-  if (!remaining.trim()) {
-    return;
+  flushProxySSEBuffer(buffer, now);
+}
+
+function flushProxySSEBuffer(buffer: string, now = Date.now()): boolean {
+  const scanResult = scanProxySSEBuffer(buffer, now);
+  if (!scanResult.remaining.trim()) {
+    return scanResult.sawTerminalEvent;
   }
-  const quotaError = extractQuotaErrorFromProxySSEPacket(remaining);
-  if (quotaError) {
-    rememberQuotaError(quotaError, now);
+
+  const analysis = analyzeProxySSEPacket(scanResult.remaining);
+  if (analysis.quotaError) {
+    rememberQuotaError(analysis.quotaError, now);
   }
+  return scanResult.sawTerminalEvent || analysis.isTerminal;
 }
 
 function scanProxyBodyForQuotaError(body: Buffer, now = Date.now()): void {
@@ -509,18 +579,47 @@ function pipeStreamingResponseWithQuotaScan(
   pipeWebReadableResponseWithQuotaScan(body as unknown as ReadableStream<Uint8Array>, res);
 }
 
+function settleDownstreamAfterStreamReadError(
+  res: http.ServerResponse,
+  error: unknown,
+  sawTerminalEvent: boolean,
+): void {
+  if (res.destroyed || res.writableEnded) {
+    return;
+  }
+  if (sawTerminalEvent) {
+    console.warn(
+      '[OpenClawTokenProxy] stream read error after terminal SSE event; preserving completed response:',
+      error,
+    );
+    res.end();
+    return;
+  }
+
+  // A clean end before the protocol terminal event turns a transport failure
+  // into a successful empty model response and bypasses OpenClaw recovery.
+  console.error(
+    '[OpenClawTokenProxy] stream read error before terminal SSE event; aborting downstream response:',
+    error,
+  );
+  res.destroy();
+}
+
 function pipeNodeReadableResponseWithQuotaScan(
   stream: NodeJS.ReadableStream,
   res: http.ServerResponse,
 ): void {
   const decoder = new TextDecoder();
   let sseBuffer = '';
+  let sawTerminalEvent = false;
 
   stream.on('data', (chunk: Buffer | Uint8Array | string) => {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    sseBuffer = scanProxySSEBufferForQuotaError(
+    const scanResult = scanProxySSEBuffer(
       sseBuffer + decoder.decode(buffer, { stream: true }),
     );
+    sseBuffer = scanResult.remaining;
+    sawTerminalEvent = sawTerminalEvent || scanResult.sawTerminalEvent;
     res.write(buffer);
   });
 
@@ -531,8 +630,13 @@ function pipeNodeReadableResponseWithQuotaScan(
   });
 
   stream.on('error', (err) => {
-    console.error('[OpenClawTokenProxy] stream read error:', err);
-    res.end();
+    const trailingBuffer = sseBuffer + decoder.decode();
+    const sawTrailingTerminalEvent = flushProxySSEBuffer(trailingBuffer);
+    settleDownstreamAfterStreamReadError(
+      res,
+      err,
+      sawTerminalEvent || sawTrailingTerminalEvent,
+    );
   });
 }
 
@@ -543,6 +647,7 @@ function pipeWebReadableResponseWithQuotaScan(
   const reader = webStream.getReader();
   const decoder = new TextDecoder();
   let sseBuffer = '';
+  let sawTerminalEvent = false;
 
   const pump = (): void => {
     reader.read().then(({ done, value }) => {
@@ -553,14 +658,21 @@ function pipeWebReadableResponseWithQuotaScan(
         return;
       }
 
-      sseBuffer = scanProxySSEBufferForQuotaError(
+      const scanResult = scanProxySSEBuffer(
         sseBuffer + decoder.decode(value, { stream: true }),
       );
+      sseBuffer = scanResult.remaining;
+      sawTerminalEvent = sawTerminalEvent || scanResult.sawTerminalEvent;
       res.write(value);
       pump();
     }).catch((err) => {
-      console.error('[OpenClawTokenProxy] stream read error:', err);
-      res.end();
+      const trailingBuffer = sseBuffer + decoder.decode();
+      const sawTrailingTerminalEvent = flushProxySSEBuffer(trailingBuffer);
+      settleDownstreamAfterStreamReadError(
+        res,
+        err,
+        sawTerminalEvent || sawTrailingTerminalEvent,
+      );
     });
   };
 
@@ -568,10 +680,13 @@ function pipeWebReadableResponseWithQuotaScan(
 }
 
 export const __openClawTokenProxyTestUtils = {
+  analyzeProxySSEPacket,
   extractQuotaErrorFromProxyErrorPayload,
   extractQuotaErrorFromProxySSEPacket,
+  flushProxySSEBuffer,
   hydrateGeminiChatCompletionsBody,
   hydrateGeminiToolCallThoughtSignatures,
+  scanProxySSEBuffer,
   scanProxySSEBufferForQuotaError,
   flushProxySSEBufferForQuotaError,
   rememberQuotaError,

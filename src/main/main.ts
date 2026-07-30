@@ -1536,7 +1536,10 @@ const AUTH_USER_STORE_KEY = 'auth_user';
 
 const getLFClawEnterpriseAccess = (): LFClawEnterpriseAccess => {
   if (!lfClawEnterpriseAccess) {
-    lfClawEnterpriseAccess = new LFClawEnterpriseAccess(getStore());
+    lfClawEnterpriseAccess = new LFClawEnterpriseAccess(
+      getStore(),
+      () => getAppUpdateCoordinator().getCurrentVersion(),
+    );
   }
   return lfClawEnterpriseAccess;
 };
@@ -1844,10 +1847,9 @@ const getOpenClawConfigSync = (): OpenClawConfigSync => {
           .listSkills()
           .map(s => ({
             id: s.id,
-            enabled: s.enabled && (
-              !getLFClawEnterpriseAccess().getCurrentAccess()
-              || !isEnterpriseManagedSkill(s.id)
-              || getLFClawEnterpriseAccess().isSkillAllowed(s.id)
+            enabled: s.enabled && isSkillAllowedForEnterpriseActivation(
+              s.id,
+              getLFClawEnterpriseAccess(),
             ),
           })),
       getTelegramInstances: () => {
@@ -3505,15 +3507,93 @@ function isEnterpriseManagedMcpServer(server: { registryId?: string | null; desc
 }
 
 const ENTERPRISE_INSTALLED_SKILLS_KEY = 'lfclaw_enterprise_installed_skills';
-type EnterpriseInstalledSkillsMap = Record<string, { packageSha256?: string; packageFileName?: string; installedAt?: string }>;
+type EnterpriseInstalledSkillMeta = {
+  serverSkillId?: string;
+  installedSkillId?: string;
+  packageSha256?: string;
+  packageFileName?: string;
+  packageSkillIds?: string[];
+  installedAt?: string;
+};
+type EnterpriseInstalledSkillsMap = Record<string, EnterpriseInstalledSkillMeta>;
 
-const getEnterpriseInstalledSkillsMap = (): EnterpriseInstalledSkillsMap => (
-  getStore().get<EnterpriseInstalledSkillsMap>(ENTERPRISE_INSTALLED_SKILLS_KEY) ?? {}
+const getEnterpriseInstalledSkillsMap = (): EnterpriseInstalledSkillsMap => {
+  const stored = getStore().get<EnterpriseInstalledSkillsMap>(ENTERPRISE_INSTALLED_SKILLS_KEY) ?? {};
+  const normalized: EnterpriseInstalledSkillsMap = {};
+
+  Object.entries(stored).forEach(([storedKey, meta]) => {
+    const serverSkillId = meta.serverSkillId || storedKey;
+    normalized[serverSkillId] = {
+      ...normalized[serverSkillId],
+      ...meta,
+      serverSkillId,
+      installedSkillId: meta.installedSkillId || storedKey,
+    };
+  });
+
+  return normalized;
+};
+
+const getEnterpriseServerSkillIdsForInstalledSkill = (skillId: string): string[] => (
+  Object.entries(getEnterpriseInstalledSkillsMap())
+    .filter(([serverSkillId, meta]) => (meta.installedSkillId || serverSkillId) === skillId)
+    .map(([serverSkillId]) => serverSkillId)
 );
 
 const isEnterpriseManagedSkill = (skillId: string): boolean => (
-  Object.prototype.hasOwnProperty.call(getEnterpriseInstalledSkillsMap(), skillId)
+  getEnterpriseServerSkillIdsForInstalledSkill(skillId).length > 0
 );
+
+const normalizeEnterpriseSkillFolderName = (name: string): string => {
+  const normalized = name.replace(/[^a-zA-Z0-9-_]+/g, '-').replace(/^-+|-+$/g, '');
+  return normalized || 'skill';
+};
+
+const uniqueStrings = (values: Array<string | undefined | null>): string[] => {
+  const seen = new Set<string>();
+  values.forEach(value => {
+    const trimmed = value?.trim();
+    if (trimmed) seen.add(trimmed);
+  });
+  return [...seen];
+};
+
+const readSkillIdsFromEnterpriseZip = async (zipPath: string, fallbackId: string): Promise<string[]> => {
+  try {
+    const { default: JSZip } = await import('jszip');
+    const buffer = await fs.promises.readFile(zipPath);
+    const zip = await JSZip.loadAsync(buffer);
+    const ids = new Set<string>();
+
+    Object.keys(zip.files).forEach(entryName => {
+      const parts = entryName.replace(/\\/g, '/').split('/').filter(Boolean);
+      if (parts[parts.length - 1] !== 'SKILL.md') return;
+      const folderName = parts.length >= 2 ? parts[parts.length - 2] : fallbackId;
+      ids.add(normalizeEnterpriseSkillFolderName(folderName));
+    });
+
+    return uniqueStrings([...ids, fallbackId]);
+  } catch (error) {
+    console.warn(`[Enterprise] failed to inspect enterprise skill package "${fallbackId}":`, error);
+    return uniqueStrings([fallbackId]);
+  }
+};
+
+const collectInstalledSkillIdsForPackage = (
+  packageSkillIds: string[],
+  installedIds: Set<string>,
+): string[] => {
+  const candidates: string[] = [];
+  installedIds.forEach(installedId => {
+    if (packageSkillIds.some(packageSkillId => (
+      installedId === packageSkillId
+      || new RegExp(`^${packageSkillId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-\\d+$`).test(installedId)
+    ))) {
+      candidates.push(installedId);
+    }
+  });
+  return candidates;
+};
 
 const isSkillAllowedForEnterpriseActivation = (
   skillId: string,
@@ -3521,7 +3601,9 @@ const isSkillAllowedForEnterpriseActivation = (
 ): boolean => (
   !enterpriseAccess.getCurrentAccess()
   || !isEnterpriseManagedSkill(skillId)
-  || enterpriseAccess.isSkillAllowed(skillId)
+  || getEnterpriseServerSkillIdsForInstalledSkill(skillId).some(serverSkillId => (
+    enterpriseAccess.isSkillAllowed(serverSkillId)
+  ))
 );
 
 const syncEnterpriseSkillsToLocalStore = async (access: EnterpriseCurrentAccess | null): Promise<void> => {
@@ -3534,10 +3616,10 @@ const syncEnterpriseSkillsToLocalStore = async (access: EnterpriseCurrentAccess 
   let installedIds = new Set(skillManagerInstance.listSkills().map(skill => skill.id));
   const allowedIds = new Set(skills.map(skill => skill.id).filter(Boolean));
 
-  for (const installedId of Object.keys(enterpriseInstalled)) {
-    if (access && allowedIds.has(installedId)) continue;
-    console.log(`[Enterprise] untracked enterprise skill "${installedId}" after authorization changed`);
-    delete enterpriseInstalled[installedId];
+  for (const serverSkillId of Object.keys(enterpriseInstalled)) {
+    if (access && allowedIds.has(serverSkillId)) continue;
+    console.log(`[Enterprise] untracked enterprise skill "${serverSkillId}" after authorization changed`);
+    delete enterpriseInstalled[serverSkillId];
   }
 
   if (!access || skills.length === 0) {
@@ -3546,33 +3628,47 @@ const syncEnterpriseSkillsToLocalStore = async (access: EnterpriseCurrentAccess 
   }
 
   for (const skill of skills) {
-    if (!skill.id || !skill.downloadUrl) continue;
+    if (!skill.id) continue;
+
     const tracked = enterpriseInstalled[skill.id];
-    const packageChanged = Boolean(
-      skill.packageSha256
-      && tracked?.packageSha256
-      && tracked.packageSha256 !== skill.packageSha256,
-    );
-    if (installedIds.has(skill.id) && !packageChanged) {
-      if (!tracked) {
-        enterpriseInstalled[skill.id] = {
-          packageSha256: skill.packageSha256,
-          packageFileName: skill.packageFileName,
-          installedAt: new Date().toISOString(),
-        };
-      }
+    const trackedSkillId = tracked?.installedSkillId || skill.id;
+    if (installedIds.has(trackedSkillId)) {
+      enterpriseInstalled[skill.id] = {
+        ...tracked,
+        serverSkillId: skill.id,
+        installedSkillId: trackedSkillId,
+        packageSha256: skill.packageSha256,
+        packageFileName: skill.packageFileName,
+        installedAt: tracked?.installedAt ?? new Date().toISOString(),
+      };
       continue;
     }
 
-    if (installedIds.has(skill.id) && packageChanged) {
-      try {
-        await skillManagerInstance.deleteSkill(skill.id);
-        installedIds = new Set(skillManagerInstance.listSkills().map(item => item.id));
-      } catch (error) {
-        console.warn(`[Enterprise] failed to replace enterprise skill "${skill.id}":`, error);
-        continue;
-      }
+    // A single enterprise ZIP can be authorized under more than one server skill ID.
+    // Reuse the local installation before requiring a second download URL.
+    const reusedInstallation = Object.entries(enterpriseInstalled).find(([, meta]) => {
+      const installedSkillId = meta.installedSkillId;
+      if (!installedSkillId || !installedIds.has(installedSkillId)) return false;
+      return Boolean(
+        (skill.packageSha256 && meta.packageSha256 === skill.packageSha256)
+        || (skill.packageFileName && meta.packageFileName === skill.packageFileName),
+      );
+    })?.[1];
+
+    if (reusedInstallation?.installedSkillId) {
+      enterpriseInstalled[skill.id] = {
+        ...reusedInstallation,
+        serverSkillId: skill.id,
+        installedSkillId: reusedInstallation.installedSkillId,
+        packageSha256: skill.packageSha256 ?? reusedInstallation.packageSha256,
+        packageFileName: skill.packageFileName ?? reusedInstallation.packageFileName,
+        installedAt: reusedInstallation.installedAt ?? new Date().toISOString(),
+      };
+      console.log(`[Enterprise] reused installed skill "${reusedInstallation.installedSkillId}" for enterprise skill "${skill.id}"`);
+      continue;
     }
+
+    if (!skill.downloadUrl) continue;
 
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lfclaw-enterprise-skill-'));
     const zipPath = path.join(tempDir, skill.packageFileName || `${skill.id}.zip`);
@@ -3582,12 +3678,36 @@ const syncEnterpriseSkillsToLocalStore = async (access: EnterpriseCurrentAccess 
         headers: {
           Authorization: `Bearer ${access.accessToken}`,
           Accept: 'application/zip',
+          'X-LFClaw-Client-Version': getAppUpdateCoordinator().getCurrentVersion(),
         },
       });
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
       fs.writeFileSync(zipPath, Buffer.from(await response.arrayBuffer()));
+      const packageSkillIds = await readSkillIdsFromEnterpriseZip(zipPath, skill.id);
+      const existingInstalledSkillId = uniqueStrings([
+        trackedSkillId,
+        skill.id,
+        ...packageSkillIds,
+        ...collectInstalledSkillIdsForPackage(packageSkillIds, installedIds),
+        ...(tracked?.packageSkillIds ?? []),
+      ]).find(id => installedIds.has(id));
+
+      if (existingInstalledSkillId) {
+        enterpriseInstalled[skill.id] = {
+          ...tracked,
+          serverSkillId: skill.id,
+          installedSkillId: existingInstalledSkillId,
+          packageSha256: skill.packageSha256,
+          packageFileName: skill.packageFileName,
+          packageSkillIds,
+          installedAt: tracked?.installedAt ?? new Date().toISOString(),
+        };
+        console.log(`[Enterprise] linked installed skill "${existingInstalledSkillId}" to enterprise skill "${skill.id}"`);
+        continue;
+      }
+
       const result = await skillManagerInstance.downloadSkill(zipPath);
       if (result.pendingInstallId) {
         skillManagerInstance.confirmPendingInstall(result.pendingInstallId, 'install');
@@ -3595,13 +3715,22 @@ const syncEnterpriseSkillsToLocalStore = async (access: EnterpriseCurrentAccess 
       if (!result.success) {
         throw new Error(result.error || 'install failed');
       }
-      installedIds.add(skill.id);
+      const afterSkills = result.skills ?? skillManagerInstance.listSkills();
+      const afterIds = new Set(afterSkills.map(item => item.id));
+      const newlyInstalledIds = [...afterIds].filter(id => !installedIds.has(id));
+      const installedSkillId = uniqueStrings([skill.id, ...packageSkillIds]).find(id => afterIds.has(id))
+        ?? newlyInstalledIds[0]
+        ?? trackedSkillId;
+      installedIds = afterIds;
       enterpriseInstalled[skill.id] = {
+        serverSkillId: skill.id,
+        installedSkillId,
         packageSha256: skill.packageSha256,
         packageFileName: skill.packageFileName,
+        packageSkillIds,
         installedAt: new Date().toISOString(),
       };
-      console.log(`[Enterprise] installed enterprise skill "${skill.id}"`);
+      console.log(`[Enterprise] installed enterprise skill "${skill.id}" as "${installedSkillId}"`);
     } catch (error) {
       console.warn(`[Enterprise] failed to install enterprise skill "${skill.id}":`, error);
     } finally {
@@ -3958,7 +4087,9 @@ if (!gotTheLock) {
     }
     syncEnterpriseModelProvidersToAppConfig(access);
     syncEnterpriseMcpServersToLocalStore(access);
-    await syncEnterpriseSkillsToLocalStore(access);
+    await syncEnterpriseSkillsToLocalStore(access).catch(error => {
+      console.warn('[Enterprise] failed to sync enterprise skills during preflight:', error);
+    });
     await syncOpenClawConfig({
       reason: 'enterprise-preflight',
       restartGatewayIfRunning: false,
@@ -3973,7 +4104,23 @@ if (!gotTheLock) {
 
   ipcMain.handle(EnterpriseIpcChannel.GetStatus, async () => {
     try {
-      return { success: true, status: getLFClawEnterpriseAccess().getStatus() };
+      const status = getLFClawEnterpriseAccess().getStatus();
+      return {
+        success: true,
+        status: {
+          ...status,
+          enterpriseSkillInstallations: Object.entries(getEnterpriseInstalledSkillsMap()).map(
+            ([storedSkillId, meta]) => ({
+              serverSkillId: meta.serverSkillId || storedSkillId,
+              installedSkillId: meta.installedSkillId || storedSkillId,
+              packageSha256: meta.packageSha256,
+              packageFileName: meta.packageFileName,
+              packageSkillIds: meta.packageSkillIds,
+              installedAt: meta.installedAt,
+            }),
+          ),
+        },
+      };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to load enterprise status' };
     }
@@ -3992,7 +4139,9 @@ if (!gotTheLock) {
       const access = await getLFClawEnterpriseAccess().activate(input);
       syncEnterpriseModelProvidersToAppConfig(access);
       syncEnterpriseMcpServersToLocalStore(access);
-      await syncEnterpriseSkillsToLocalStore(access);
+      await syncEnterpriseSkillsToLocalStore(access).catch(error => {
+        console.warn('[Enterprise] failed to sync enterprise skills during activation:', error);
+      });
       notifyEnterprisePolicyChanged();
       return { success: true, access };
     } catch (error) {
@@ -4005,7 +4154,9 @@ if (!gotTheLock) {
       const access = await getLFClawEnterpriseAccess().syncPolicy();
       syncEnterpriseModelProvidersToAppConfig(access);
       syncEnterpriseMcpServersToLocalStore(access);
-      await syncEnterpriseSkillsToLocalStore(access);
+      await syncEnterpriseSkillsToLocalStore(access).catch(error => {
+        console.warn('[Enterprise] failed to sync enterprise skills during policy refresh:', error);
+      });
       notifyEnterprisePolicyChanged();
       return { success: true, access };
     } catch (error) {
@@ -6228,7 +6379,10 @@ if (!gotTheLock) {
   registerSkillHandlers({
     getSkillManager,
     getSkillStoreUrl,
-    isSkillAllowed: skillId => getLFClawEnterpriseAccess().isSkillAllowed(skillId),
+    isSkillAllowed: skillId => isSkillAllowedForEnterpriseActivation(
+      skillId,
+      getLFClawEnterpriseAccess(),
+    ),
     isEnterpriseManagedSkill,
     getOpenClawRuntimeAdapter: () => openClawRuntimeAdapter,
   });

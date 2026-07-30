@@ -4,7 +4,7 @@ import {
   CheckCircleIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useDispatch, useSelector } from 'react-redux';
 
@@ -36,6 +36,13 @@ type SkillTab = 'installed' | 'enterprise' | 'marketplace';
 type ImportSourceType = 'github' | 'clawhub';
 type DirectImportSource = 'zip' | 'folder' | 'remote';
 
+interface EnterpriseSkillCard {
+  id: string;
+  name: string;
+  description: string;
+  version?: string;
+}
+
 const importSourceTypes: ImportSourceType[] = ['github', 'clawhub'];
 
 const importTabConfig: Record<ImportSourceType, {
@@ -61,6 +68,10 @@ const importTabConfig: Record<ImportSourceType, {
   },
 };
 
+const isEnterpriseManagedSkill = (skill: Skill) => (
+  skill.enterpriseManaged === true
+);
+
 interface SkillsManagerProps {
   readOnly?: boolean;
   onCreateByChat?: () => void;
@@ -78,12 +89,14 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
   const [isRemoteImportOpen, setIsRemoteImportOpen] = useState(false);
   const [importTab, setImportTab] = useState<ImportSourceType>('github');
   const [activeTab, setActiveTab] = useState<SkillTab>('installed');
+  const [enterpriseSkills, setEnterpriseSkills] = useState<EnterpriseSkillCard[]>([]);
   const [marketplaceSkills, setMarketplaceSkills] = useState<MarketplaceSkill[]>([]);
   const [marketTags, setMarketTags] = useState<MarketTag[]>([]);
   const [activeMarketTag, setActiveMarketTag] = useState('all');
   const [isLoadingMarketplace, setIsLoadingMarketplace] = useState(false);
   const [installingSkillId, setInstallingSkillId] = useState<string | null>(null);
   const [selectedMarketplaceSkill, setSelectedMarketplaceSkill] = useState<MarketplaceSkill | null>(null);
+  const [selectedEnterpriseSkill, setSelectedEnterpriseSkill] = useState<EnterpriseSkillCard | null>(null);
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null);
   const [skillPendingDelete, setSkillPendingDelete] = useState<Skill | null>(null);
   const [isDeletingSkill, setIsDeletingSkill] = useState(false);
@@ -111,6 +124,70 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
     window.dispatchEvent(new CustomEvent('app:showToast', { detail: message }));
   };
 
+  const refreshEnterpriseSkills = useCallback(async (syncPolicy = false) => {
+    const enterprise = window.electron?.enterprise;
+    if (!enterprise) {
+      setEnterpriseSkills([]);
+      return;
+    }
+
+    try {
+      let syncedAccess;
+      if (syncPolicy) {
+        const syncResult = await enterprise.syncPolicy();
+        if (!syncResult.success) {
+          console.warn('[Enterprise] failed to refresh enterprise skills:', syncResult.error);
+        } else {
+          syncedAccess = syncResult.access;
+        }
+      }
+
+      const statusResult = await enterprise.getStatus();
+      const access = syncedAccess ?? (statusResult.success ? statusResult.status?.access : null);
+      if (!access) {
+        setEnterpriseSkills([]);
+        return;
+      }
+
+      const installations = new Map(
+        (statusResult.status?.enterpriseSkillInstallations ?? []).map((item) => [
+          item.serverSkillId,
+          item,
+        ]),
+      );
+      const localSkills = await skillService.loadSkills();
+      dispatch(setSkills(localSkills));
+      const authorizedSkills =
+        access.policy.skills ??
+        access.policy.enterpriseSkills ??
+        access.policy.skillsCatalog ??
+        [];
+      const cards = authorizedSkills.map((serverSkill) => {
+        const installation = installations.get(serverSkill.id);
+        const localSkill = installation?.installedSkillId
+          ? localSkills.find((item) => item.id === installation.installedSkillId)
+          : undefined;
+
+        return {
+          id: serverSkill.id,
+          name: serverSkill.name || localSkill?.name || serverSkill.id,
+          description: localSkill
+            ? skillService.getLocalizedSkillDescription(
+                localSkill.id,
+                localSkill.name,
+                localSkill.description,
+              )
+            : serverSkill.description || '',
+          version: serverSkill.version || localSkill?.version,
+        };
+      });
+      setEnterpriseSkills(cards);
+    } catch (error) {
+      console.warn('[Enterprise] failed to load enterprise skills:', error);
+      setEnterpriseSkills([]);
+    }
+  }, [dispatch]);
+
   useEffect(() => {
     let isActive = true;
     const loadSkills = async () => {
@@ -134,6 +211,16 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
       unsubscribe();
     };
   }, [dispatch]);
+
+  useEffect(() => {
+    void refreshEnterpriseSkills(true);
+  }, [refreshEnterpriseSkills]);
+
+  useEffect(() => {
+    if (activeTab === 'enterprise') {
+      void refreshEnterpriseSkills(true);
+    }
+  }, [activeTab, refreshEnterpriseSkills]);
 
   useEffect(() => {
     let isActive = true;
@@ -203,13 +290,14 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
   }, [isRemoteImportOpen, importTab]);
 
   useEffect(() => {
-    const hasOpenDialog = selectedSkill || selectedMarketplaceSkill;
+    const hasOpenDialog = selectedSkill || selectedMarketplaceSkill || selectedEnterpriseSkill;
     if (!hasOpenDialog) return;
 
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         if (selectedSkill) setSelectedSkill(null);
         if (selectedMarketplaceSkill) setSelectedMarketplaceSkill(null);
+        if (selectedEnterpriseSkill) setSelectedEnterpriseSkill(null);
       }
     };
 
@@ -217,7 +305,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
     return () => {
       document.removeEventListener('keydown', handleEscape);
     };
-  }, [selectedSkill, selectedMarketplaceSkill]);
+  }, [selectedSkill, selectedMarketplaceSkill, selectedEnterpriseSkill]);
 
   const filteredSkills = useMemo(() => {
     const query = skillSearchQuery.trim().replace(/\s+/g, ' ').toLowerCase();
@@ -229,14 +317,20 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
   }, [skills, skillSearchQuery]);
 
   const filteredInstalledSkills = useMemo(
-    () => filteredSkills.filter(skill => skill.enterpriseManaged !== true),
+    () => filteredSkills,
     [filteredSkills],
   );
 
-  const filteredEnterpriseSkills = useMemo(
-    () => filteredSkills.filter(skill => skill.enterpriseManaged === true),
-    [filteredSkills],
-  );
+  const filteredEnterpriseSkills = useMemo(() => {
+    const query = skillSearchQuery.trim().replace(/\s+/g, ' ').toLowerCase();
+    if (!query) return enterpriseSkills;
+
+    return enterpriseSkills.filter((skill) => (
+      skill.id.toLowerCase().includes(query)
+      || skill.name.toLowerCase().includes(query)
+      || skill.description.toLowerCase().includes(query)
+    ));
+  }, [enterpriseSkills, skillSearchQuery]);
 
   const filteredMarketplaceSkills = useMemo(() => {
     const query = skillSearchQuery.trim().replace(/\s+/g, ' ').toLowerCase();
@@ -837,9 +931,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
     }
   };
 
-  const visibleLocalSkills = activeTab === 'enterprise'
-    ? filteredEnterpriseSkills
-    : filteredInstalledSkills;
+  const visibleLocalSkills = filteredInstalledSkills;
 
   return (
     <div className="space-y-4">
@@ -1112,7 +1204,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
       </div>
 
       <div>
-      {activeTab !== 'marketplace' && (
+      {activeTab === 'installed' && (
       <>
       <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-3">
         {visibleLocalSkills.length === 0 ? (
@@ -1158,7 +1250,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                   </span>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
-                  {activeTab !== 'enterprise' && !readOnly && !skill.isBuiltIn && (
+                  {!readOnly && !skill.isBuiltIn && !isEnterpriseManagedSkill(skill) && (
                     <button
                       type="button"
                       onClick={(e) => { e.stopPropagation(); handleRequestDeleteSkill(skill); }}
@@ -1168,7 +1260,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                       <TrashIcon className="h-4 w-4" />
                     </button>
                   )}
-                  {activeTab !== 'enterprise' && (
+                  {!isEnterpriseManagedSkill(skill) && (
                     <div
                       className={`w-9 h-5 rounded-full flex items-center transition-colors flex-shrink-0 ${
                         readOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
@@ -1235,6 +1327,37 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
         )}
       </div>
       </>
+      )}
+
+      {activeTab === 'enterprise' && (
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-3">
+          {filteredEnterpriseSkills.length === 0 ? (
+            <div className="col-span-full py-8 text-center text-sm text-secondary">
+              {i18nService.t('noSkillsAvailable')}
+            </div>
+          ) : (
+            filteredEnterpriseSkills.map((skill) => (
+              <button
+                key={skill.id}
+                type="button"
+                onClick={() => setSelectedEnterpriseSkill(skill)}
+                className="flex min-h-[148px] flex-col rounded-xl border border-border bg-surface p-3 text-left shadow-subtle transition-all hover:border-primary/50 hover:shadow-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              >
+                <div className="mb-2 flex min-w-0 items-center gap-2">
+                  <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg bg-primary-muted">
+                    <SkillIcon className="h-4 w-4 text-primary" />
+                  </div>
+                  <span className="truncate text-sm font-medium text-foreground">
+                    {skill.id}
+                  </span>
+                </div>
+                <p className="line-clamp-3 flex-1 text-xs leading-5 text-secondary">
+                  {skill.description || skill.id}
+                </p>
+              </button>
+            ))
+          )}
+        </div>
       )}
 
       {activeTab === 'marketplace' && (
@@ -1384,6 +1507,35 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
         )
       )}
       </div>
+
+      {selectedEnterpriseSkill && createPortal(
+        <Modal
+          onClose={() => setSelectedEnterpriseSkill(null)}
+          overlayClassName="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          className="w-full max-w-md mx-4 rounded-2xl bg-surface border border-border shadow-2xl p-6"
+        >
+          <div className="mb-4 flex items-start justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-primary-muted">
+                <SkillIcon className="h-5 w-5 text-primary" />
+              </div>
+              <div className="min-w-0 break-all text-base font-semibold text-foreground">
+                {selectedEnterpriseSkill.id}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSelectedEnterpriseSkill(null)}
+              className="flex-shrink-0 rounded-lg p-1.5 text-secondary transition-colors hover:bg-surface-raised hover:text-foreground"
+            >
+              <XMarkIcon className="h-5 w-5" />
+            </button>
+          </div>
+          <p className="whitespace-pre-wrap text-sm leading-6 text-secondary">
+            {selectedEnterpriseSkill.description || selectedEnterpriseSkill.id}
+          </p>
+        </Modal>
+      , document.body)}
 
       {selectedMarketplaceSkill && createPortal(
         <Modal
@@ -1560,6 +1712,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
               {skillService.getLocalizedSkillDescription(selectedSkill.id, selectedSkill.name, selectedSkill.description)}
             </p>
 
+            {!isEnterpriseManagedSkill(selectedSkill) && (
             <div className="space-y-2 mb-5">
               {(() => {
                 const mp = marketplaceSkills.find(m => m.id === selectedSkill.id);
@@ -1607,7 +1760,9 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                 );
               })()}
             </div>
+            )}
 
+            {!isEnterpriseManagedSkill(selectedSkill) && (
             <div className="flex items-center justify-between">
               {!readOnly && !selectedSkill.isBuiltIn ? (
                 <button
@@ -1640,6 +1795,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                 />
               </div>
             </div>
+            )}
         </Modal>
       , document.body)}
 
