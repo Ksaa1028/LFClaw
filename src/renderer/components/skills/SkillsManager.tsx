@@ -1351,7 +1351,14 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                     {skill.id}
                   </span>
                 </div>
-                <p className="line-clamp-3 flex-1 text-xs leading-5 text-secondary">
+                <p
+                  className="h-[60px] overflow-hidden text-xs leading-5 text-secondary"
+                  style={{
+                    display: '-webkit-box',
+                    WebkitBoxOrient: 'vertical',
+                    WebkitLineClamp: 3,
+                  }}
+                >
                   {skill.description || skill.id}
                 </p>
               </button>

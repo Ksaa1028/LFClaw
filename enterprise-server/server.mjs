@@ -21,6 +21,7 @@ const MIN_ENTERPRISE_SKILL_CLIENT_VERSION = String(process.env.LFCLAW_MIN_ENTERP
 const asrProxySessions = new Map();
 const ASR_PROXY_SESSION_TTL_MS = 2 * 60 * 1000;
 const ASR_INFERENCE_PATH = '/api-ws/v1/inference';
+const MODEL_CONNECTION_TEST_TOKEN_BUDGET = 16;
 
 const nowIso = () => new Date().toISOString();
 const id = prefix => `${prefix}_${crypto.randomBytes(6).toString('hex')}`;
@@ -59,6 +60,24 @@ const json = (res, status, payload) => {
 };
 const ok = (res, data = {}) => json(res, 200, { code: 0, data });
 const fail = (res, status, message) => json(res, status, { code: status, message });
+const isOutputLimitConnectivitySuccess = (status, responseText) => {
+  if (status !== 400) return false;
+
+  let error;
+  try {
+    error = JSON.parse(responseText)?.error;
+  } catch {
+    return false;
+  }
+
+  if (error?.type !== 'invalid_request_error') return false;
+
+  const message = String(error.message || '').toLowerCase();
+  return (
+    message.includes('model output limit was reached')
+    || (message.includes('could not finish the message') && message.includes('max_tokens'))
+  );
+};
 
 const asrDefault = () => ({
   provider: 'aliyun-dashscope',
@@ -869,7 +888,9 @@ const handleAdmin = async (req, res, url, data) => {
     const makePayload = useModernLimit => ({
       model,
       messages: [{ role: 'user', content: 'ping' }],
-      ...(useModernLimit ? { max_completion_tokens: 1 } : { max_tokens: 1 }),
+      ...(useModernLimit
+        ? { max_completion_tokens: MODEL_CONNECTION_TEST_TOKEN_BUDGET }
+        : { max_tokens: MODEL_CONNECTION_TEST_TOKEN_BUDGET }),
     });
     const shouldRetryLegacyLimit = text => /max_completion_tokens|unsupported parameter|unknown parameter|unrecognized/i.test(text || '');
     try {
@@ -888,6 +909,9 @@ const handleAdmin = async (req, res, url, data) => {
           body: JSON.stringify(makePayload(false)),
         });
         text = await response.text();
+      }
+      if (isOutputLimitConnectivitySuccess(response.status, text)) {
+        return ok(res, { ok: true, status: response.status, model }), true;
       }
       if (!response.ok) {
         return ok(res, {

@@ -30,7 +30,7 @@ const translations: Record<LanguageType, Record<string, string>> = {
     settingsCustomModel: '自定义模型',
     shortcuts: '快捷键',
     userGuide: '使用文档',
-    userGuideTitle: 'LFCLAW 使用指南',
+    userGuideTitle: 'LFClaw 使用指南',
     userGuideOpen: '打开在线文档',
     userGuideOnlineHint: '文档通过飞书云文档持续更新，每次打开都能看到最新内容。',
     userGuideOpenFailed: '无法打开使用文档，请稍后重试',
