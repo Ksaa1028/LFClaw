@@ -384,6 +384,8 @@ Windows 日常更新包：
 npm run release:win
 ```
 
+Windows 上推荐直接双击仓库根目录的 `发布Windows安装包.cmd`。该脚本会自动选择可用的 Node 环境，调用唯一的正式发布命令 `npm run release:win`，并在成功后打开 `release` 目录、显示安装包和更新日志路径。打包过程中不要关闭窗口。
+
 macOS 必须在 Mac 电脑上打包。Apple Silicon 和 Intel 分别执行：
 
 ```bash
