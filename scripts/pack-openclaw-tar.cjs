@@ -66,6 +66,11 @@ const EXCLUDED_DIRS = new Set([
 ]);
 
 const EXCLUDED_ENVFILE = /^\.env(\..+)?$/i;
+const EXCLUDED_RUNTIME_FILES = new Set([
+  '.connection',
+  '.server.log',
+  '.server.pid',
+]);
 
 function shouldExclude(entryPath) {
   const basename = path.basename(entryPath);
@@ -77,6 +82,7 @@ function shouldExclude(entryPath) {
   }
 
   // Check file exclusion
+  if (EXCLUDED_RUNTIME_FILES.has(basename.toLowerCase())) return true;
   if (EXCLUDED_ENVFILE.test(basename)) return true;
   if (EXCLUDED_FILE_PATTERNS.some((p) => p.test(basename))) return true;
 
