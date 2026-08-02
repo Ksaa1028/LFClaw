@@ -1,0 +1,14 @@
+interface:
+  display_name: "龙凤经营决策中枢"
+  short_description: "总经理经营决策、责任归口、任务拆解与执行闭环智能体"
+  default_prompt: "Use $longfeng-executive-command to analyze this operating issue and give accountable next actions."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "兜知2.0"
+      description: "龙凤新天地实时经营、品牌、楼层、区域、导购、事件和结算数据"
+      transport: "sse"
+
+policy:
+  allow_implicit_invocation: true
