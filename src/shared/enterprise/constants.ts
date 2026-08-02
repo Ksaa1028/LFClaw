@@ -129,10 +129,12 @@ export interface EnterpriseCurrentAccess {
 export interface EnterpriseSkillInstallation {
   serverSkillId: string;
   installedSkillId?: string;
+  version?: string;
   packageSha256?: string;
   packageFileName?: string;
   packageSkillIds?: string[];
   installedAt?: string;
+  upgradedAt?: string;
 }
 
 export interface EnterpriseStatus {

@@ -78,7 +78,11 @@ import {
   DataMigrationRestoreStatus,
 } from '../shared/dataMigration/constants';
 import { DialogIpc } from '../shared/dialog/constants';
-import { type EnterpriseActivateInput, type EnterpriseCurrentAccess, EnterpriseIpcChannel } from '../shared/enterprise/constants';
+import {
+  type EnterpriseActivateInput,
+  type EnterpriseCurrentAccess,
+  EnterpriseIpcChannel,
+} from '../shared/enterprise/constants';
 import {
   HtmlShareAccessMode,
   type HtmlShareAccessMode as HtmlShareAccessModeValue,
@@ -339,6 +343,11 @@ import {
 } from './openclawSessionPolicy/store';
 import { registerVoiceInputPermissionHandler } from './permissions/voiceInputPermission';
 import { isHiddenUserPluginId } from './plugins/pluginManager';
+import {
+  normalizeSha256,
+  shouldUpgradeEnterpriseSkill,
+  verifyEnterpriseSkillPackageHash,
+} from './skills/enterpriseSkillUpdate';
 import { SkillManager } from './skills/skillManager';
 import { getSkillServiceManager } from './skills/skillServices';
 import { SqliteStore } from './sqliteStore';
@@ -3510,10 +3519,12 @@ const ENTERPRISE_INSTALLED_SKILLS_KEY = 'lfclaw_enterprise_installed_skills';
 type EnterpriseInstalledSkillMeta = {
   serverSkillId?: string;
   installedSkillId?: string;
+  version?: string;
   packageSha256?: string;
   packageFileName?: string;
   packageSkillIds?: string[];
   installedAt?: string;
+  upgradedAt?: string;
 };
 type EnterpriseInstalledSkillsMap = Record<string, EnterpriseInstalledSkillMeta>;
 
@@ -3632,12 +3643,22 @@ const syncEnterpriseSkillsToLocalStore = async (access: EnterpriseCurrentAccess 
 
     const tracked = enterpriseInstalled[skill.id];
     const trackedSkillId = tracked?.installedSkillId || skill.id;
-    if (installedIds.has(trackedSkillId)) {
+    const serverPackageSha256 = normalizeSha256(skill.packageSha256);
+    const installedPackageSha256 = normalizeSha256(tracked?.packageSha256);
+    const isInstalled = installedIds.has(trackedSkillId);
+    const shouldUpgrade = shouldUpgradeEnterpriseSkill({
+      isInstalled,
+      installedPackageSha256,
+      serverPackageSha256,
+    });
+
+    if (isInstalled && !shouldUpgrade) {
       enterpriseInstalled[skill.id] = {
         ...tracked,
         serverSkillId: skill.id,
         installedSkillId: trackedSkillId,
-        packageSha256: skill.packageSha256,
+        version: skill.version,
+        packageSha256: serverPackageSha256,
         packageFileName: skill.packageFileName,
         installedAt: tracked?.installedAt ?? new Date().toISOString(),
       };
@@ -3646,7 +3667,8 @@ const syncEnterpriseSkillsToLocalStore = async (access: EnterpriseCurrentAccess 
 
     // A single enterprise ZIP can be authorized under more than one server skill ID.
     // Reuse the local installation before requiring a second download URL.
-    const reusedInstallation = Object.entries(enterpriseInstalled).find(([, meta]) => {
+    const reusedInstallation = shouldUpgrade ? undefined : Object.entries(enterpriseInstalled).find(([serverSkillId, meta]) => {
+      if (serverSkillId === skill.id) return false;
       const installedSkillId = meta.installedSkillId;
       if (!installedSkillId || !installedIds.has(installedSkillId)) return false;
       return Boolean(
@@ -3660,6 +3682,7 @@ const syncEnterpriseSkillsToLocalStore = async (access: EnterpriseCurrentAccess 
         ...reusedInstallation,
         serverSkillId: skill.id,
         installedSkillId: reusedInstallation.installedSkillId,
+        version: skill.version ?? reusedInstallation.version,
         packageSha256: skill.packageSha256 ?? reusedInstallation.packageSha256,
         packageFileName: skill.packageFileName ?? reusedInstallation.packageFileName,
         installedAt: reusedInstallation.installedAt ?? new Date().toISOString(),
@@ -3668,7 +3691,12 @@ const syncEnterpriseSkillsToLocalStore = async (access: EnterpriseCurrentAccess 
       continue;
     }
 
-    if (!skill.downloadUrl) continue;
+    if (!skill.downloadUrl) {
+      if (shouldUpgrade) {
+        console.warn(`[Enterprise] cannot upgrade skill "${skill.id}" because no download URL was provided`);
+      }
+      continue;
+    }
 
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lfclaw-enterprise-skill-'));
     const zipPath = path.join(tempDir, skill.packageFileName || `${skill.id}.zip`);
@@ -3684,8 +3712,36 @@ const syncEnterpriseSkillsToLocalStore = async (access: EnterpriseCurrentAccess 
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
-      fs.writeFileSync(zipPath, Buffer.from(await response.arrayBuffer()));
+      const packageBuffer = Buffer.from(await response.arrayBuffer());
+      verifyEnterpriseSkillPackageHash(packageBuffer, serverPackageSha256);
+      fs.writeFileSync(zipPath, packageBuffer);
       const packageSkillIds = await readSkillIdsFromEnterpriseZip(zipPath, skill.id);
+
+      if (shouldUpgrade) {
+        const result = await skillManagerInstance.upgradeSkill(trackedSkillId, zipPath);
+        const confirmedResult = result.pendingInstallId
+          ? skillManagerInstance.confirmPendingInstall(result.pendingInstallId, 'install')
+          : result;
+        if (!result.success || !confirmedResult.success) {
+          throw new Error(result.error || confirmedResult.error || 'upgrade failed');
+        }
+        const upgradedAt = new Date().toISOString();
+        enterpriseInstalled[skill.id] = {
+          ...tracked,
+          serverSkillId: skill.id,
+          installedSkillId: trackedSkillId,
+          version: skill.version,
+          packageSha256: serverPackageSha256,
+          packageFileName: skill.packageFileName,
+          packageSkillIds,
+          installedAt: tracked?.installedAt ?? new Date().toISOString(),
+          upgradedAt,
+        };
+        installedIds = new Set(skillManagerInstance.listSkills().map(item => item.id));
+        console.log(`[Enterprise] upgraded enterprise skill "${skill.id}" in place as "${trackedSkillId}"`);
+        continue;
+      }
+
       const existingInstalledSkillId = uniqueStrings([
         trackedSkillId,
         skill.id,
@@ -3699,7 +3755,8 @@ const syncEnterpriseSkillsToLocalStore = async (access: EnterpriseCurrentAccess 
           ...tracked,
           serverSkillId: skill.id,
           installedSkillId: existingInstalledSkillId,
-          packageSha256: skill.packageSha256,
+          version: skill.version,
+          packageSha256: serverPackageSha256,
           packageFileName: skill.packageFileName,
           packageSkillIds,
           installedAt: tracked?.installedAt ?? new Date().toISOString(),
@@ -3725,7 +3782,8 @@ const syncEnterpriseSkillsToLocalStore = async (access: EnterpriseCurrentAccess 
       enterpriseInstalled[skill.id] = {
         serverSkillId: skill.id,
         installedSkillId,
-        packageSha256: skill.packageSha256,
+        version: skill.version,
+        packageSha256: serverPackageSha256,
         packageFileName: skill.packageFileName,
         packageSkillIds,
         installedAt: new Date().toISOString(),
@@ -4113,10 +4171,12 @@ if (!gotTheLock) {
             ([storedSkillId, meta]) => ({
               serverSkillId: meta.serverSkillId || storedSkillId,
               installedSkillId: meta.installedSkillId || storedSkillId,
+              version: meta.version,
               packageSha256: meta.packageSha256,
               packageFileName: meta.packageFileName,
               packageSkillIds: meta.packageSkillIds,
               installedAt: meta.installedAt,
+              upgradedAt: meta.upgradedAt,
             }),
           ),
         },

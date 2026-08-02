@@ -2175,7 +2175,19 @@ export class SkillManager {
       cleanupPath = tempRoot;
 
       let localSource: string;
-      if (isRemoteZipUrl(downloadUrl)) {
+      if (fs.existsSync(downloadUrl)) {
+        const stat = fs.statSync(downloadUrl);
+        if (stat.isFile() && isZipFile(downloadUrl)) {
+          const extractRoot = path.join(tempRoot, 'archive');
+          fs.mkdirSync(extractRoot, { recursive: true });
+          await extractZip(downloadUrl, { dir: extractRoot });
+          localSource = extractRoot;
+        } else if (stat.isDirectory()) {
+          localSource = downloadUrl;
+        } else {
+          return { success: false, error: 'Skill upgrade source must be a directory or zip file' };
+        }
+      } else if (isRemoteZipUrl(downloadUrl)) {
         localSource = await downloadZipUrl(downloadUrl, tempRoot);
       } else {
         const normalized = this.normalizeGitSource(downloadUrl);
