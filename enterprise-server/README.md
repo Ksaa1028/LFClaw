@@ -2,6 +2,34 @@
 
 LfClaw 企业服务用于统一管理员工激活码、模型、MCP、技能包、积分、用量和客户端更新源。客户端仍然使用本机 OpenClaw 网关，但授权、模型配置、MCP、技能和积分由企业服务实时控制。
 
+## 部门树与授权范围
+
+服务端支持树级部门和单部门员工归属。历史数据无需迁移：缺少 `departments` 和
+`departmentId` 的旧数据会按“无部门”读取，员工已有的个人授权保持不变。
+
+- 部门保存在顶层 `departments` 数组，通过 `parentId` 组成树；根部门的 `parentId` 为空字符串。
+- 员工通过 `departmentId` 绑定一个部门。
+- 员工有效授权为个人授权、所在部门授权及所有上级部门授权的并集。
+- 客户端激活和 `/api/enterprise/me` 的响应结构不变，只会收到合并后的最终权限。
+- 删除仍有下级部门或员工的部门会返回 `409`，避免意外解绑。
+
+管理员接口：
+
+```text
+POST   /api/admin/departments
+PATCH  /api/admin/departments/:departmentId
+DELETE /api/admin/departments/:departmentId
+PATCH  /api/admin/employees/:activationCode
+PATCH  /api/admin/model-providers/:id/assignments
+PATCH  /api/admin/mcp/:id/assignments
+PATCH  /api/admin/skills/:id/assignments
+```
+
+创建或修改部门时提交 `name`、`parentId`。修改员工时提交 `departmentId` 即可绑定或移动部门，
+提交空字符串可移出部门。资源分配接口同时接收 `departmentIds` 和 `activationCodes`。
+
+管理后台 `/admin` 的“部门管理”页只维护部门树；模型、MCP、技能各自的“分配范围”页面可选择整个部门或部门下的具体人员。
+
 ## 1. 代码仓库
 
 二开代码仓库：

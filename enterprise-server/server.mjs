@@ -16,6 +16,21 @@ const STORAGE_DIR = process.env.LFCLAW_ENTERPRISE_STORAGE || path.join(ROOT_DIR,
 const SKILL_DIR = path.join(STORAGE_DIR, 'skills');
 const BACKUP_DIR = process.env.LFCLAW_ENTERPRISE_BACKUP_DIR || path.join(DATA_DIR, 'backups');
 const RELEASE_DIR = process.env.LFCLAW_ENTERPRISE_RELEASE_DIR || path.join(ROOT_DIR, 'releases');
+// A package is publishable only after its upload has stopped changing for a
+// short period. This prevents clients from downloading an in-progress file.
+const DEFAULT_RELEASE_STABILITY_MS = 45 * 1000;
+const parsedReleaseStabilityMs = Number.parseInt(process.env.LFCLAW_RELEASE_STABILITY_MS || '', 10);
+const RELEASE_STABILITY_MS = Number.isFinite(parsedReleaseStabilityMs)
+  ? Math.max(0, parsedReleaseStabilityMs)
+  : DEFAULT_RELEASE_STABILITY_MS;
+
+const getReleaseStability = (stat) => {
+  const remainingMs = RELEASE_STABILITY_MS - (Date.now() - stat.mtimeMs);
+  return {
+    stable: remainingMs <= 0,
+    retryAfterSeconds: Math.max(1, Math.ceil(remainingMs / 1000)),
+  };
+};
 const ENTERPRISE_SKILL_VERSION_GUARD_ENABLED = process.env.LFCLAW_ENTERPRISE_SKILL_VERSION_GUARD === '1';
 const MIN_ENTERPRISE_SKILL_CLIENT_VERSION = String(process.env.LFCLAW_MIN_ENTERPRISE_SKILL_CLIENT_VERSION || '').trim();
 const asrProxySessions = new Map();
@@ -213,6 +228,16 @@ const serveReleaseFile = (req, res, pathname) => {
     fail(res, 404, 'Release file not found.');
     return true;
   }
+
+  const fileStat = fs.statSync(filePath);
+  const releaseStability = getReleaseStability(fileStat);
+  if (!releaseStability.stable) {
+    sendJson(res, 503, {
+      error: 'Release package is still uploading. Please retry shortly.',
+      retryAfterSeconds: releaseStability.retryAfterSeconds,
+    });
+    return true;
+  }
   const stat = fs.statSync(filePath);
   const baseHeaders = {
     'content-type': releaseMimeType(filePath),
@@ -286,6 +311,7 @@ const detectAutoRelease = origin => {
       if (!version || !platform) return null;
       const filePath = path.join(RELEASE_DIR, name);
       const stat = fs.statSync(filePath);
+      if (!stat.isFile() || !getReleaseStability(stat).stable) return null;
       return { name, version, platform, mtimeMs: stat.mtimeMs, size: stat.size, sha256: releaseFileHash(filePath) };
     })
     .filter(Boolean)
@@ -337,6 +363,7 @@ const defaultData = () => ({
   modelProviders: [],
   mcpServers: [],
   skills: [],
+  departments: [],
   employees: [],
   sessions: {},
   usageEvents: [],
@@ -358,6 +385,7 @@ const ensureData = data => ({
   modelProviders: Array.isArray(data.modelProviders) ? data.modelProviders : Array.isArray(data.models) ? data.models : [],
   mcpServers: Array.isArray(data.mcpServers) ? data.mcpServers : [],
   skills: Array.isArray(data.skills) ? data.skills : [],
+  departments: Array.isArray(data.departments) ? data.departments : [],
   employees: Array.isArray(data.employees) ? data.employees : Array.isArray(data.activations) ? data.activations : [],
   sessions: data.sessions && typeof data.sessions === 'object' ? data.sessions : {},
   usageEvents: Array.isArray(data.usageEvents) ? data.usageEvents : [],
@@ -584,17 +612,65 @@ const normalizeSkill = (body, existing = {}) => ({
   updatedAt: nowIso(),
 });
 
-const employeeView = employee => ({
-  ...employee,
-  clientVersion: normalizeClientVersion(employee.clientVersion || employee.appVersion),
-  lastActivatedClientVersion: normalizeClientVersion(employee.lastActivatedClientVersion),
-  lastSeenClientVersion: normalizeClientVersion(employee.lastSeenClientVersion || employee.clientVersion || employee.appVersion),
-  creditsLimit: toNumber(employee.creditsLimit),
-  creditsUsed: toNumber(employee.creditsUsed),
-  allowedModelProviderIds: list(employee.allowedModelProviderIds ?? employee.allowedModelIds),
-  allowedMcpServerIds: list(employee.allowedMcpServerIds),
-  allowedSkillIds: list(employee.allowedSkillIds),
+const DEPARTMENT_GRANT_KEYS = [
+  'allowedModelProviderIds',
+  'allowedMcpServerIds',
+  'allowedSkillIds',
+];
+
+const departmentView = department => ({
+  ...department,
+  parentId: String(department.parentId || ''),
+  allowedModelProviderIds: list(department.allowedModelProviderIds),
+  allowedMcpServerIds: list(department.allowedMcpServerIds),
+  allowedSkillIds: list(department.allowedSkillIds),
 });
+
+const departmentChain = (data, departmentId) => {
+  const byId = new Map(data.departments.map(department => [department.id, department]));
+  const chain = [];
+  const visited = new Set();
+  let currentId = String(departmentId || '');
+  while (currentId && !visited.has(currentId)) {
+    visited.add(currentId);
+    const department = byId.get(currentId);
+    if (!department) break;
+    chain.push(department);
+    currentId = String(department.parentId || '');
+  }
+  return chain;
+};
+
+const effectiveEmployeeGrants = (data, employee) => {
+  const result = Object.fromEntries(DEPARTMENT_GRANT_KEYS.map(key => [key, new Set(list(employee[key]))]));
+  for (const department of departmentChain(data, employee.departmentId)) {
+    for (const key of DEPARTMENT_GRANT_KEYS) {
+      for (const itemId of list(department[key])) result[key].add(itemId);
+    }
+  }
+  return Object.fromEntries(DEPARTMENT_GRANT_KEYS.map(key => [key, [...result[key]]]));
+};
+
+const employeeView = (employee, data) => {
+  const effective = data ? effectiveEmployeeGrants(data, employee) : null;
+  return {
+    ...employee,
+    departmentId: String(employee.departmentId || ''),
+    clientVersion: normalizeClientVersion(employee.clientVersion || employee.appVersion),
+    lastActivatedClientVersion: normalizeClientVersion(employee.lastActivatedClientVersion),
+    lastSeenClientVersion: normalizeClientVersion(employee.lastSeenClientVersion || employee.clientVersion || employee.appVersion),
+    creditsLimit: toNumber(employee.creditsLimit),
+    creditsUsed: toNumber(employee.creditsUsed),
+    allowedModelProviderIds: list(employee.allowedModelProviderIds ?? employee.allowedModelIds),
+    allowedMcpServerIds: list(employee.allowedMcpServerIds),
+    allowedSkillIds: list(employee.allowedSkillIds),
+    ...(effective ? {
+      effectiveAllowedModelProviderIds: effective.allowedModelProviderIds,
+      effectiveAllowedMcpServerIds: effective.allowedMcpServerIds,
+      effectiveAllowedSkillIds: effective.allowedSkillIds,
+    } : {}),
+  };
+};
 
 const redactModel = provider => ({ ...provider, apiKey: provider.apiKey ? '********' : '' });
 const adminState = data => ({
@@ -604,7 +680,8 @@ const adminState = data => ({
   asr: redactAsr(data.asr),
   mcpServers: data.mcpServers,
   skills: data.skills.map(skill => ({ ...skill, packagePath: undefined })),
-  employees: data.employees.map(employeeView),
+  departments: data.departments.map(departmentView),
+  employees: data.employees.map(employee => employeeView(employee, data)),
   usageEvents: data.usageEvents.slice(-300),
   release: data.release,
   backups: listBackups(),
@@ -619,14 +696,15 @@ const selectByIds = (items, ids) => {
 
 const clientPayload = (data, employee, accessToken, req, clientVersion = '') => {
   const effectiveClientVersion = normalizeClientVersion(clientVersion || employee.clientVersion || employee.appVersion);
-  const modelProviders = selectByIds(data.modelProviders, employee.allowedModelProviderIds ?? employee.allowedModelIds);
-  const mcpServers = selectByIds(data.mcpServers, employee.allowedMcpServerIds);
+  const grants = effectiveEmployeeGrants(data, employee);
+  const modelProviders = selectByIds(data.modelProviders, grants.allowedModelProviderIds);
+  const mcpServers = selectByIds(data.mcpServers, grants.allowedMcpServerIds);
   const skillPayload = skill => ({
     ...skill,
     packagePath: undefined,
     downloadUrl: skill.packageFileName ? `${requestOrigin(req)}/api/enterprise/skills/${encodeURIComponent(skill.id)}/download` : '',
   });
-  const authorizedSkills = selectByIds(data.skills, employee.allowedSkillIds).map(skillPayload);
+  const authorizedSkills = selectByIds(data.skills, grants.allowedSkillIds).map(skillPayload);
   const enterpriseSkills = authorizedSkills;
   const skills = authorizedSkills;
   return {
@@ -696,19 +774,34 @@ const adminHtml = () => String.raw`<!doctype html><html lang="zh-CN"><head><meta
 var state={modelProviders:[],mcpServers:[],skills:[],employees:[],usageEvents:[],backups:[],release:{},asr:{}};var editingEmployee='';var employeePage=1;var employeePageSize=10;var usagePage=1;var usagePageSize=10;var bulkGrant={type:'',id:''};var $=function(id){return document.getElementById(id);};var esc=function(v){return String(v==null?'':v).replace(/[&<>"']/g,function(s){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s];});};var headers=function(json){localStorage.setItem('lfclaw_admin_token',$('token').value);var h={authorization:'Bearer '+$('token').value};if(json!==false)h['content-type']='application/json';return h;};var api=async function(path,opt){opt=opt||{};var res=await fetch(path,Object.assign({},opt,{headers:Object.assign({},headers(),opt.headers||{})}));var text=await res.text();var body=text?JSON.parse(text):{};if(!res.ok||body.code!==0)throw new Error(body.message||'请求失败');return body.data;};var run=async function(fn){try{await fn();}catch(e){alert(e.message||String(e));}};var openForm=function(id){$(id).classList.add('open');};var closeForm=function(id){$(id).classList.remove('open');};var multiItems={employeeModels:[],employeeMcps:[],employeeSkills:[]};var multiValues={employeeModels:[],employeeMcps:[],employeeSkills:[]};var selected=function(id){return multiValues[id]||[];};var setSelected=function(id,values){multiValues[id]=Array.from(new Set(values||[]));renderMultiSelect(id);};var set=function(id,v){$(id).value=v==null?'':v;};
 function showTab(tab){document.querySelectorAll('section').forEach(function(s){s.classList.toggle('active',s.id===tab);});document.querySelectorAll('nav button').forEach(function(b){b.classList.toggle('active-tab',b.dataset.tab===tab);});}
 function renderMultiSelect(id){var items=multiItems[id]||[];var values=new Set(multiValues[id]||[]);var selectedItems=items.filter(function(x){return values.has(x.id);});var title=selectedItems.length?selectedItems.map(function(x){return x.name||x.id;}).join(', '):'未选择';$(id).innerHTML='<button type="button" class="multi-trigger" data-multi-toggle="'+id+'">'+esc(title)+'</button><div class="multi-options">'+(items.length?items.map(function(x){return '<label class="multi-option"><input type="checkbox" data-multi-id="'+id+'" data-multi-value="'+esc(x.id)+'" '+(values.has(x.id)?'checked':'')+'> <span>'+esc(x.name||x.id)+' ('+esc(x.id)+')</span></label>';}).join(''):'<div class="multi-empty">暂无可选项</div>')+'</div>';}function fillSelect(id,items){multiItems[id]=(items||[]).filter(function(x){return x.enabled!==false;});multiValues[id]=(multiValues[id]||[]).filter(function(value){return multiItems[id].some(function(item){return item.id===value;});});renderMultiSelect(id);}
-async function loadAll(){state=await api('/api/admin/state');state.modelProviders=state.modelProviders||state.models||[];renderAll();}
-function renderAll(){fillSelect('employeeModels',state.modelProviders);fillSelect('employeeMcps',state.mcpServers);fillSelect('employeeSkills',state.skills);renderOverview();renderEmployees();renderModels();renderMcp();renderSkills();renderAsr();renderUsageFilters();renderUsage();renderBackups();renderRelease();}
+function initDepartmentUi(){var nav=document.querySelector('nav');var employeeTab=nav.querySelector('[data-tab="employees"]');var button=document.createElement('button');button.dataset.tab='departments';button.textContent='部门管理';nav.insertBefore(button,employeeTab);var section=document.createElement('section');section.id='departments';section.innerHTML='<div class="list-toolbar"><div class="hint">部门按树级展示；子部门自动继承所有上级部门授权。</div><button id="newDepartmentBtn">新增部门</button></div><div id="departmentForm" class="form-panel"><div class="grid"><label>部门名称<input id="departmentName"></label><label>部门 ID<input id="departmentId" placeholder="留空自动生成"></label><label>上级部门<select id="departmentParent"><option value="">无（根部门）</option></select></label></div><div class="grid grid-3" style="margin-top:12px"><label>部门模型授权<div id="departmentModels" class="multi-select"></div></label><label>部门 MCP 授权<div id="departmentMcps" class="multi-select"></div></label><label>部门技能授权<div id="departmentSkills" class="multi-select"></div></label></div><div class="row" style="margin-top:12px"><button id="saveDepartmentBtn">保存部门</button><button class="secondary" id="cancelDepartmentBtn">取消</button></div></div><table><thead><tr><th>部门</th><th>上级部门</th><th>员工数</th><th>直接授权</th><th>操作</th></tr></thead><tbody id="departmentRows"></tbody></table>';document.querySelector('main').insertBefore(section,$('employees'));var employeeGrid=$('employeeForm').querySelector('.grid');var label=document.createElement('label');label.innerHTML='所属部门<select id="employeeDepartment"><option value="">未分配部门</option></select>';employeeGrid.appendChild(label);['departmentModels','departmentMcps','departmentSkills'].forEach(function(id){multiItems[id]=[];multiValues[id]=[];});}
+var editingDepartment='';
+async function loadAll(){state=await api('/api/admin/state');state.modelProviders=state.modelProviders||state.models||[];state.departments=state.departments||[];renderAll();}
+function renderAll(){fillSelect('employeeModels',state.modelProviders);fillSelect('employeeMcps',state.mcpServers);fillSelect('employeeSkills',state.skills);renderOverview();renderDepartments();renderEmployees();renderModels();renderMcp();renderSkills();document.querySelectorAll('[data-act="bulkGrant"]').forEach(function(button){button.textContent='分配范围';});renderAsr();renderUsageFilters();renderUsage();renderBackups();renderRelease();}
 function authText(v){return (v&&v.length)?v.join(', '):'未授权';}
-function renderOverview(){var modelIds=state.modelProviders.flatMap(function(provider){var models=provider.models||[];return models.length?models.map(function(model){return model.id;}):[provider.id];}).filter(Boolean);$('statEmployees').textContent=state.employees.length;$('statModels').textContent=new Set(modelIds).size;$('statMcps').textContent=state.mcpServers.length;$('statSkills').textContent=state.skills.length;$('statCalls').textContent=state.usageEvents.length;$('statCredits').textContent=state.usageEvents.reduce(function(s,e){return s+Number(e.credits||0);},0).toFixed(2);}
-function renderEmployees(){var total=state.employees.length;var pages=Math.max(1,Math.ceil(total/employeePageSize));employeePage=Math.min(Math.max(1,employeePage),pages);var start=(employeePage-1)*employeePageSize;var rows=state.employees.slice(start,start+employeePageSize);$('employeeRows').innerHTML=rows.map(function(e){return '<tr><td>'+esc(e.status)+'</td><td><code>'+esc(e.activationCode)+'</code></td><td>'+esc(e.employeeName)+'<br><code>'+esc(e.employeeId)+'</code></td><td>'+esc(Math.max(0,(e.creditsLimit||0)-(e.creditsUsed||0)))+'/'+esc(e.creditsLimit||0)+'<br><button class="secondary" data-act="credits" data-code="'+esc(e.activationCode)+'">改积分</button></td><td><code>'+esc(e.lastSeenClientVersion||e.clientVersion||'-')+'</code><br>'+esc(e.lastSeenClientVersionAt||'-')+'</td><td><code>'+esc(e.deviceToken||'-')+'</code><br>'+esc(e.lastUsedAt||'-')+'</td><td><div class="row"><button class="secondary" data-act="viewGrants" data-code="'+esc(e.activationCode)+'">授权</button><button class="secondary" data-act="editEmployee" data-code="'+esc(e.activationCode)+'">编辑</button><button class="secondary" data-act="copy" data-code="'+esc(e.activationCode)+'">复制</button><button class="secondary" data-act="toggle" data-code="'+esc(e.activationCode)+'" data-status="'+esc(e.status)+'">'+(e.status==='active'?'禁用':'启用')+'</button><button class="danger" data-act="deleteEmployee" data-code="'+esc(e.activationCode)+'">删除</button></div></td></tr>';}).join('');$('employeePagerInfo').textContent=total?'第 '+employeePage+' / '+pages+' 页，共 '+total+' 人，当前显示 '+(start+1)+'-'+Math.min(start+rows.length,total):'暂无员工';$('employeePrevPage').disabled=employeePage<=1;$('employeeNextPage').disabled=employeePage>=pages;$('employeePageSize').value=String(employeePageSize);}
+function renderOverview(){var modelIds=state.modelProviders.flatMap(function(provider){var models=provider.models||[];return models.length?models.map(function(model){return model.id;}):[provider.id];}).filter(Boolean);$('statEmployees').textContent=state.employees.length;$('statDepartments').textContent=state.departments.length;$('statModels').textContent=new Set(modelIds).size;$('statMcps').textContent=state.mcpServers.length;$('statSkills').textContent=state.skills.length;$('statCalls').textContent=state.usageEvents.length;$('statCredits').textContent=state.usageEvents.reduce(function(s,e){return s+Number(e.credits||0);},0).toFixed(2);}
+function departmentList(){var result=[];var seen={};function visit(parentId,depth){state.departments.filter(function(d){return (d.parentId||'')===parentId;}).sort(function(a,b){return String(a.name).localeCompare(String(b.name),'zh-CN');}).forEach(function(d){if(seen[d.id])return;seen[d.id]=true;result.push({item:d,depth:depth});visit(d.id,depth+1);});}visit('',0);state.departments.forEach(function(d){if(!seen[d.id])result.push({item:d,depth:0});});return result;}
+function departmentName(id){var d=state.departments.find(function(x){return x.id===id;});return d?d.name:'未分配部门';}
+function departmentParentName(id){return id?departmentName(id):'根部门';}
+function departmentSubtreeIds(id){var ids=[id];for(var i=0;i<ids.length;i+=1){state.departments.filter(function(d){return d.parentId===ids[i];}).forEach(function(d){if(ids.indexOf(d.id)<0)ids.push(d.id);});}return ids;}
+function departmentEmployeeCount(id){var ids=departmentSubtreeIds(id);return state.employees.filter(function(e){return ids.indexOf(e.departmentId)>=0;}).length;}
+function employeeHasResource(employee,grantKey,itemId){if((employee[grantKey]||[]).indexOf(itemId)>=0)return true;var current=employee.departmentId;var seen={};while(current&&!seen[current]){seen[current]=true;var d=state.departments.find(function(x){return x.id===current;});if(!d)break;if((d[grantKey]||[]).indexOf(itemId)>=0)return true;current=d.parentId;}return false;}
+function departmentOptions(selected,excluded){return '<option value="">无（根部门）</option>'+departmentList().filter(function(x){return x.item.id!==excluded;}).map(function(x){return '<option value="'+esc(x.item.id)+'" '+(x.item.id===selected?'selected':'')+'>'+Array(x.depth+1).join('　')+esc(x.item.name)+'</option>';}).join('');}
+function renderDepartments(){var rows=departmentList();$('departmentParent').innerHTML=departmentOptions($('departmentParent').value,editingDepartment);$('employeeDepartment').innerHTML='<option value="">未分配部门</option>'+departmentList().map(function(x){return '<option value="'+esc(x.item.id)+'">'+Array(x.depth+1).join('　')+esc(x.item.name)+'</option>';}).join('');$('departmentRows').innerHTML=rows.map(function(x){var d=x.item;var count=departmentEmployeeCount(d.id);return '<tr><td>'+Array(x.depth+1).join('　')+'<b>'+esc(d.name)+'</b><br><code>'+esc(d.id)+'</code></td><td>'+esc(departmentParentName(d.parentId))+'</td><td>'+count+'</td><td><div class="row"><button class="secondary" data-act="editDepartment" data-id="'+esc(d.id)+'">编辑</button><button class="danger" data-act="deleteDepartment" data-id="'+esc(d.id)+'">删除</button></div></td></tr>';}).join('')||'<tr><td colspan="4" class="hint">暂无部门，请先创建根部门。</td></tr>';}
+function clearDepartment(){editingDepartment='';set('departmentName','');set('departmentId','');$('departmentId').readOnly=false;set('departmentParent','');closeForm('departmentForm');renderDepartments();}
+function editDepartment(id){var d=state.departments.find(function(x){return x.id===id;});if(!d)return;editingDepartment=id;set('departmentName',d.name);set('departmentId',d.id);$('departmentId').readOnly=true;$('departmentParent').innerHTML=departmentOptions(d.parentId,id);set('departmentParent',d.parentId||'');openForm('departmentForm');showTab('departments');}
+function departmentPayload(){return{id:$('departmentId').value.trim(),name:$('departmentName').value.trim(),parentId:$('departmentParent').value};}
+function renderEmployees(){var total=state.employees.length;var pages=Math.max(1,Math.ceil(total/employeePageSize));employeePage=Math.min(Math.max(1,employeePage),pages);var start=(employeePage-1)*employeePageSize;var rows=state.employees.slice(start,start+employeePageSize);$('employeeRows').innerHTML=rows.map(function(e){return '<tr><td>'+esc(e.status)+'</td><td><code>'+esc(e.activationCode)+'</code></td><td>'+esc(e.employeeName)+'<br><code>'+esc(e.employeeId)+'</code><br><span class="pill">'+esc(departmentName(e.departmentId))+'</span></td><td>'+esc(Math.max(0,(e.creditsLimit||0)-(e.creditsUsed||0)))+'/'+esc(e.creditsLimit||0)+'<br><button class="secondary" data-act="credits" data-code="'+esc(e.activationCode)+'">改积分</button></td><td><code>'+esc(e.lastSeenClientVersion||e.clientVersion||'-')+'</code><br>'+esc(e.lastSeenClientVersionAt||'-')+'</td><td><code>'+esc(e.deviceToken||'-')+'</code><br>'+esc(e.lastUsedAt||'-')+'</td><td><div class="row"><button class="secondary" data-act="viewGrants" data-code="'+esc(e.activationCode)+'">授权</button><button class="secondary" data-act="editEmployee" data-code="'+esc(e.activationCode)+'">编辑</button><button class="secondary" data-act="copy" data-code="'+esc(e.activationCode)+'">复制</button><button class="secondary" data-act="toggle" data-code="'+esc(e.activationCode)+'" data-status="'+esc(e.status)+'">'+(e.status==='active'?'禁用':'启用')+'</button><button class="danger" data-act="deleteEmployee" data-code="'+esc(e.activationCode)+'">删除</button></div></td></tr>';}).join('');$('employeePagerInfo').textContent=total?'第 '+employeePage+' / '+pages+' 页，共 '+total+' 人，当前显示 '+(start+1)+'-'+Math.min(start+rows.length,total):'暂无员工';$('employeePrevPage').disabled=employeePage<=1;$('employeeNextPage').disabled=employeePage>=pages;$('employeePageSize').value=String(employeePageSize);}
 function grantNames(ids,items){return (ids||[]).map(function(id){var item=(items||[]).find(function(x){return x.id===id;});return item?(item.name||item.id):id;});}
 function grantGroup(title,ids,items){var names=grantNames(ids,items);return '<div class="permission-group"><b>'+esc(title)+'</b><div class="permission-items">'+(names.length?names.map(function(name){return '<span class="pill">'+esc(name)+'</span>';}).join(''):'<span class="hint">未授权</span>')+'</div></div>';}
-function showEmployeeGrants(code){var e=state.employees.find(function(x){return x.activationCode===code;});if(!e)return;$('permissionDialogTitle').textContent=(e.employeeName||e.employeeId)+' 的授权';$('permissionDialogBody').innerHTML=grantGroup('模型',e.allowedModelProviderIds,state.modelProviders)+grantGroup('MCP',e.allowedMcpServerIds,state.mcpServers)+grantGroup('技能',e.allowedSkillIds,state.skills);$('permissionDialog').showModal();}
+function showEmployeeGrants(code){var e=state.employees.find(function(x){return x.activationCode===code;});if(!e)return;$('permissionDialogTitle').textContent=(e.employeeName||e.employeeId)+' 的有效授权';$('permissionDialogBody').innerHTML='<div class="formula"><b>所属部门：</b>'+esc(departmentName(e.departmentId))+'<br>以下权限为个人与部门层级授权合并后的结果。</div>'+grantGroup('模型',e.effectiveAllowedModelProviderIds||e.allowedModelProviderIds,state.modelProviders)+grantGroup('MCP',e.effectiveAllowedMcpServerIds||e.allowedMcpServerIds,state.mcpServers)+grantGroup('技能',e.effectiveAllowedSkillIds||e.allowedSkillIds,state.skills);$('permissionDialog').showModal();}
 function bulkGrantConfig(){return{model:{title:'模型',section:'models',items:state.modelProviders,grantKey:'allowedModelProviderIds',path:'/api/admin/model-providers'},mcp:{title:'MCP',section:'mcp',items:state.mcpServers,grantKey:'allowedMcpServerIds',path:'/api/admin/mcp'},skill:{title:'技能',section:'skills',items:state.skills,grantKey:'allowedSkillIds',path:'/api/admin/skills'}};}
 function renderModels(){$('modelRows').innerHTML=state.modelProviders.map(function(x){var m=(x.models||[])[0]||{};var b=x.billing||{};return '<tr><td><code>'+esc(m.id||x.id)+'</code></td><td>'+esc(m.name||x.name)+'</td><td>'+esc(x.baseUrl)+'<br><span class="hint">'+esc(b.currency||'')+' 输入 '+esc(b.inputPricePerMillionTokens||0)+'/M，输出 '+esc(b.outputPricePerMillionTokens||0)+'/M</span></td><td>'+esc(x.apiKey?'********':'-')+'</td><td><div class="row"><button class="secondary" data-act="editModel" data-id="'+esc(x.id)+'">编辑</button><button class="secondary" data-act="bulkGrant" data-type="model" data-id="'+esc(x.id)+'">分配员工</button><button class="danger" data-act="delete" data-path="/api/admin/model-providers" data-id="'+esc(x.id)+'">删除</button></div></td></tr>';}).join('');renderBulkGrant();}
 function renderMcp(){$('mcpRows').innerHTML=state.mcpServers.map(function(x){var link=x.transportType==='stdio'?(x.command+' '+(x.args||[]).join(' ')):x.url;return '<tr><td><code>'+esc(x.id)+'</code></td><td>'+esc(x.name)+'</td><td>'+esc(x.transportType)+'</td><td>'+esc(link)+'</td><td><div class="row"><button class="secondary" data-act="editMcp" data-id="'+esc(x.id)+'">编辑</button><button class="secondary" data-act="bulkGrant" data-type="mcp" data-id="'+esc(x.id)+'">分配员工</button><button class="danger" data-act="delete" data-path="/api/admin/mcp" data-id="'+esc(x.id)+'">删除</button></div></td></tr>';}).join('');renderBulkGrant();}
 function renderSkills(){$('skillRows').innerHTML=state.skills.map(function(x){return '<tr><td><code>'+esc(x.id)+'</code></td><td>'+esc(x.name)+'</td><td>'+esc(x.version||'-')+'</td><td>'+esc(x.packageFileName||'-')+'</td><td><div class="row"><button class="secondary" data-act="editSkill" data-id="'+esc(x.id)+'">编辑</button><button class="secondary" data-act="bulkGrant" data-type="skill" data-id="'+esc(x.id)+'">分配员工</button><button class="danger" data-act="delete" data-path="/api/admin/skills" data-id="'+esc(x.id)+'">删除</button></div></td></tr>';}).join('');renderBulkGrant();}
-function renderBulkGrant(){var box=$('skillBulkBox');if(!box)return;var configs=bulkGrantConfig();var cfg=configs[bulkGrant.type];if(!cfg||!bulkGrant.id){box.style.display='none';return;}var item=(cfg.items||[]).find(function(x){return x.id===bulkGrant.id;});if(!item){bulkGrant={type:'',id:''};box.style.display='none';return;}var section=$(cfg.section);if(section&&box.parentElement!==section){var table=section.querySelector('table');section.insertBefore(box,table||null);}$('skillBulkTitle').textContent='批量分配'+cfg.title+'：'+(item.name||item.id);$('skillBulkEmployees').innerHTML=state.employees.map(function(e){var checked=(e[cfg.grantKey]||[]).indexOf(bulkGrant.id)>=0;return '<label class="multi-option"><input type="checkbox" data-bulk-grant-employee="'+esc(e.activationCode)+'" '+(checked?'checked':'')+'> <span>'+esc(e.employeeName)+' / '+esc(e.employeeId)+'</span></label>';}).join('')||'<div class="multi-empty">暂无员工</div>';box.style.display='block';}
+function bulkEmployeeInputsForDepartments(departmentIds){return Array.from(document.querySelectorAll('[data-bulk-grant-employee]')).filter(function(input){var employee=state.employees.find(function(e){return e.activationCode===input.getAttribute('data-bulk-grant-employee');});return employee&&departmentIds.indexOf(employee.departmentId)>=0;});}
+function syncBulkDepartmentStates(){departmentList().slice().reverse().forEach(function(x){var input=document.querySelector('[data-bulk-grant-department="'+x.item.id+'"]');if(!input)return;var people=bulkEmployeeInputsForDepartments(departmentSubtreeIds(x.item.id));var selected=people.filter(function(person){return person.checked;}).length;input.checked=people.length>0&&selected===people.length;input.indeterminate=selected>0&&selected<people.length;});}
+function renderBulkGrant(){var box=$('skillBulkBox');if(!box)return;var configs=bulkGrantConfig();var cfg=configs[bulkGrant.type];if(!cfg||!bulkGrant.id){box.style.display='none';return;}var item=(cfg.items||[]).find(function(x){return x.id===bulkGrant.id;});if(!item){bulkGrant={type:'',id:''};box.style.display='none';return;}var section=$(cfg.section);if(section&&box.parentElement!==section){var table=section.querySelector('table');section.insertBefore(box,table||null);}$('skillBulkTitle').textContent='分配'+cfg.title+'：'+(item.name||item.id);box.querySelector('.hint').textContent='可授权整个部门，也可在部门下单独选择人员；部分人员已授权时部门显示减号。';var groups=departmentList().map(function(x){var d=x.item;var employees=state.employees.filter(function(e){return e.departmentId===d.id;});return '<div class="card"><label class="multi-option"><input type="checkbox" data-bulk-grant-department="'+esc(d.id)+'"> <b>'+Array(x.depth+1).join('　')+esc(d.name)+'（整个部门）</b></label>'+employees.map(function(e){var checked=employeeHasResource(e,cfg.grantKey,bulkGrant.id);return '<label class="multi-option"><input type="checkbox" data-bulk-grant-employee="'+esc(e.activationCode)+'" '+(checked?'checked':'')+'> <span>'+esc(e.employeeName)+' / '+esc(e.employeeId)+'</span></label>';}).join('')+'</div>';}).join('');var unassigned=state.employees.filter(function(e){return !e.departmentId||!state.departments.some(function(d){return d.id===e.departmentId;});});if(unassigned.length)groups+='<div class="card"><b>未分配部门</b>'+unassigned.map(function(e){var checked=(e[cfg.grantKey]||[]).indexOf(bulkGrant.id)>=0;return '<label class="multi-option"><input type="checkbox" data-bulk-grant-employee="'+esc(e.activationCode)+'" '+(checked?'checked':'')+'> <span>'+esc(e.employeeName)+' / '+esc(e.employeeId)+'</span></label>';}).join('')+'</div>';$('skillBulkEmployees').innerHTML=groups||'<div class="multi-empty">暂无部门或员工</div>';syncBulkDepartmentStates();box.style.display='block';}
 function renderAsr(){var x=state.asr||{};set('asrName',x.name||'阿里云实时语音识别');set('asrWorkspaceId',x.workspaceId||'');set('asrRegion',x.region||'cn-beijing');set('asrApiHost',x.apiHost||'');set('asrWebsocketUrl',x.websocketUrl||'');set('asrApiKey','');$('asrApiKey').placeholder=x.apiKey?'已保存，留空则不修改':'sk-...';set('asrModel',x.model||'fun-asr-realtime');set('asrFormat',x.format||'wav');set('asrSampleRate',x.sampleRate||16000);set('asrChunkIntervalMillis',x.chunkIntervalMillis||200);set('asrMaxSessionSeconds',x.maxSessionSeconds||60);set('asrPriceNote',x.priceNote||'');$('asrStatus').innerHTML=x.configured?'<b>当前状态：</b>已配置，客户端企业激活后即可使用语音输入。':'<b>当前状态：</b>未配置，请填写 API Key，并填写 Workspace ID / API Host / WebSocket URL 之一。';}
 function asrPayload(){return{name:$('asrName').value,workspaceId:$('asrWorkspaceId').value,region:$('asrRegion').value,apiHost:$('asrApiHost').value,websocketUrl:$('asrWebsocketUrl').value,apiKey:$('asrApiKey').value,model:$('asrModel').value,format:$('asrFormat').value,sampleRate:Number($('asrSampleRate').value),chunkIntervalMillis:Number($('asrChunkIntervalMillis').value),maxSessionSeconds:Number($('asrMaxSessionSeconds').value),priceNote:$('asrPriceNote').value};}
 function selectedModelTypes(){return Array.from(document.querySelectorAll('[data-model-type]:checked')).map(function(o){return o.getAttribute('data-model-type');}).filter(Boolean);}
@@ -720,8 +813,19 @@ function editMcp(id){var x=state.mcpServers.find(function(i){return i.id===id;})
 function clearMcp(){$('mcpId').readOnly=false;['mcpId','mcpName','mcpDesc','mcpUrl','mcpHeaders','mcpCommand','mcpArgs'].forEach(function(id){set(id,'');});set('mcpTransport','sse');closeForm('mcpForm');}
 function editSkill(id){var x=state.skills.find(function(i){return i.id===id;});if(!x)return;set('skillId',x.id);$('skillId').readOnly=true;set('skillName',x.name);set('skillVersion',x.version||'1.0.0');set('skillDesc',x.description);$('skillZip').value='';openForm('skillForm');showTab('skills');}
 function clearSkill(){$('skillId').readOnly=false;['skillId','skillName','skillDesc'].forEach(function(id){set(id,'');});set('skillVersion','1.0.0');$('skillZip').value='';closeForm('skillForm');}
-function editEmployee(code){var e=state.employees.find(function(x){return x.activationCode===code;});if(!e)return;editingEmployee=code;set('employeeName',e.employeeName);set('employeeId',e.employeeId);set('creditsLimit',e.creditsLimit);set('notes',e.notes);setSelected('employeeModels',e.allowedModelProviderIds);setSelected('employeeMcps',e.allowedMcpServerIds);setSelected('employeeSkills',e.allowedSkillIds);$('addEmployeeBtn').style.display='none';$('saveEmployeeBtn').style.display='inline-block';$('cancelEmployeeBtn').style.display='inline-block';openForm('employeeForm');showTab('employees');}
-function clearEmployee(){editingEmployee='';['employeeName','employeeId','notes'].forEach(function(id){set(id,'');});set('creditsLimit',1000);setSelected('employeeModels',[]);setSelected('employeeMcps',[]);setSelected('employeeSkills',[]);$('addEmployeeBtn').style.display='inline-block';$('saveEmployeeBtn').style.display='none';$('cancelEmployeeBtn').style.display='none';closeForm('employeeForm');}
+function editEmployee(code){var e=state.employees.find(function(x){return x.activationCode===code;});if(!e)return;editingEmployee=code;set('employeeName',e.employeeName);set('employeeId',e.employeeId);set('creditsLimit',e.creditsLimit);set('notes',e.notes);set('employeeDepartment',e.departmentId||'');setSelected('employeeModels',e.allowedModelProviderIds);setSelected('employeeMcps',e.allowedMcpServerIds);setSelected('employeeSkills',e.allowedSkillIds);$('addEmployeeBtn').style.display='none';$('saveEmployeeBtn').style.display='inline-block';$('cancelEmployeeBtn').style.display='inline-block';openForm('employeeForm');showTab('employees');}
+function clearEmployee(){editingEmployee='';['employeeName','employeeId','notes'].forEach(function(id){set(id,'');});set('employeeDepartment','');set('creditsLimit',1000);setSelected('employeeModels',[]);setSelected('employeeMcps',[]);setSelected('employeeSkills',[]);$('addEmployeeBtn').style.display='inline-block';$('saveEmployeeBtn').style.display='none';$('cancelEmployeeBtn').style.display='none';closeForm('employeeForm');}
+initDepartmentUi();
+$('statEmployees').closest('.card').insertAdjacentHTML('afterend','<div class="card"><div class="hint">部门数</div><div class="num" id="statDepartments">0</div></div>');
+document.head.insertAdjacentHTML('beforeend','<style>#overview .cards{grid-template-columns:repeat(12,minmax(0,1fr));gap:14px}#overview .card{position:relative;min-height:86px;padding:18px 20px;border-color:#d9e2ef;background:linear-gradient(145deg,#fff,#f8fafd);overflow:hidden;transition:transform .18s ease,box-shadow .18s ease}#overview .card:hover{transform:translateY(-2px);box-shadow:0 10px 24px rgba(15,35,65,.08)}#overview .card .hint{font-size:14px;color:#65758b}#overview .card .num{margin-top:5px;font-size:28px;line-height:1;color:#081a38}#overview .card:nth-child(1),#overview .card:nth-child(2){grid-column:span 3;background:linear-gradient(145deg,#f7fbff,#edf5ff);border-color:#cddff5}#overview .card:nth-child(3),#overview .card:nth-child(4),#overview .card:nth-child(5){grid-column:span 2}#overview .card:nth-child(6),#overview .card:nth-child(7){grid-column:span 6;background:linear-gradient(145deg,#fff,#f7f9fc)}#overview .card:nth-child(1):before,#overview .card:nth-child(2):before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:#245b9e}@media(max-width:960px){#overview .cards{grid-template-columns:repeat(2,minmax(0,1fr))}#overview .card:nth-child(n){grid-column:span 1}}@media(max-width:560px){#overview .cards{grid-template-columns:1fr}#overview .card:nth-child(n){grid-column:span 1}}</style>');
+$('departmentForm').querySelector('.grid-3').remove();var departmentHeader=$('departmentRows').closest('table').querySelector('thead tr');departmentHeader.children[3].textContent='操作';departmentHeader.children[4].remove();
+$('skillBulkSelectAll').textContent='全部人员';$('skillBulkSelectAll').insertAdjacentHTML('afterend','<button class="secondary" id="skillBulkSelectDepartments">全部部门</button>');$('skillBulkSelectDepartments').onclick=function(){document.querySelectorAll('[data-bulk-grant-employee]').forEach(function(x){x.checked=true;});syncBulkDepartmentStates();};
+var departmentAwareApi=api;api=async function(path,opt){if(/^\/api\/admin\/employees(?:\/|$)/.test(path)&&opt&&opt.body){var payload=JSON.parse(opt.body);if(payload.employeeName!==undefined)payload.departmentId=$('employeeDepartment').value;opt=Object.assign({},opt,{body:JSON.stringify(payload)});}return departmentAwareApi(path,opt);};
+$('newDepartmentBtn').onclick=function(){clearDepartment();openForm('departmentForm');};$('cancelDepartmentBtn').onclick=clearDepartment;$('saveDepartmentBtn').onclick=function(){run(async function(){var payload=departmentPayload();var target=editingDepartment?'/api/admin/departments/'+encodeURIComponent(editingDepartment):'/api/admin/departments';await api(target,{method:editingDepartment?'PATCH':'POST',body:JSON.stringify(payload)});clearDepartment();await loadAll();});};
+document.addEventListener('click',function(e){var t=e.target;if(!t.dataset)return;if(t.dataset.act==='editDepartment'){e.preventDefault();e.stopPropagation();editDepartment(t.dataset.id);}if(t.dataset.act==='deleteDepartment'){e.preventDefault();e.stopPropagation();run(async function(){if(confirm('确定删除该部门？有下级部门或员工时服务端会拒绝删除。')){await api('/api/admin/departments/'+encodeURIComponent(t.dataset.id),{method:'DELETE'});await loadAll();}});}},true);
+document.addEventListener('change',function(e){var t=e.target;if(t.hasAttribute('data-bulk-grant-department')){var ids=departmentSubtreeIds(t.getAttribute('data-bulk-grant-department'));bulkEmployeeInputsForDepartments(ids).forEach(function(input){input.checked=t.checked;});document.querySelectorAll('[data-bulk-grant-department]').forEach(function(input){if(ids.indexOf(input.getAttribute('data-bulk-grant-department'))>=0){input.checked=t.checked;input.indeterminate=false;}});syncBulkDepartmentStates();}else if(t.hasAttribute('data-bulk-grant-employee')){syncBulkDepartmentStates();}},true);
+document.addEventListener('click',function(e){if(e.target.id!=='skillBulkSave')return;e.preventDefault();e.stopPropagation();run(async function(){var cfg=bulkGrantConfig()[bulkGrant.type];if(!cfg||!bulkGrant.id)throw new Error('请选择要分配的授权对象');var checkedDepartments=Array.from(document.querySelectorAll('[data-bulk-grant-department]:checked')).map(function(x){return x.getAttribute('data-bulk-grant-department');});var departmentIds=checkedDepartments.filter(function(id){var current=state.departments.find(function(d){return d.id===id;});while(current&&current.parentId){if(checkedDepartments.indexOf(current.parentId)>=0)return false;current=state.departments.find(function(d){return d.id===current.parentId;});}return true;});var covered=new Set([].concat.apply([],departmentIds.map(departmentSubtreeIds)));var activationCodes=Array.from(document.querySelectorAll('[data-bulk-grant-employee]:checked')).map(function(x){return x.getAttribute('data-bulk-grant-employee');}).filter(function(code){var employee=state.employees.find(function(item){return item.activationCode===code;});return !employee||!covered.has(employee.departmentId);});await api(cfg.path+'/'+encodeURIComponent(bulkGrant.id)+'/assignments',{method:'PATCH',body:JSON.stringify({activationCodes:activationCodes,departmentIds:departmentIds})});await loadAll();alert(cfg.title+'分配已保存');});},true);
+document.addEventListener('click',function(e){if(e.target.id!=='skillBulkClear')return;e.preventDefault();e.stopPropagation();document.querySelectorAll('[data-bulk-grant-employee],[data-bulk-grant-department]').forEach(function(x){x.checked=false;x.indeterminate=false;});},true);
 async function copyCode(code){var done=false;try{var input=document.createElement('textarea');input.value=code;input.setAttribute('readonly','');input.style.position='fixed';input.style.left='-9999px';input.style.top='0';document.body.appendChild(input);input.focus();input.select();input.setSelectionRange(0,input.value.length);done=document.execCommand('copy');document.body.removeChild(input);}catch(e){}if(!done&&navigator.clipboard){try{await navigator.clipboard.writeText(code);done=true;}catch(e){}}if(done){alert('已复制激活码：'+code);}else{prompt('自动复制失败，请手动复制激活码',code);}}
 function renderUsageFilters(){$('usageEmployeeFilter').innerHTML='<option value="">全部员工</option>'+state.employees.map(function(e){return '<option value="'+esc(e.employeeId)+'">'+esc(e.employeeName)+' ('+esc(e.employeeId)+')</option>';}).join('');var models=[].concat.apply([],state.modelProviders.map(function(p){return (p.models||[]).map(function(m){return m.id;});}));models=Array.from(new Set(models));$('usageModelFilter').innerHTML='<option value="">全部模型</option>'+models.map(function(m){return '<option value="'+esc(m)+'">'+esc(m)+'</option>';}).join('');}
 function providerByModel(modelId){return state.modelProviders.find(function(p){return (p.models||[]).some(function(m){return m.id===modelId;});});}function money(credits,modelId){var b=(providerByModel(modelId)||{}).billing||{};var rate=Number(b.creditsPerCurrencyUnit||0);return rate?(b.currency||'USD')+' '+(Number(credits||0)/rate).toFixed(4):'-';}
@@ -773,6 +877,50 @@ const assignEmployeeGrant = (employees, grantKey, itemId, activationCodes) => {
     employee.updatedAt = nowIso();
   }
   return assigned;
+};
+
+const assignDepartmentGrant = (departments, grantKey, itemId, departmentIds) => {
+  const selectedIds = new Set(list(departmentIds));
+  let assigned = 0;
+  for (const department of departments) {
+    const grants = new Set(list(department[grantKey]));
+    if (selectedIds.has(department.id)) {
+      grants.add(itemId);
+      assigned += 1;
+    } else {
+      grants.delete(itemId);
+    }
+    department[grantKey] = [...grants];
+    department.updatedAt = nowIso();
+  }
+  return assigned;
+};
+
+const normalizeDepartment = (body, existing = {}) => ({
+  ...existing,
+  id: String(body.id || existing.id || id('department')).trim(),
+  name: String(body.name ?? existing.name ?? '').trim(),
+  parentId: String(body.parentId ?? existing.parentId ?? '').trim(),
+  allowedModelProviderIds: list(body.allowedModelProviderIds ?? existing.allowedModelProviderIds),
+  allowedMcpServerIds: list(body.allowedMcpServerIds ?? existing.allowedMcpServerIds),
+  allowedSkillIds: list(body.allowedSkillIds ?? existing.allowedSkillIds),
+  createdAt: existing.createdAt || nowIso(),
+  updatedAt: nowIso(),
+});
+
+const validateDepartmentParent = (departments, departmentId, parentId) => {
+  if (!parentId) return '';
+  if (parentId === departmentId) return '部门不能以自身作为上级部门。';
+  const byId = new Map(departments.map(department => [department.id, department]));
+  if (!byId.has(parentId)) return '上级部门不存在。';
+  const visited = new Set([departmentId]);
+  let currentId = parentId;
+  while (currentId) {
+    if (visited.has(currentId)) return '部门层级不能形成循环。';
+    visited.add(currentId);
+    currentId = String(byId.get(currentId)?.parentId || '');
+  }
+  return '';
 };
 
 const normalizeRelease = (body, existing = {}) => ({
@@ -871,6 +1019,40 @@ const handleAdmin = async (req, res, url, data) => {
   if (url.pathname === '/api/admin/pinyin' && req.method === 'GET') {
     const name = url.searchParams.get('name') || '';
     return ok(res, { pinyin: pinyinSlug(name), employeeId: makeEmployeeId(name), activationPrefix: `LFCLAW-${pinyinSlug(name).toUpperCase()}` }), true;
+  }
+  if (url.pathname === '/api/admin/departments' && req.method === 'POST') {
+    const body = await readBody(req);
+    const department = normalizeDepartment(body);
+    if (!department.name) return fail(res, 400, '部门名称必填。'), true;
+    if (data.departments.some(item => item.id === department.id)) return fail(res, 409, '部门 ID 已存在。'), true;
+    const parentError = validateDepartmentParent(data.departments, department.id, department.parentId);
+    if (parentError) return fail(res, 400, parentError), true;
+    data.departments.push(department);
+    writeData(data);
+    return ok(res, departmentView(department)), true;
+  }
+  const departmentMatch = url.pathname.match(/^\/api\/admin\/departments\/([^/]+)$/);
+  if (departmentMatch && req.method === 'PATCH') {
+    const departmentId = decodeURIComponent(departmentMatch[1]);
+    const department = data.departments.find(item => item.id === departmentId);
+    if (!department) return fail(res, 404, '部门不存在。'), true;
+    const body = await readBody(req);
+    const updated = normalizeDepartment({ ...body, id: departmentId }, department);
+    if (!updated.name) return fail(res, 400, '部门名称必填。'), true;
+    const parentError = validateDepartmentParent(data.departments, departmentId, updated.parentId);
+    if (parentError) return fail(res, 400, parentError), true;
+    Object.assign(department, updated);
+    writeData(data);
+    return ok(res, departmentView(department)), true;
+  }
+  if (departmentMatch && req.method === 'DELETE') {
+    const departmentId = decodeURIComponent(departmentMatch[1]);
+    if (!data.departments.some(item => item.id === departmentId)) return fail(res, 404, '部门不存在。'), true;
+    if (data.departments.some(item => item.parentId === departmentId)) return fail(res, 409, '请先移动或删除下级部门。'), true;
+    if (data.employees.some(employee => employee.departmentId === departmentId)) return fail(res, 409, '请先将部门内员工移出。'), true;
+    data.departments = data.departments.filter(item => item.id !== departmentId);
+    writeData(data);
+    return ok(res, { deleted: true }), true;
   }
   if (url.pathname === '/api/admin/model-providers/test' && req.method === 'POST') {
     const body = await readBody(req);
@@ -984,6 +1166,32 @@ const handleAdmin = async (req, res, url, data) => {
     ['/api/admin/mcp', data.mcpServers, 'allowedMcpServerIds', 'mcpServerId'],
     ['/api/admin/skills', data.skills, 'allowedSkillIds', 'skillId'],
   ]) {
+    const assignmentMatch = url.pathname.match(new RegExp(`^${route}/([^/]+)/assignments$`));
+    if (assignmentMatch && req.method === 'PATCH') {
+      const itemId = decodeURIComponent(assignmentMatch[1]);
+      if (!collection.some(item => item.id === itemId)) return fail(res, 404, '授权对象不存在。'), true;
+      const body = await readBody(req);
+      const assignedEmployees = assignEmployeeGrant(
+        data.employees,
+        grantKey,
+        itemId,
+        body.activationCodes ?? body.employeeActivationCodes ?? body.employeeCodes,
+      );
+      const assignedDepartments = assignDepartmentGrant(
+        data.departments,
+        grantKey,
+        itemId,
+        body.departmentIds,
+      );
+      writeData(data);
+      return ok(res, {
+        [resultKey]: itemId,
+        assignedEmployees,
+        assignedDepartments,
+        employees: data.employees.map(employee => employeeView(employee, data)),
+        departments: data.departments.map(departmentView),
+      }), true;
+    }
     const grantMatch = url.pathname.match(new RegExp(`^${route}/([^/]+)/employees$`));
     if (grantMatch && req.method === 'PATCH') {
       const itemId = decodeURIComponent(grantMatch[1]);
@@ -1015,6 +1223,9 @@ const handleAdmin = async (req, res, url, data) => {
       }
       deleteById(collection, itemId);
       removeEmployeeGrant(data.employees, grantKey, itemId);
+      for (const department of data.departments) {
+        department[grantKey] = list(department[grantKey]).filter(id => id !== itemId);
+      }
       writeData(data);
       return ok(res, { deleted: true }), true;
     }
@@ -1042,13 +1253,17 @@ const handleAdmin = async (req, res, url, data) => {
       allowedModelProviderIds: list(body.allowedModelProviderIds ?? body.allowedModelIds),
       allowedMcpServerIds: list(body.allowedMcpServerIds),
       allowedSkillIds: list(body.allowedSkillIds),
+      departmentId: String(body.departmentId || ''),
       notes: String(body.notes || ''),
       createdAt: nowIso(),
       updatedAt: nowIso(),
     };
+    if (employee.departmentId && !data.departments.some(item => item.id === employee.departmentId)) {
+      return fail(res, 400, '部门不存在。'), true;
+    }
     data.employees.unshift(employee);
     writeData(data);
-    return ok(res, employeeView(employee)), true;
+    return ok(res, employeeView(employee, data)), true;
   }
   const employeeMatch = url.pathname.match(/^\/api\/admin\/employees\/([^/]+)$/);
   if (employeeMatch && req.method === 'PATCH') {
@@ -1063,10 +1278,15 @@ const handleAdmin = async (req, res, url, data) => {
     if (body.allowedModelProviderIds !== undefined || body.allowedModelIds !== undefined) employee.allowedModelProviderIds = list(body.allowedModelProviderIds ?? body.allowedModelIds);
     if (body.allowedMcpServerIds !== undefined) employee.allowedMcpServerIds = list(body.allowedMcpServerIds);
     if (body.allowedSkillIds !== undefined) employee.allowedSkillIds = list(body.allowedSkillIds);
+    if (body.departmentId !== undefined) {
+      const departmentId = String(body.departmentId || '');
+      if (departmentId && !data.departments.some(item => item.id === departmentId)) return fail(res, 400, '部门不存在。'), true;
+      employee.departmentId = departmentId;
+    }
     if (body.notes !== undefined) employee.notes = String(body.notes || '');
     employee.updatedAt = nowIso();
     writeData(data);
-    return ok(res, employeeView(employee)), true;
+    return ok(res, employeeView(employee, data)), true;
   }
   if (employeeMatch && req.method === 'DELETE') {
     data.employees = data.employees.filter(item => item.activationCode !== decodeURIComponent(employeeMatch[1]));
@@ -1354,7 +1574,7 @@ const server = http.createServer(async (req, res) => {
       if (!employee) return fail(res, 401, 'Enterprise session is invalid.');
       if (employee.status !== 'active') return fail(res, 403, 'Activation code is disabled.');
       const skillId = decodeURIComponent(skillMatch[1]);
-      if (!list(employee.allowedSkillIds).includes(skillId)) return fail(res, 403, 'Skill is not allowed.');
+      if (!effectiveEmployeeGrants(data, employee).allowedSkillIds.includes(skillId)) return fail(res, 403, 'Skill is not allowed.');
       const skill = data.skills.find(item => item.id === skillId);
       if (!skill?.packagePath || !fs.existsSync(skill.packagePath)) return fail(res, 404, 'Skill package not found.');
       res.writeHead(200, { 'content-type': 'application/zip', 'content-disposition': `attachment; filename="${encodeURIComponent(skill.packageFileName || `${skill.id}.zip`)}"` });
