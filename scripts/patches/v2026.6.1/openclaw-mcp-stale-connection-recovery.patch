@@ -1,0 +1,61 @@
+diff --git a/src/agents/agent-bundle-mcp-runtime.ts b/src/agents/agent-bundle-mcp-runtime.ts
+index 9f820cf9d1..17d169ddbc 100644
+--- a/src/agents/agent-bundle-mcp-runtime.ts
++++ b/src/agents/agent-bundle-mcp-runtime.ts
+@@ -515,6 +515,7 @@ export function createSessionMcpRuntime(params: {
+     }
+     serverBackoff.set(serverName, nextBackoff);
+   };
++  let recoverServerConnection: (serverName: string) => Promise<boolean>;
+   const runGuardedServerRequest = async <T>(
+     serverName: string,
+     request: () => Promise<T>,
+@@ -531,7 +532,14 @@ export function createSessionMcpRuntime(params: {
+       serverBackoff.delete(serverName);
+       return result;
+     } catch (error) {
+-      recordServerToolFailure(serverName, nowMs);
++      // A restarted remote MCP server leaves the SDK transport in a stale
++      // state. Recreate it now so the next tool call can proceed without a
++      // gateway restart. Do not replay this request because MCP tools may
++      // have side effects and the server might have processed it already.
++      const recovered = await recoverServerConnection(serverName);
++      if (!recovered) {
++        recordServerToolFailure(serverName, nowMs);
++      }
+       throw error;
+     }
+   };
+@@ -742,6 +750,32 @@ export function createSessionMcpRuntime(params: {
+       }
+     }
+   };
++  recoverServerConnection = async (serverName: string): Promise<boolean> => {
++    const staleSession = sessions.get(serverName);
++    if (staleSession) {
++      sessions.delete(serverName);
++      await disposeSession(staleSession);
++    }
++    catalogInvalidationGeneration += 1;
++    catalog = null;
++    catalogInFlight = undefined;
++    try {
++      await getCatalog();
++    } catch (error) {
++      logWarn(
++        `bundle-mcp: failed to reconnect server "${serverName}" after request failure: ${redactErrorUrls(error)}`,
++      );
++    }
++    const recovered = sessions.has(serverName);
++    if (recovered) {
++      serverBackoff.delete(serverName);
++    } else {
++      // Do not cache a diagnostic-only catalog: retry the connection on the
++      // next request as soon as the remote service becomes available.
++      catalog = null;
++    }
++    return recovered;
++  };
+ 
+   return {
+     sessionId: params.sessionId,
