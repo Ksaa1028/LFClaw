@@ -3,7 +3,8 @@
 ## 通用规则
 
 - 日期统一使用 `yyyy-MM-dd`，结算月份使用 `yyyy-MM`。
-- 月度经营查询先按上月 26 日至本月 25 日换算。
+- 月度经营查询必须先运行 `node scripts/resolve-business-month.mjs <yyyy-MM>`，并原样采用脚本返回的 `startDate`、`endDate`。禁止直接传目标月 1 日至月末。
+- 调用前硬校验：目标月为 `yyyy-MM` 时，`startDate` 必须是上月 26 日，`endDate` 必须是目标月 25 日。校验失败时不得调用 MCP。
 - 只开启回答问题所需的布尔 Flag，避免返回无关大数据。
 - 多个名称或 ID 按工具要求使用英文逗号分隔。
 - `openId`、`appId`、`appSecret` 属于身份信息。不得向用户索要或在回答中展示；仅使用运行环境安全提供的值。
