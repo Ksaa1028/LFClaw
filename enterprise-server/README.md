@@ -1,5 +1,17 @@
 # LfClaw Enterprise Server
 
+## 兜知2.0 员工楼层权限
+
+楼层权限只绑定企业 MCP `dz2.0`。其他 MCP 不启用、也不显示楼层权限。
+
+- 默认使用内置兼容配置，无需额外设置环境变量；需要多套环境隔离时才用 `LFCLAW_MCP_PERMISSION_SECRET` 覆盖默认值。
+- 员工新增/编辑页面固定显示营运一层、二层、三层、四层和营运自营五项权限。
+- 每名员工可独立多选；个人选择优先于部门继承权限。
+- 历史员工/部门只有 MCP 授权、没有细分记录时，自动视为五项全选，兼容旧数据。
+- LFCLAW 下发短期 HMAC 签名请求头，MCP 服务验签后再限制楼层；签名缺失或无效不会走新权限路径。
+
+管理接口：`PATCH /api/admin/mcp/:id/permission-assignments`。
+
 LfClaw 企业服务用于统一管理员工激活码、模型、MCP、技能包、积分、用量和客户端更新源。客户端仍然使用本机 OpenClaw 网关，但授权、模型配置、MCP、技能和积分由企业服务实时控制。
 
 ## 部门树与授权范围
@@ -53,6 +65,8 @@ https://git.code.tencent.com/tongkai/LfClaw.git
 /opt/LfClaw/
 ├── enterprise-server/
 │   ├── server.mjs
+│   ├── mcpPermissions.mjs
+│   ├── package.json
 │   └── README.md
 ├── data/
 │   ├── enterprise-data.json
@@ -63,11 +77,15 @@ https://git.code.tencent.com/tongkai/LfClaw.git
 └── server.log
 ```
 
-只更新服务端代码时，覆盖：
+本次楼层权限改造更新服务端代码时，覆盖：
 
 ```text
 /opt/LfClaw/enterprise-server/server.mjs
+/opt/LfClaw/enterprise-server/mcpPermissions.mjs
+/opt/LfClaw/enterprise-server/package.json
 ```
+
+随后在 `/opt/LfClaw/enterprise-server` 执行 `npm install --omit=dev` 并重启企业服务。不要只上传 `server.mjs`，否则楼层权限模块会缺失。
 
 不要覆盖：
 
@@ -289,6 +307,8 @@ Windows 日常更新包只用这一条：
 npm run release:win
 ```
 
+Windows 开发机推荐直接双击仓库根目录的 `发布Windows安装包.cmd`。脚本会自动检查 Node 24.15.0+、关闭当前仓库残留的开发进程、复用本地 Electron 运行时并完成正式发布，不需要手工输入命令。
+
 Windows 和 macOS 的发布命令都会自动完成：
 
 - 生成当天版本号。
@@ -400,6 +420,7 @@ macOS 首次发版必须重点验证：
 - `POST /api/admin/model-providers`
 - `DELETE /api/admin/model-providers/:id`
 - `POST /api/admin/mcp`
+- `PATCH /api/admin/mcp/:id/permission-assignments`
 - `DELETE /api/admin/mcp/:id`
 - `POST /api/admin/skills`
 - `POST /api/admin/skills/upload`

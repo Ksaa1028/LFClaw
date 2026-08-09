@@ -97,6 +97,31 @@ function mergeExtraResources(platformName) {
 const keyfrom = readBuildKeyfrom();
 const buildVersion = readLFClawBuildVersion();
 
+function useInstalledElectronDist() {
+  if (process.env.LFCLAW_USE_LOCAL_ELECTRON_DIST === '0') return;
+
+  const electronDist = path.join(__dirname, '..', 'node_modules', 'electron', 'dist');
+  const versionFile = path.join(electronDist, 'version');
+  const platformExecutable = process.platform === 'win32'
+    ? path.join(electronDist, 'electron.exe')
+    : process.platform === 'darwin'
+      ? path.join(electronDist, 'Electron.app')
+      : path.join(electronDist, 'electron');
+
+  try {
+    const installedVersion = fs.readFileSync(versionFile, 'utf8').trim();
+    if (installedVersion !== String(config.electronVersion) || !fs.existsSync(platformExecutable)) {
+      return;
+    }
+    config.electronDist = electronDist;
+    console.log(`[LFClaw Build] using installed Electron ${installedVersion}: ${electronDist}`);
+  } catch {
+    // electron-builder will use its normal download/cache flow when the local runtime is unavailable.
+  }
+}
+
+useInstalledElectronDist();
+
 for (const platformName of ['mac', 'win', 'linux']) {
   mergeExtraResources(platformName);
 }

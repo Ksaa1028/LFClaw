@@ -5,10 +5,33 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocket, WebSocketServer } from 'ws';
 
+import {
+  effectiveMcpPermissionIds,
+  normalizeMcpPermissionGrants,
+  normalizePermissionOptions,
+  signMcpPermissionAssertion,
+} from './mcpPermissions.mjs';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HOST = process.env.LFCLAW_ENTERPRISE_HOST || '127.0.0.1';
 const PORT = Number(process.env.LFCLAW_ENTERPRISE_PORT || 8787);
 const ADMIN_TOKEN = process.env.LFCLAW_ADMIN_TOKEN || 'lfclaw-admin';
+// Built-in compatibility key keeps the enterprise permission feature
+// deployable without extra environment configuration. An environment value
+// can still replace it when a deployment needs key rotation/isolation.
+const DEFAULT_MCP_PERMISSION_SIGNING_SECRET = 'lfclaw-enterprise-mcp-permission-v1-2026';
+const MCP_PERMISSION_SIGNING_SECRET = String(process.env.LFCLAW_MCP_PERMISSION_SECRET || DEFAULT_MCP_PERMISSION_SIGNING_SECRET).trim();
+const MCP_PERMISSION_ASSERTION_HEADER = 'x-lfclaw-permission-assertion';
+const MCP_PERMISSION_ASSERTION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const mcpPermissionAssertionCache = new Map();
+const FLOOR_PERMISSION_MCP_ID = 'dz2.0';
+const FLOOR_PERMISSION_OPTIONS = [
+  { id: 'operation.floor.1', name: '营运一层' },
+  { id: 'operation.floor.2', name: '营运二层' },
+  { id: 'operation.floor.3', name: '营运三层' },
+  { id: 'operation.floor.4', name: '营运四层' },
+  { id: 'operation.self_operated', name: '营运自营' },
+];
 const ROOT_DIR = process.platform === 'win32' ? __dirname : '/opt/LfClaw';
 const DATA_DIR = process.env.LFCLAW_ENTERPRISE_DATA_DIR || path.join(ROOT_DIR, 'data');
 const DATA_FILE = process.env.LFCLAW_ENTERPRISE_DATA || path.join(DATA_DIR, 'enterprise-data.json');
@@ -383,7 +406,10 @@ const ensureData = data => ({
   ...defaultData(),
   ...data,
   modelProviders: Array.isArray(data.modelProviders) ? data.modelProviders : Array.isArray(data.models) ? data.models : [],
-  mcpServers: Array.isArray(data.mcpServers) ? data.mcpServers : [],
+  mcpServers: (Array.isArray(data.mcpServers) ? data.mcpServers : []).map(server => ({
+    ...server,
+    permissionOptions: server.id === FLOOR_PERMISSION_MCP_ID ? FLOOR_PERMISSION_OPTIONS : [],
+  })),
   skills: Array.isArray(data.skills) ? data.skills : [],
   departments: Array.isArray(data.departments) ? data.departments : [],
   employees: Array.isArray(data.employees) ? data.employees : Array.isArray(data.activations) ? data.activations : [],
@@ -587,6 +613,7 @@ const normalizeMcp = (body, existing = {}) => {
     command: String(body.command || existing.command || '').trim(),
     args: list(body.args ?? existing.args),
     env: parseJson(body.env ?? existing.env),
+    permissionOptions: String(body.id || existing.id || '').trim() === FLOOR_PERMISSION_MCP_ID ? FLOOR_PERMISSION_OPTIONS : [],
     enabled: body.enabled !== undefined ? body.enabled !== false : existing.enabled !== false,
     createdAt: existing.createdAt || nowIso(),
     updatedAt: nowIso(),
@@ -624,6 +651,7 @@ const departmentView = department => ({
   allowedModelProviderIds: list(department.allowedModelProviderIds),
   allowedMcpServerIds: list(department.allowedMcpServerIds),
   allowedSkillIds: list(department.allowedSkillIds),
+  mcpPermissionGrants: normalizeMcpPermissionGrants(department.mcpPermissionGrants),
 });
 
 const departmentChain = (data, departmentId) => {
@@ -653,6 +681,11 @@ const effectiveEmployeeGrants = (data, employee) => {
 
 const employeeView = (employee, data) => {
   const effective = data ? effectiveEmployeeGrants(data, employee) : null;
+  const effectiveMcpPermissions = data && effective ? Object.fromEntries(
+    data.mcpServers
+      .filter(server => effective.allowedMcpServerIds.includes(server.id) && server.id === FLOOR_PERMISSION_MCP_ID)
+      .map(server => [server.id, effectiveMcpPermissionIds(data, employee, server, departmentChain)]),
+  ) : {};
   return {
     ...employee,
     departmentId: String(employee.departmentId || ''),
@@ -664,6 +697,8 @@ const employeeView = (employee, data) => {
     allowedModelProviderIds: list(employee.allowedModelProviderIds ?? employee.allowedModelIds),
     allowedMcpServerIds: list(employee.allowedMcpServerIds),
     allowedSkillIds: list(employee.allowedSkillIds),
+    mcpPermissionGrants: normalizeMcpPermissionGrants(employee.mcpPermissionGrants),
+    effectiveMcpPermissions,
     ...(effective ? {
       effectiveAllowedModelProviderIds: effective.allowedModelProviderIds,
       effectiveAllowedMcpServerIds: effective.allowedMcpServerIds,
@@ -694,11 +729,49 @@ const selectByIds = (items, ids) => {
   return items.filter(item => item.enabled !== false && allowed.has(item.id));
 };
 
+const cachedMcpPermissionAssertion = ({ employeeId, mcpId, permissionIds }) => {
+  const cacheKey = JSON.stringify([employeeId, mcpId, permissionIds]);
+  const cached = mcpPermissionAssertionCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now() + 5 * 60 * 1000) return cached.assertion;
+  const assertion = signMcpPermissionAssertion({
+    secret: MCP_PERMISSION_SIGNING_SECRET,
+    employeeId,
+    mcpId,
+    permissionIds,
+    ttlMs: MCP_PERMISSION_ASSERTION_TTL_MS,
+  });
+  mcpPermissionAssertionCache.set(cacheKey, {
+    assertion,
+    expiresAt: Date.now() + MCP_PERMISSION_ASSERTION_TTL_MS,
+  });
+  return assertion;
+};
+
 const clientPayload = (data, employee, accessToken, req, clientVersion = '') => {
   const effectiveClientVersion = normalizeClientVersion(clientVersion || employee.clientVersion || employee.appVersion);
   const grants = effectiveEmployeeGrants(data, employee);
   const modelProviders = selectByIds(data.modelProviders, grants.allowedModelProviderIds);
-  const mcpServers = selectByIds(data.mcpServers, grants.allowedMcpServerIds);
+  const mcpServers = selectByIds(data.mcpServers, grants.allowedMcpServerIds).flatMap(server => {
+    const permissionOptions = server.id === FLOOR_PERMISSION_MCP_ID ? FLOOR_PERMISSION_OPTIONS : [];
+    if (permissionOptions.length === 0) return [server];
+    // Fine-grained enterprise MCPs must never silently fall back to their old
+    // unrestricted behavior when the signing secret is missing.
+    if (!MCP_PERMISSION_SIGNING_SECRET) return [];
+    const permissionIds = effectiveMcpPermissionIds(data, employee, server, departmentChain);
+    const assertion = cachedMcpPermissionAssertion({
+      employeeId: employee.employeeId,
+      mcpId: server.id,
+      permissionIds,
+    });
+    return [{
+      ...server,
+      permissions: permissionOptions.filter(option => permissionIds.includes(option.id)),
+      headers: {
+        ...(server.headers || {}),
+        [MCP_PERMISSION_ASSERTION_HEADER]: assertion,
+      },
+    }];
+  });
   const skillPayload = skill => ({
     ...skill,
     packagePath: undefined,
@@ -838,6 +911,41 @@ document.body.onchange=function(e){var t=e.target;if(!t.dataset.multiId)return;v
 document.body.onclick=function(e){var t=e.target;if(t.dataset.multiToggle){$(t.dataset.multiToggle).classList.toggle('open');return;}var a=t.dataset.act;if(!a)return;run(async function(){if(a==='viewGrants')showEmployeeGrants(t.dataset.code);if(a==='editEmployee')editEmployee(t.dataset.code);if(a==='copy')await copyCode(t.dataset.code);if(a==='toggle'){await api('/api/admin/employees/'+encodeURIComponent(t.dataset.code),{method:'PATCH',body:JSON.stringify({status:t.dataset.status==='active'?'disabled':'active'})});await loadAll();}if(a==='credits'){var v=prompt('新积分额度');if(v!==null){await api('/api/admin/employees/'+encodeURIComponent(t.dataset.code),{method:'PATCH',body:JSON.stringify({creditsLimit:Number(v)})});await loadAll();}}if(a==='deleteEmployee'){if(confirm('确定删除？')){await api('/api/admin/employees/'+encodeURIComponent(t.dataset.code),{method:'DELETE'});await loadAll();}}if(a==='editModel')editModel(t.dataset.id);if(a==='editMcp')editMcp(t.dataset.id);if(a==='editSkill')editSkill(t.dataset.id);if(a==='downloadBackup')downloadAdmin('/api/admin/backups/'+encodeURIComponent(t.dataset.name)+'/download',t.dataset.name);if(a==='delete'){if(confirm('确定删除？')){await api(t.dataset.path+'/'+encodeURIComponent(t.dataset.id),{method:'DELETE'});await loadAll();}}});};
 if($('skillBulkSelectAll')){$('skillBulkSelectAll').onclick=function(){document.querySelectorAll('[data-bulk-grant-employee]').forEach(function(x){x.checked=true;});};$('skillBulkClear').onclick=function(){document.querySelectorAll('[data-bulk-grant-employee]').forEach(function(x){x.checked=false;});};$('skillBulkCancel').onclick=function(){bulkGrant={type:'',id:''};renderBulkGrant();};$('skillBulkSave').onclick=function(){run(async function(){var configs=bulkGrantConfig();var cfg=configs[bulkGrant.type];if(!cfg||!bulkGrant.id)throw new Error('请选择要分配的授权对象');var codes=Array.from(document.querySelectorAll('[data-bulk-grant-employee]:checked')).map(function(x){return x.getAttribute('data-bulk-grant-employee');}).filter(Boolean);await api(cfg.path+'/'+encodeURIComponent(bulkGrant.id)+'/employees',{method:'PATCH',body:JSON.stringify({activationCodes:codes})});await loadAll();alert(cfg.title+'分配已保存');});};}
 document.body.addEventListener('click',function(e){var t=e.target;var a=t.dataset&&t.dataset.act;if(a!=='bulkGrant')return;e.preventDefault();e.stopPropagation();bulkGrant={type:t.dataset.type,id:t.dataset.id};renderBulkGrant();},true);
+function initMcpPermissionUi(){
+  var form=$('mcpForm');
+  var hidden=document.createElement('input');hidden.type='hidden';hidden.id='mcpPermissionOptions';form.appendChild(hidden);
+  document.body.insertAdjacentHTML('beforeend','<dialog id="mcpPermissionDialog" style="width:min(900px,92vw)"><div class="form-panel" style="display:block"><h2 id="mcpPermissionTitle">MCP 细分权限</h2><div class="hint">这里只列出已直接获得该 MCP 的员工和部门。未单独保存过的对象默认全选，支持多选或全部取消。</div><div id="mcpPermissionSubjects" style="margin-top:12px;max-height:58vh;overflow:auto"></div><div class="row" style="margin-top:16px"><button id="saveMcpPermissions">保存权限</button><button class="secondary" id="closeMcpPermissions">关闭</button></div></div></dialog>');
+}
+var operationPermissionPreset=[{id:'operation.floor.1',name:'营运一层'},{id:'operation.floor.2',name:'营运二层'},{id:'operation.floor.3',name:'营运三层'},{id:'operation.floor.4',name:'营运四层'},{id:'operation.self_operated',name:'营运自营'}];
+function parseMcpPermissionOptions(value){return String(value||'').split(/\r?\n/).map(function(line){var parts=line.split('|');return{id:String(parts.shift()||'').trim(),name:parts.join('|').trim()};}).filter(function(x){return x.id;}).map(function(x){return{id:x.id,name:x.name||x.id};});}
+function formatMcpPermissionOptions(options){return(options||[]).map(function(x){return x.id+'|'+(x.name||x.id);}).join('\n');}
+function subjectPermissionIds(subject,mcp){var grants=subject.mcpPermissionGrants||{};return Object.prototype.hasOwnProperty.call(grants,mcp.id)?grants[mcp.id]:(mcp.permissionOptions||[]).map(function(x){return x.id;});}
+var activePermissionMcp='';
+function openMcpPermissionDialog(id){var mcp=state.mcpServers.find(function(x){return x.id===id;});if(!mcp)return;activePermissionMcp=id;$('mcpPermissionTitle').textContent=mcp.name+' - 细分权限';var subjects=[];(state.departments||[]).filter(function(x){return(x.allowedMcpServerIds||[]).indexOf(id)>=0;}).forEach(function(x){subjects.push({type:'department',key:x.id,label:'部门：'+x.name,data:x});});(state.employees||[]).filter(function(x){return(x.allowedMcpServerIds||[]).indexOf(id)>=0;}).forEach(function(x){subjects.push({type:'employee',key:x.activationCode,label:'员工：'+x.employeeName,data:x});});$('mcpPermissionSubjects').innerHTML=subjects.length?subjects.map(function(subject){var selectedIds=subjectPermissionIds(subject.data,mcp);return'<div class="form-panel" style="display:block;margin-bottom:10px"><strong>'+esc(subject.label)+'</strong><div class="multi-select" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px">'+mcp.permissionOptions.map(function(option){return'<label><input type="checkbox" data-permission-subject="'+subject.type+'" data-subject-id="'+esc(subject.key)+'" data-permission-id="'+esc(option.id)+'" '+(selectedIds.indexOf(option.id)>=0?'checked':'')+'> '+esc(option.name)+'</label>';}).join('')+'</div></div>';}).join(''):'<div class="hint">请先通过“分配员工”给员工或部门授权这个 MCP。</div>';$('mcpPermissionDialog').showModal();}
+initMcpPermissionUi();
+function initEmployeeMcpPermissionUi(){var form=$('employeeForm');var panel=document.createElement('div');panel.style.marginTop='12px';panel.innerHTML='<label>兜知2.0 楼层权限</label><div class="hint">直接设置当前员工可以访问的营运楼层；默认全部勾选，个人选择优先于部门权限。</div><div id="employeeMcpPermissions" style="margin-top:8px"></div>';form.insertBefore(panel,form.lastElementChild);}
+function renderEmployeeMcpPermissions(employee){var mcps=(state.mcpServers||[]).filter(function(mcp){return(mcp.permissionOptions||[]).length;});$('employeeMcpPermissions').innerHTML=mcps.length?mcps.map(function(mcp){var grants=employee&&employee.mcpPermissionGrants||{};var selectedIds=Object.prototype.hasOwnProperty.call(grants,mcp.id)?grants[mcp.id]:mcp.permissionOptions.map(function(x){return x.id;});return'<div class="form-panel" style="display:block;margin-bottom:10px"><strong>'+esc(mcp.name)+'</strong><div class="multi-select" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px">'+mcp.permissionOptions.map(function(option){return'<label><input type="checkbox" data-employee-mcp="'+esc(mcp.id)+'" data-employee-permission="'+esc(option.id)+'" '+(selectedIds.indexOf(option.id)>=0?'checked':'')+'> '+esc(option.name)+'</label>';}).join('')+'</div></div>';}).join(''):'<div class="hint">尚未配置需要细分权限的企业 MCP。</div>';}
+function employeeMcpPermissionPayload(){var result={};document.querySelectorAll('[data-employee-mcp]').forEach(function(input){var id=input.dataset.employeeMcp;if(!result[id])result[id]=[];if(input.checked)result[id].push(input.dataset.employeePermission);});return result;}
+function employeePayload(){return{employeeName:$('employeeName').value,employeeId:$('employeeId').value,creditsLimit:Number($('creditsLimit').value),notes:$('notes').value,departmentId:$('employeeDepartment').value,allowedModelProviderIds:selected('employeeModels'),allowedMcpServerIds:selected('employeeMcps'),allowedSkillIds:selected('employeeSkills'),mcpPermissionGrants:employeeMcpPermissionPayload()};}
+var employeeNameFilter='';var employeeDepartmentFilter='';
+function employeeDepartmentSearchText(employee){var names=[];var current=(state.departments||[]).find(function(department){return department.id===employee.departmentId;});var visited={};while(current&&!visited[current.id]){visited[current.id]=true;names.push(current.name||'');current=(state.departments||[]).find(function(department){return department.id===current.parentId;});}return names.join(' ').toLowerCase();}
+function filteredEmployees(){var person=employeeNameFilter.trim().toLowerCase();var department=employeeDepartmentFilter.trim().toLowerCase();return(state.employees||[]).filter(function(employee){var personText=[employee.employeeName,employee.employeeId,employee.activationCode].join(' ').toLowerCase();return(!person||personText.indexOf(person)>=0)&&(!department||employeeDepartmentSearchText(employee).indexOf(department)>=0);});}
+function initEmployeeFilters(){var panel=document.createElement('div');panel.className='grid grid-3';panel.style.marginBottom='12px';panel.innerHTML='<label>人员筛选<input id="employeeNameFilter" placeholder="姓名、员工ID或激活码"></label><label>部门筛选<input id="employeeDepartmentFilter" placeholder="输入部门名称模糊查询"></label><div class="row" style="align-items:flex-end"><button type="button" class="secondary" id="clearEmployeeFilters">清空筛选</button></div>';$('employees').insertBefore(panel,$('employeeForm'));$('employeeNameFilter').oninput=function(){employeeNameFilter=this.value;employeePage=1;renderEmployees();};$('employeeDepartmentFilter').oninput=function(){employeeDepartmentFilter=this.value;employeePage=1;renderEmployees();};$('clearEmployeeFilters').onclick=function(){employeeNameFilter='';employeeDepartmentFilter='';$('employeeNameFilter').value='';$('employeeDepartmentFilter').value='';employeePage=1;renderEmployees();};}
+renderEmployees=function(){var employees=filteredEmployees();var total=employees.length;var pages=Math.max(1,Math.ceil(total/employeePageSize));employeePage=Math.min(Math.max(1,employeePage),pages);var start=(employeePage-1)*employeePageSize;var rows=employees.slice(start,start+employeePageSize);$('employeeRows').innerHTML=rows.map(function(e){return '<tr><td>'+esc(e.status)+'</td><td><code>'+esc(e.activationCode)+'</code></td><td>'+esc(e.employeeName)+'<br><code>'+esc(e.employeeId)+'</code><br><span class="pill">'+esc(departmentName(e.departmentId))+'</span></td><td>'+esc(Math.max(0,(e.creditsLimit||0)-(e.creditsUsed||0)))+'/'+esc(e.creditsLimit||0)+'<br><button class="secondary" data-act="credits" data-code="'+esc(e.activationCode)+'">改积分</button></td><td><code>'+esc(e.lastSeenClientVersion||e.clientVersion||'-')+'</code><br>'+esc(e.lastSeenClientVersionAt||'-')+'</td><td><code>'+esc(e.deviceToken||'-')+'</code><br>'+esc(e.lastUsedAt||'-')+'</td><td><div class="row"><button class="secondary" data-act="viewGrants" data-code="'+esc(e.activationCode)+'">授权</button><button class="secondary" data-act="editEmployee" data-code="'+esc(e.activationCode)+'">编辑</button><button class="secondary" data-act="copy" data-code="'+esc(e.activationCode)+'">复制</button><button class="secondary" data-act="toggle" data-code="'+esc(e.activationCode)+'" data-status="'+esc(e.status)+'">'+(e.status==='active'?'禁用':'启用')+'</button><button class="danger" data-act="deleteEmployee" data-code="'+esc(e.activationCode)+'">删除</button></div></td></tr>';}).join('');var filterActive=employeeNameFilter.trim()||employeeDepartmentFilter.trim();$('employeePagerInfo').textContent=total?'第 '+employeePage+' / '+pages+' 页，'+(filterActive?'筛选到 ':'共 ')+total+' 人，当前显示 '+(start+1)+'-'+Math.min(start+rows.length,total):(filterActive?'没有符合筛选条件的员工':'暂无员工');$('employeePrevPage').disabled=employeePage<=1;$('employeeNextPage').disabled=employeePage>=pages;$('employeePageSize').value=String(employeePageSize);}
+initEmployeeFilters();
+initEmployeeMcpPermissionUi();
+showEmployeeGrants=function(code){var e=state.employees.find(function(x){return x.activationCode===code;});if(!e)return;var floorIds=e.effectiveMcpPermissions&&e.effectiveMcpPermissions['dz2.0']||[];var floorNames=operationPermissionPreset.filter(function(option){return floorIds.indexOf(option.id)>=0;}).map(function(option){return option.name;});$('permissionDialogTitle').textContent=(e.employeeName||e.employeeId)+' 的有效授权';$('permissionDialogBody').innerHTML='<div class="formula"><b>所属部门：</b>'+esc(departmentName(e.departmentId))+'<br>以下权限为个人与部门层级授权合并后的结果。</div>'+grantGroup('模型',e.effectiveAllowedModelProviderIds||e.allowedModelProviderIds,state.modelProviders)+grantGroup('MCP',e.effectiveAllowedMcpServerIds||e.allowedMcpServerIds,state.mcpServers)+(floorIds.length?'<div class="permission-group"><b>兜知2.0 楼层权限</b><div class="permission-items">'+floorNames.map(function(name){return'<span class="pill">'+esc(name)+'</span>';}).join('')+'</div></div>':'')+grantGroup('技能',e.effectiveAllowedSkillIds||e.allowedSkillIds,state.skills);$('permissionDialog').showModal();};
+var baseEditEmployee=editEmployee;editEmployee=function(code){baseEditEmployee(code);var employee=state.employees.find(function(x){return x.activationCode===code;});renderEmployeeMcpPermissions(employee);};
+var baseClearEmployee=clearEmployee;clearEmployee=function(){baseClearEmployee();renderEmployeeMcpPermissions(null);};
+$('addEmployeeBtn').onclick=function(){run(async function(){await api('/api/admin/employees',{method:'POST',body:JSON.stringify(employeePayload())});clearEmployee();employeePage=1;await loadAll();});};
+$('saveEmployeeBtn').onclick=function(){run(async function(){await api('/api/admin/employees/'+encodeURIComponent(editingEmployee),{method:'PATCH',body:JSON.stringify(employeePayload())});clearEmployee();await loadAll();});};
+var baseEditMcp=editMcp;editMcp=function(id){baseEditMcp(id);var x=state.mcpServers.find(function(i){return i.id===id;});set('mcpPermissionOptions',formatMcpPermissionOptions(x&&x.permissionOptions));};
+var baseClearMcp=clearMcp;clearMcp=function(){baseClearMcp();set('mcpPermissionOptions','');};
+renderMcp=function(){$('mcpRows').innerHTML=state.mcpServers.map(function(x){var link=x.transportType==='stdio'?(x.command+' '+(x.args||[]).join(' ')):x.url;return '<tr><td><code>'+esc(x.id)+'</code></td><td>'+esc(x.name)+'</td><td>'+esc(x.transportType)+'</td><td>'+esc(link)+'</td><td><div class="row"><button class="secondary" data-act="editMcp" data-id="'+esc(x.id)+'">编辑</button><button class="secondary" data-act="bulkGrant" data-type="mcp" data-id="'+esc(x.id)+'">分配员工</button><button class="danger" data-act="delete" data-path="/api/admin/mcp" data-id="'+esc(x.id)+'">删除</button></div></td></tr>';}).join('');renderBulkGrant();};
+$('saveMcpBtn').onclick=function(){run(async function(){await api('/api/admin/mcp',{method:'POST',body:JSON.stringify({id:$('mcpId').value.trim(),name:$('mcpName').value,description:$('mcpDesc').value,transportType:$('mcpTransport').value,url:$('mcpUrl').value,headers:$('mcpHeaders').value,command:$('mcpCommand').value,args:$('mcpArgs').value.split(/\r?\n|,/).map(function(x){return x.trim();}).filter(Boolean),permissionOptions:parseMcpPermissionOptions($('mcpPermissionOptions').value)})});clearMcp();await loadAll();});};
+document.addEventListener('click',function(e){var t=e.target;if(t.dataset&&t.dataset.act==='mcpPermissions'){e.preventDefault();e.stopPropagation();openMcpPermissionDialog(t.dataset.id);}},true);
+$('closeMcpPermissions').onclick=function(){$('mcpPermissionDialog').close();};
+$('saveMcpPermissions').onclick=function(){run(async function(){var employeePermissions={};var departmentPermissions={};document.querySelectorAll('[data-permission-subject]').forEach(function(input){var target=input.dataset.permissionSubject==='employee'?employeePermissions:departmentPermissions;var id=input.dataset.subjectId;if(!target[id])target[id]=[];if(input.checked)target[id].push(input.dataset.permissionId);});await api('/api/admin/mcp/'+encodeURIComponent(activePermissionMcp)+'/permission-assignments',{method:'PATCH',body:JSON.stringify({employeePermissions:employeePermissions,departmentPermissions:departmentPermissions})});$('mcpPermissionDialog').close();await loadAll();alert('MCP 细分权限已保存');});};
 loadAll().catch(function(e){alert(e.message);});
 </script></body></html>`;
 
@@ -904,6 +1012,7 @@ const normalizeDepartment = (body, existing = {}) => ({
   allowedModelProviderIds: list(body.allowedModelProviderIds ?? existing.allowedModelProviderIds),
   allowedMcpServerIds: list(body.allowedMcpServerIds ?? existing.allowedMcpServerIds),
   allowedSkillIds: list(body.allowedSkillIds ?? existing.allowedSkillIds),
+  mcpPermissionGrants: normalizeMcpPermissionGrants(body.mcpPermissionGrants ?? existing.mcpPermissionGrants),
   createdAt: existing.createdAt || nowIso(),
   updatedAt: nowIso(),
 });
@@ -1124,6 +1233,9 @@ const handleAdmin = async (req, res, url, data) => {
     const body = await readBody(req);
     const existing = data.mcpServers.find(item => item.id === body.id);
     const item = normalizeMcp(body, existing);
+    if (item.permissionOptions.length > 0 && !MCP_PERMISSION_SIGNING_SECRET) {
+      return fail(res, 400, '配置 MCP 细分权限前，请先设置 LFCLAW_MCP_PERMISSION_SECRET。'), true;
+    }
     existing ? Object.assign(existing, item) : data.mcpServers.unshift(item);
     writeData(data);
     return ok(res, item), true;
@@ -1160,6 +1272,33 @@ const handleAdmin = async (req, res, url, data) => {
     existing ? Object.assign(existing, item) : data.skills.unshift(item);
     writeData(data);
     return ok(res, { ...item, packagePath: undefined }), true;
+  }
+  const mcpPermissionAssignmentMatch = url.pathname.match(/^\/api\/admin\/mcp\/([^/]+)\/permission-assignments$/);
+  if (mcpPermissionAssignmentMatch && req.method === 'PATCH') {
+    const mcpId = decodeURIComponent(mcpPermissionAssignmentMatch[1]);
+    const mcp = data.mcpServers.find(item => item.id === mcpId);
+    if (!mcp) return fail(res, 404, 'MCP 不存在。'), true;
+    const validPermissionIds = new Set(normalizePermissionOptions(mcp.permissionOptions).map(item => item.id));
+    const body = await readBody(req);
+    const applyAssignments = (subjects, assignments, identityKey) => {
+      if (!assignments || typeof assignments !== 'object' || Array.isArray(assignments)) return;
+      for (const subject of subjects) {
+        const identity = String(subject[identityKey] || '');
+        if (!Object.prototype.hasOwnProperty.call(assignments, identity)) continue;
+        const grants = normalizeMcpPermissionGrants(subject.mcpPermissionGrants);
+        grants[mcpId] = list(assignments[identity]).filter(id => validPermissionIds.has(id));
+        subject.mcpPermissionGrants = grants;
+        subject.updatedAt = nowIso();
+      }
+    };
+    applyAssignments(data.employees, body.employeePermissions, 'activationCode');
+    applyAssignments(data.departments, body.departmentPermissions, 'id');
+    writeData(data);
+    return ok(res, {
+      mcpServerId: mcpId,
+      employees: data.employees.map(employee => employeeView(employee, data)),
+      departments: data.departments.map(departmentView),
+    }), true;
   }
   for (const [route, collection, grantKey, resultKey] of [
     ['/api/admin/model-providers', data.modelProviders, 'allowedModelProviderIds', 'modelProviderId'],
@@ -1226,6 +1365,13 @@ const handleAdmin = async (req, res, url, data) => {
       for (const department of data.departments) {
         department[grantKey] = list(department[grantKey]).filter(id => id !== itemId);
       }
+      if (route === '/api/admin/mcp') {
+        for (const subject of [...data.employees, ...data.departments]) {
+          const grants = normalizeMcpPermissionGrants(subject.mcpPermissionGrants);
+          delete grants[itemId];
+          subject.mcpPermissionGrants = grants;
+        }
+      }
       writeData(data);
       return ok(res, { deleted: true }), true;
     }
@@ -1253,6 +1399,7 @@ const handleAdmin = async (req, res, url, data) => {
       allowedModelProviderIds: list(body.allowedModelProviderIds ?? body.allowedModelIds),
       allowedMcpServerIds: list(body.allowedMcpServerIds),
       allowedSkillIds: list(body.allowedSkillIds),
+      mcpPermissionGrants: normalizeMcpPermissionGrants(body.mcpPermissionGrants),
       departmentId: String(body.departmentId || ''),
       notes: String(body.notes || ''),
       createdAt: nowIso(),
@@ -1278,6 +1425,7 @@ const handleAdmin = async (req, res, url, data) => {
     if (body.allowedModelProviderIds !== undefined || body.allowedModelIds !== undefined) employee.allowedModelProviderIds = list(body.allowedModelProviderIds ?? body.allowedModelIds);
     if (body.allowedMcpServerIds !== undefined) employee.allowedMcpServerIds = list(body.allowedMcpServerIds);
     if (body.allowedSkillIds !== undefined) employee.allowedSkillIds = list(body.allowedSkillIds);
+    if (body.mcpPermissionGrants !== undefined) employee.mcpPermissionGrants = normalizeMcpPermissionGrants(body.mcpPermissionGrants);
     if (body.departmentId !== undefined) {
       const departmentId = String(body.departmentId || '');
       if (departmentId && !data.departments.some(item => item.id === departmentId)) return fail(res, 400, '部门不存在。'), true;

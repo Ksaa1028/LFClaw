@@ -72,6 +72,10 @@ export interface EnterprisePolicy {
     env?: Record<string, string>;
     url?: string;
     headers?: Record<string, string>;
+    permissions?: Array<{
+      id: string;
+      name: string;
+    }>;
   }>;
   skills?: Array<{
     id: string;

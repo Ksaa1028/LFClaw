@@ -49,12 +49,26 @@ const EnterpriseActivationView: React.FC<EnterpriseActivationViewProps> = ({
 
   useEffect(() => {
     void refresh();
+    const interval = window.setInterval(() => {
+      void refresh();
+    }, 5 * 60_000);
+    const handleFocus = () => {
+      void refresh();
+    };
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('focus', handleFocus);
+    };
   }, [refresh]);
 
   const access = status?.access ?? null;
   const quota = access?.quota;
   const policy = access?.policy;
   const activationCodeDisplay = access?.activationCode || status?.lastActivationCode || '-';
+  const floorPermissions = policy?.mcpServers
+    ?.find(server => server.id === 'dz2.0')
+    ?.permissions?.map(permission => permission.name) ?? [];
 
   return (
     <div className="flex h-full flex-1 flex-col overflow-hidden bg-background">
@@ -116,6 +130,7 @@ const EnterpriseActivationView: React.FC<EnterpriseActivationViewProps> = ({
                 <Info label="积分" value={quota ? `${quota.creditsRemaining}/${quota.creditsLimit}` : '-'} />
                 <Info label="模型" value={<ChipList items={normalizeItems(policy?.allowedModelIds)} />} />
                 <Info label="MCP" value={<ChipList items={normalizeItems(policy?.allowedMcpServerIds)} />} />
+                <Info label="兜知2.0 楼层权限" value={<ChipList items={normalizeItems(floorPermissions)} />} />
                 <Info label="技能" value={<ChipList items={normalizeItems(policy?.allowedSkillIds)} />} />
                 </div>
               </div>

@@ -8,20 +8,62 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $releaseDir = Join-Path $repoRoot 'release'
+$releaseToolsDir = Join-Path $repoRoot '.release-tools'
+$requiredNodeVersion = [version]'24.15.0'
+$portableNodeDirName = "node-v$requiredNodeVersion-win-x64"
 
-function Test-NodeExecutable {
+function Get-NodeVersion {
   param([string]$Path)
 
   if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-    return $false
+    return $null
   }
 
   try {
-    $version = & $Path '--version' 2>$null
-    return $LASTEXITCODE -eq 0 -and $version -match '^v\d+'
+    $rawVersion = (& $Path '--version' 2>$null).Trim()
+    if ($LASTEXITCODE -ne 0 -or $rawVersion -notmatch '^v(?<version>\d+\.\d+\.\d+)$') {
+      return $null
+    }
+    return [version]$Matches.version
   } catch {
-    return $false
+    return $null
   }
+}
+
+function Test-NodeExecutable {
+  param([string]$Path)
+  $version = Get-NodeVersion -Path $Path
+  return $null -ne $version -and $version.Major -eq 24 -and $version -ge $requiredNodeVersion
+}
+
+function Install-PortableReleaseNode {
+  $nodeDir = Join-Path $releaseToolsDir $portableNodeDirName
+  $nodeExe = Join-Path $nodeDir 'node.exe'
+  if (Test-NodeExecutable -Path $nodeExe) {
+    return $nodeExe
+  }
+
+  $archivePath = Join-Path $releaseToolsDir "$portableNodeDirName.zip"
+  $downloadUrl = "https://nodejs.org/dist/v$requiredNodeVersion/$portableNodeDirName.zip"
+  New-Item -ItemType Directory -Path $releaseToolsDir -Force | Out-Null
+
+  Write-Host "Compatible Node.js was not found. Downloading portable Node.js v$requiredNodeVersion..." -ForegroundColor Yellow
+  try {
+    Invoke-WebRequest -Uri $downloadUrl -OutFile $archivePath -UseBasicParsing
+    if (Test-Path -LiteralPath $nodeDir) {
+      Remove-Item -LiteralPath $nodeDir -Recurse -Force
+    }
+    Expand-Archive -LiteralPath $archivePath -DestinationPath $releaseToolsDir -Force
+  } finally {
+    if (Test-Path -LiteralPath $archivePath) {
+      Remove-Item -LiteralPath $archivePath -Force
+    }
+  }
+
+  if (-not (Test-NodeExecutable -Path $nodeExe)) {
+    throw "Portable Node.js setup failed. Expected: $nodeExe"
+  }
+  return $nodeExe
 }
 
 function Get-ReleaseNode {
@@ -54,7 +96,48 @@ function Get-ReleaseNode {
     }
   }
 
-  throw 'No usable Node.js executable was found. Install Node.js or set LFCLAW_NODE_EXE to node.exe.'
+  return Install-PortableReleaseNode
+}
+
+function Stop-LFClawDevelopmentProcesses {
+  $escapedRoot = [regex]::Escape($repoRoot)
+  $processes = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object {
+      $_.Name -in @('node.exe', 'electron.exe', 'esbuild.exe') -and
+      (($_.ExecutablePath -and $_.ExecutablePath -match "^$escapedRoot([\\/]|$)") -or
+       ($_.CommandLine -and $_.CommandLine -match $escapedRoot))
+    }
+
+  if (-not $processes) {
+    return
+  }
+
+  Write-Host ''
+  Write-Host 'LFClaw development processes are running and would lock packaging files.' -ForegroundColor Yellow
+  Write-Host 'Closing only Node/Electron processes launched from this repository...'
+  $processes |
+    Sort-Object ProcessId -Descending |
+    ForEach-Object {
+      Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+
+  $deadline = (Get-Date).AddSeconds(15)
+  do {
+    Start-Sleep -Milliseconds 300
+    $remaining = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+      Where-Object {
+        $_.Name -in @('node.exe', 'electron.exe', 'esbuild.exe') -and
+        (($_.ExecutablePath -and $_.ExecutablePath -match "^$escapedRoot([\\/]|$)") -or
+         ($_.CommandLine -and $_.CommandLine -match $escapedRoot))
+      }
+  } while ($remaining -and (Get-Date) -lt $deadline)
+
+  if ($remaining) {
+    $ids = ($remaining | Select-Object -ExpandProperty ProcessId) -join ', '
+    throw "Could not close LFClaw development processes: $ids. Close LFClaw and try again."
+  }
+
+  Write-Host 'Development processes closed; packaging files are available.' -ForegroundColor Green
 }
 
 function Get-NpmCommand {
@@ -91,6 +174,8 @@ if ($CheckOnly) {
   Write-Host 'Environment check passed. No package was built.' -ForegroundColor Green
   exit 0
 }
+
+Stop-LFClawDevelopmentProcesses
 
 if (-not (Test-Path -LiteralPath $releaseDir -PathType Container)) {
   New-Item -ItemType Directory -Path $releaseDir | Out-Null

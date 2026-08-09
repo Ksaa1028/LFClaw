@@ -38,6 +38,7 @@ nul
 .work.env
 .keyfrom-build/
 .lfclaw-build/
+.release-tools/
 
 .playwright-mcp/
 .cowork-temp/

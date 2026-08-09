@@ -419,6 +419,10 @@ export class LFClawEnterpriseAccess {
         env: isRecord(server.env) ? Object.fromEntries(Object.entries(server.env).map(([key, val]) => [key, String(val)])) : undefined,
         url: typeof server.url === 'string' ? server.url : undefined,
         headers: isRecord(server.headers) ? Object.fromEntries(Object.entries(server.headers).map(([key, val]) => [key, String(val)])) : undefined,
+        permissions: recordList(server.permissions).map(permission => ({
+          id: String(permission.id || '').trim(),
+          name: String(permission.name || permission.id || '').trim(),
+        })).filter(permission => permission.id),
       })).filter(server => server.id),
       skills: normalizeEnterpriseSkills(raw.skills ?? fallback?.skills),
       enterpriseSkills: normalizeEnterpriseSkills(

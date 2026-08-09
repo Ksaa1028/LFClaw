@@ -7,7 +7,7 @@ set "EXIT_CODE=%ERRORLEVEL%"
 
 if not "%EXIT_CODE%"=="0" (
   echo.
-  echo Windows package build failed. Review the error above.
+  echo Windows package build failed. Review the error above or send a screenshot to Codex.
 ) else (
   echo.
   echo Windows package build completed. The release folder is open.
