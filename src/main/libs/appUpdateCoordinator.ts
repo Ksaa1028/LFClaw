@@ -51,6 +51,7 @@ const APP_UPDATE_TEST_CURRENT_VERSION_ENV = 'LOBSTERAI_UPDATE_CURRENT_VERSION';
 export const APP_UPDATE_READY_FILE_KEY_PREFIX = 'app_update_ready_file';
 const ENTERPRISE_ACCESS_KEY = 'lfclaw_enterprise_access';
 const ENTERPRISE_SERVER_URL_KEY = 'lfclaw_enterprise_server_url';
+const ENTERPRISE_CONFIG_FILENAME = 'enterprise.json';
 const LFCLAW_BUILD_VERSION_FILE = 'build-version.json';
 const LFCLAW_DATE_SERIAL_VERSION_PATTERN = /^(\d{4})(\d{2})(\d{2})(\d{2})$/;
 const DOTTED_DATE_VERSION_PATTERN = /^(\d{4})\.(\d{1,2})\.(\d{1,2})(?:\.(\d{1,2}))?$/;
@@ -604,7 +605,9 @@ export class AppUpdateCoordinator {
 
   private getEnterpriseUpdateCheckUrl(manual: boolean): string | null {
     const access = this.store.get<{ serverUrl?: string }>(ENTERPRISE_ACCESS_KEY);
-    const configuredServerUrl = access?.serverUrl || this.store.get<string>(ENTERPRISE_SERVER_URL_KEY);
+    const configuredServerUrl = access?.serverUrl
+      || this.store.get<string>(ENTERPRISE_SERVER_URL_KEY)
+      || this.getBundledEnterpriseServerUrl();
     if (!configuredServerUrl || typeof configuredServerUrl !== 'string') return null;
     const normalized = configuredServerUrl.trim().replace(/\/+$/, '');
     if (!normalized) return null;
@@ -615,6 +618,38 @@ export class AppUpdateCoordinator {
     } catch {
       return null;
     }
+  }
+
+  private getBundledEnterpriseServerUrl(): string | null {
+    const candidatePaths = [
+      typeof process.resourcesPath === 'string' && process.resourcesPath
+        ? path.join(process.resourcesPath, ENTERPRISE_CONFIG_FILENAME)
+        : null,
+      typeof app.getAppPath === 'function'
+        ? path.join(app.getAppPath(), 'resources', ENTERPRISE_CONFIG_FILENAME)
+        : null,
+      path.join(process.cwd(), 'resources', ENTERPRISE_CONFIG_FILENAME),
+      path.join(path.dirname(process.execPath), ENTERPRISE_CONFIG_FILENAME),
+    ].filter((filePath): filePath is string => Boolean(filePath));
+
+    for (const filePath of candidatePaths) {
+      try {
+        if (!fs.existsSync(filePath)) continue;
+        const raw = JSON.parse(fs.readFileSync(filePath, 'utf8')) as Record<string, unknown>;
+        const configured = raw.enterpriseServerUrl ?? raw.serverUrl ?? raw.baseUrl;
+        if (typeof configured !== 'string') continue;
+        const normalized = configured.trim().replace(/\/+$/, '');
+        if (!normalized) continue;
+        const url = new URL(normalized);
+        if (url.protocol === 'http:' || url.protocol === 'https:') {
+          return normalized;
+        }
+      } catch (error) {
+        console.warn(`[AppUpdate] failed to read bundled enterprise server URL from ${filePath}:`, error);
+      }
+    }
+
+    return null;
   }
 
   private getPlatformDownload(

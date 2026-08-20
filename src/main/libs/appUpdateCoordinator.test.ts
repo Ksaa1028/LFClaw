@@ -9,6 +9,7 @@ import type { SqliteStore } from '../sqliteStore';
 
 const mocks = vi.hoisted(() => ({
   getPath: vi.fn(),
+  getAppPath: vi.fn(),
   getVersion: vi.fn(),
   fetch: vi.fn(),
   downloadUpdate: vi.fn(),
@@ -19,6 +20,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('electron', () => ({
   app: {
     getPath: mocks.getPath,
+    getAppPath: mocks.getAppPath,
     getVersion: mocks.getVersion,
   },
   BrowserWindow: {
@@ -97,6 +99,7 @@ describe('AppUpdateCoordinator', () => {
 
   beforeEach(() => {
     mocks.getPath.mockReset();
+    mocks.getAppPath.mockReset();
     mocks.getVersion.mockReset();
     mocks.fetch.mockReset();
     mocks.downloadUpdate.mockReset();
@@ -106,6 +109,7 @@ describe('AppUpdateCoordinator', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lobsterai-update-test-'));
     updatesDir = path.join(tmpDir, 'updates');
     mocks.getPath.mockReturnValue(tmpDir);
+    mocks.getAppPath.mockReturnValue(tmpDir);
     mocks.getVersion.mockReturnValue('1.0.0');
     mocks.cancelActiveDownload.mockReturnValue(false);
     process.env.LOBSTERAI_UPDATE_CURRENT_VERSION = '1.0.0';
@@ -217,6 +221,27 @@ describe('AppUpdateCoordinator', () => {
     expect(result.updateFound).toBe(false);
     expect(result.state.status).toBe(AppUpdateStatus.Idle);
     expect(mocks.downloadUpdate).not.toHaveBeenCalled();
+  });
+
+  test('uses the bundled enterprise update source before activation', async () => {
+    const resourcesDir = path.join(tmpDir, 'resources');
+    fs.mkdirSync(resourcesDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(resourcesDir, 'enterprise.json'),
+      JSON.stringify({ enterpriseServerUrl: 'https://enterprise.example.com/' }),
+    );
+    const coordinator = new AppUpdateCoordinator(createStoreStub());
+    mocks.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ code: 0, data: { value: { version: '1.0.0' } } }),
+    });
+
+    await coordinator.checkNow({ manual: false });
+
+    expect(mocks.fetch).toHaveBeenCalledOnce();
+    expect(mocks.fetch.mock.calls[0][0]).toMatch(
+      /^https:\/\/enterprise\.example\.com\/api\/enterprise\/update\?/,
+    );
   });
 
   test('restores installIncomplete after an install attempt that never completed', async () => {
