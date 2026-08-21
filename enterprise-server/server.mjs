@@ -11,6 +11,22 @@ import {
   normalizePermissionOptions,
   signMcpPermissionAssertion,
 } from './mcpPermissions.mjs';
+import {
+  agentMemoryDefault,
+  normalizeAgentMemory,
+  redactAgentMemory,
+} from './agentMemoryConfig.mjs';
+import { provisionAgentMemoryEmployee } from './agentMemoryProvisioning.mjs';
+import { readAgentMemoryAudit } from './agentMemoryAudit.mjs';
+import { createReleaseHistoryEntry, normalizeReleaseHistory } from './releaseHistory.mjs';
+import {
+  assistantTextFromResponse,
+  injectAgentMemoryContext,
+  latestUserText,
+  recallAgentMemory,
+  rememberAgentMemoryTurn,
+  upstreamModelUrl,
+} from './agentMemoryConversation.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HOST = process.env.LFCLAW_ENTERPRISE_HOST || '127.0.0.1';
@@ -60,6 +76,8 @@ const asrProxySessions = new Map();
 const ASR_PROXY_SESSION_TTL_MS = 2 * 60 * 1000;
 const ASR_INFERENCE_PATH = '/api-ws/v1/inference';
 const MODEL_CONNECTION_TEST_TOKEN_BUDGET = 16;
+const AGENT_MEMORY_CONNECTION_TIMEOUT_MS = 15000;
+const agentMemoryProvisioningRequests = new Map();
 
 const nowIso = () => new Date().toISOString();
 const id = prefix => `${prefix}_${crypto.randomBytes(6).toString('hex')}`;
@@ -382,7 +400,9 @@ const detectAutoRelease = origin => {
 
 const defaultData = () => ({
   enterpriseName: 'LfClaw Enterprise',
+  permissionAssignmentMode: 'employee-only-v1',
   asr: asrDefault(),
+  agentMemory: agentMemoryDefault(),
   modelProviders: [],
   mcpServers: [],
   skills: [],
@@ -390,6 +410,7 @@ const defaultData = () => ({
   employees: [],
   sessions: {},
   usageEvents: [],
+  releaseHistory: [],
   release: {
     version: '',
     date: '',
@@ -405,6 +426,7 @@ const defaultData = () => ({
 const ensureData = data => ({
   ...defaultData(),
   ...data,
+  permissionAssignmentMode: String(data.permissionAssignmentMode || ''),
   modelProviders: Array.isArray(data.modelProviders) ? data.modelProviders : Array.isArray(data.models) ? data.models : [],
   mcpServers: (Array.isArray(data.mcpServers) ? data.mcpServers : []).map(server => ({
     ...server,
@@ -415,14 +437,72 @@ const ensureData = data => ({
   employees: Array.isArray(data.employees) ? data.employees : Array.isArray(data.activations) ? data.activations : [],
   sessions: data.sessions && typeof data.sessions === 'object' ? data.sessions : {},
   usageEvents: Array.isArray(data.usageEvents) ? data.usageEvents : [],
+  releaseHistory: normalizeReleaseHistory(data.releaseHistory),
   asr: normalizeAsr(data.asr || {}, defaultData().asr),
+  agentMemory: normalizeAgentMemory(data.agentMemory || {}, defaultData().agentMemory),
   release: data.release && typeof data.release === 'object' ? { ...defaultData().release, ...data.release } : defaultData().release,
 });
+
+const migrateDepartmentGrantsToEmployees = data => {
+  if (data.permissionAssignmentMode === 'employee-only-v1') return { data, migrated: false };
+  const byDepartmentId = new Map(data.departments.map(department => [department.id, department]));
+  const mcpById = new Map(data.mcpServers.map(server => [server.id, server]));
+  const chainFor = departmentId => {
+    const chain = [];
+    const visited = new Set();
+    let currentId = String(departmentId || '');
+    while (currentId && !visited.has(currentId)) {
+      visited.add(currentId);
+      const department = byDepartmentId.get(currentId);
+      if (!department) break;
+      chain.push(department);
+      currentId = String(department.parentId || '');
+    }
+    return chain;
+  };
+  for (const employee of data.employees) {
+    const departments = chainFor(employee.departmentId);
+    for (const key of ['allowedModelProviderIds', 'allowedMcpServerIds', 'allowedSkillIds']) {
+      employee[key] = [...new Set([
+        ...list(employee[key]),
+        ...departments.flatMap(department => list(department[key])),
+      ])];
+    }
+    const employeePermissions = normalizeMcpPermissionGrants(employee.mcpPermissionGrants);
+    for (const mcpId of employee.allowedMcpServerIds) {
+      if (Object.prototype.hasOwnProperty.call(employeePermissions, mcpId)) continue;
+      const grantingDepartments = departments.filter(department => list(department.allowedMcpServerIds).includes(mcpId));
+      if (grantingDepartments.length === 0) continue;
+      const server = mcpById.get(mcpId);
+      const allPermissionIds = normalizePermissionOptions(server?.permissionOptions).map(option => option.id);
+      employeePermissions[mcpId] = [...new Set(grantingDepartments.flatMap(department => {
+        const grants = normalizeMcpPermissionGrants(department.mcpPermissionGrants);
+        return Object.prototype.hasOwnProperty.call(grants, mcpId) ? grants[mcpId] : allPermissionIds;
+      }))];
+    }
+    employee.mcpPermissionGrants = employeePermissions;
+  }
+  for (const department of data.departments) {
+    department.allowedModelProviderIds = [];
+    department.allowedMcpServerIds = [];
+    department.allowedSkillIds = [];
+    department.mcpPermissionGrants = {};
+  }
+  data.permissionAssignmentMode = 'employee-only-v1';
+  return { data, migrated: true };
+};
 
 const readData = () => {
   try {
     if (!fs.existsSync(DATA_FILE)) return defaultData();
-    return ensureData(JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')));
+    const normalized = ensureData(JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')));
+    const migration = migrateDepartmentGrantsToEmployees(normalized);
+    if (migration.migrated) {
+      fs.mkdirSync(BACKUP_DIR, { recursive: true });
+      fs.copyFileSync(DATA_FILE, path.join(BACKUP_DIR, `enterprise-data-before-employee-only-${Date.now()}.json`));
+      fs.writeFileSync(DATA_FILE, JSON.stringify(migration.data, null, 2), 'utf8');
+    }
+    return migration.data;
   } catch {
     return defaultData();
   }
@@ -669,15 +749,30 @@ const departmentChain = (data, departmentId) => {
   return chain;
 };
 
-const effectiveEmployeeGrants = (data, employee) => {
-  const result = Object.fromEntries(DEPARTMENT_GRANT_KEYS.map(key => [key, new Set(list(employee[key]))]));
-  for (const department of departmentChain(data, employee.departmentId)) {
-    for (const key of DEPARTMENT_GRANT_KEYS) {
-      for (const itemId of list(department[key])) result[key].add(itemId);
-    }
+const ensureAgentMemoryEmployee = async (data, employee) => {
+  const config = normalizeAgentMemory(data.agentMemory);
+  const employeeId = String(employee?.employeeId || '').trim();
+  const existing = config.employeeMappings[employeeId] || {};
+  if (existing.userKey && existing.userId && existing.agentId && existing.taskId) return existing;
+  if (agentMemoryProvisioningRequests.has(employeeId)) {
+    return agentMemoryProvisioningRequests.get(employeeId);
   }
-  return Object.fromEntries(DEPARTMENT_GRANT_KEYS.map(key => [key, [...result[key]]]));
+  const request = provisionAgentMemoryEmployee({ config, employee, existing })
+    .then(mapping => {
+      const latestConfig = normalizeAgentMemory(data.agentMemory);
+      latestConfig.employeeMappings = { ...latestConfig.employeeMappings, [employeeId]: mapping };
+      data.agentMemory = latestConfig;
+      writeData(data);
+      return mapping;
+    })
+    .finally(() => agentMemoryProvisioningRequests.delete(employeeId));
+  agentMemoryProvisioningRequests.set(employeeId, request);
+  return request;
 };
+
+const effectiveEmployeeGrants = (_data, employee) => Object.fromEntries(
+  DEPARTMENT_GRANT_KEYS.map(key => [key, list(employee[key])]),
+);
 
 const employeeView = (employee, data) => {
   const effective = data ? effectiveEmployeeGrants(data, employee) : null;
@@ -713,11 +808,13 @@ const adminState = data => ({
   modelProviders: data.modelProviders.map(redactModel),
   models: data.modelProviders.map(redactModel),
   asr: redactAsr(data.asr),
+  agentMemory: redactAgentMemory(data.agentMemory),
   mcpServers: data.mcpServers,
   skills: data.skills.map(skill => ({ ...skill, packagePath: undefined })),
   departments: data.departments.map(departmentView),
   employees: data.employees.map(employee => employeeView(employee, data)),
   usageEvents: data.usageEvents.slice(-300),
+  releaseHistory: data.releaseHistory,
   release: data.release,
   backups: listBackups(),
 });
@@ -750,7 +847,16 @@ const cachedMcpPermissionAssertion = ({ employeeId, mcpId, permissionIds }) => {
 const clientPayload = (data, employee, accessToken, req, clientVersion = '') => {
   const effectiveClientVersion = normalizeClientVersion(clientVersion || employee.clientVersion || employee.appVersion);
   const grants = effectiveEmployeeGrants(data, employee);
-  const modelProviders = selectByIds(data.modelProviders, grants.allowedModelProviderIds);
+  let modelProviders = selectByIds(data.modelProviders, grants.allowedModelProviderIds);
+  const agentMemory = normalizeAgentMemory(data.agentMemory);
+  if (agentMemory.enabled && agentMemory.chatMemoryEnabled && redactAgentMemory(agentMemory).configured) {
+    modelProviders = modelProviders.map(provider => ({
+      ...provider,
+      baseUrl: `${requestOrigin(req)}/api/enterprise/model-proxy/${encodeURIComponent(provider.id)}/v1`,
+      apiKey: accessToken,
+      description: `${provider.description || provider.name || provider.id} · 已启用员工独立记忆`,
+    }));
+  }
   const mcpServers = selectByIds(data.mcpServers, grants.allowedMcpServerIds).flatMap(server => {
     const permissionOptions = server.id === FLOOR_PERMISSION_MCP_ID ? FLOOR_PERMISSION_OPTIONS : [];
     if (permissionOptions.length === 0) return [server];
@@ -829,10 +935,10 @@ const calculateUsageCredits = (provider, body) => {
 
 const adminHtml = () => String.raw`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LfClaw 企业管理</title>
 <style>
-:root{font-family:Inter,"Microsoft YaHei",Arial,sans-serif;color:#0b1833;background:#f4f7fb}body{margin:0}main{max-width:1320px;margin:0 auto;padding:28px}header{display:flex;justify-content:space-between;gap:16px;align-items:flex-end;margin-bottom:16px}h1{margin:0;font-size:28px}.hint{color:#66758a;margin:6px 0 0}.token{display:flex;gap:8px;align-items:end}.token input{width:260px}nav{display:flex;gap:8px;margin:16px 0;flex-wrap:wrap}button{border:0;border-radius:6px;padding:9px 13px;font-weight:750;cursor:pointer;background:#0b1833;color:white}button.secondary,nav button{background:#e9eef5;color:#0b1833}button.danger{background:#df2626}.active-tab{background:#0b1833!important;color:#fff!important}section{display:none;background:#fff;border:1px solid #dce3ec;border-radius:8px;padding:18px;box-shadow:0 10px 30px rgba(15,23,42,.04)}section.active{display:block}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.grid-3{grid-template-columns:repeat(3,1fr)}.grid-5{grid-template-columns:repeat(5,1fr)}label{font-size:13px;font-weight:650;color:#24324a}input,textarea,select{width:100%;box-sizing:border-box;border:1px solid #c8d2df;border-radius:6px;padding:9px 10px;font:inherit;background:#fff}textarea{min-height:72px}.multi-select{position:relative}.multi-trigger{width:100%;height:40px;border:1px solid #c8d2df;border-radius:6px;background:#fff;color:#0b1833;text-align:left;font-weight:650;display:flex;align-items:center;justify-content:space-between}.multi-trigger:after{content:"▾";color:#66758a}.multi-options{display:none;max-height:220px;overflow:auto;border:1px solid #c8d2df;border-radius:8px;background:#fff;box-shadow:0 8px 18px rgba(15,23,42,.08);padding:6px;margin-top:6px}.multi-select.open .multi-options{display:block}.multi-option{display:flex;align-items:center;gap:8px;padding:8px;border-radius:6px;font-size:13px;font-weight:500;cursor:pointer}.multi-option:hover{background:#f4f7fb}.multi-option input{width:auto}.model-type-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px;border:1px solid #c8d2df;border-radius:8px;padding:6px;background:#fff}.field-title{font-size:13px;font-weight:650;color:#24324a;margin-bottom:4px}.multi-empty{padding:10px;color:#66758a}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.list-toolbar{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:12px}.form-panel{display:none;margin:12px 0 16px;padding:14px;border:1px solid #cfd9e6;border-radius:8px;background:#fbfcfe}.form-panel.open{display:block}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.card{border:1px solid #dce3ec;border-radius:8px;padding:14px;background:#fbfcfe}.num{font-size:24px;font-weight:800}table{width:100%;border-collapse:collapse;font-size:13px;margin-top:14px}th,td{border-bottom:1px solid #e2e8f0;padding:10px;text-align:left;vertical-align:top}code{font-family:Consolas,monospace}.formula{margin:12px 0;padding:12px;border:1px solid #dce3ec;border-radius:8px;background:#fbfcfe;color:#24324a;font-size:13px;line-height:1.7}.edit-box{display:none;margin:14px 0;padding:14px;border:1px solid #cfd9e6;border-radius:8px;background:#fbfcfe}.pill{display:inline-block;background:#eef2f7;border-radius:999px;padding:3px 8px;margin:2px}.pager{justify-content:space-between;margin-top:12px}.pager select{width:auto}.bulk-box{display:none;margin:14px 0;padding:14px;border:1px solid #cfd9e6;border-radius:8px;background:#fbfcfe}.bulk-list{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;max-height:260px;overflow:auto;margin:10px 0}.permission-dialog{width:min(560px,calc(100vw - 32px));border:0;border-radius:12px;padding:0;box-shadow:0 20px 60px rgba(15,23,42,.24)}.permission-dialog::backdrop{background:rgba(15,23,42,.42)}.permission-dialog-content{padding:20px}.permission-dialog-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.permission-dialog-head h2{margin:0;font-size:18px}.permission-group{margin-top:16px}.permission-group b{display:block;margin-bottom:8px}.permission-items{display:flex;gap:8px;flex-wrap:wrap}.status-ok{color:#0f8a43}.status-bad{color:#c02626}@media(max-width:960px){.grid,.grid-3,.grid-5,.cards,.bulk-list{grid-template-columns:1fr}header{display:block}.token{margin-top:12px}}
+:root{font-family:Inter,"Microsoft YaHei",Arial,sans-serif;color:#0b1833;background:#f4f7fb}body{margin:0}main{max-width:1320px;margin:0 auto;padding:28px}header{display:flex;justify-content:space-between;gap:16px;align-items:flex-end;margin-bottom:16px}h1{margin:0;font-size:28px}.hint{color:#66758a;margin:6px 0 0}.token{display:flex;gap:8px;align-items:end}.token input{width:260px}nav{display:flex;gap:8px;margin:16px 0;flex-wrap:wrap}button{border:0;border-radius:6px;padding:9px 13px;font-weight:750;cursor:pointer;background:#0b1833;color:white}button.secondary,nav button{background:#e9eef5;color:#0b1833}button.danger{background:#df2626}.active-tab{background:#0b1833!important;color:#fff!important}section{display:none;background:#fff;border:1px solid #dce3ec;border-radius:8px;padding:18px;box-shadow:0 10px 30px rgba(15,23,42,.04)}section.active{display:block}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.grid-3{grid-template-columns:repeat(3,1fr)}.grid-5{grid-template-columns:repeat(5,1fr)}label{font-size:13px;font-weight:650;color:#24324a}input,textarea,select{width:100%;box-sizing:border-box;border:1px solid #c8d2df;border-radius:6px;padding:9px 10px;font:inherit;background:#fff}textarea{min-height:72px}.multi-select{position:relative}.multi-trigger{width:100%;height:40px;border:1px solid #c8d2df;border-radius:6px;background:#fff;color:#0b1833;text-align:left;font-weight:650;display:flex;align-items:center;justify-content:space-between}.multi-trigger:after{content:"▾";color:#66758a}.multi-options{display:none;max-height:220px;overflow:auto;border:1px solid #c8d2df;border-radius:8px;background:#fff;box-shadow:0 8px 18px rgba(15,23,42,.08);padding:6px;margin-top:6px}.multi-select.open .multi-options{display:block}.multi-option{display:flex;align-items:center;gap:8px;padding:8px;border-radius:6px;font-size:13px;font-weight:500;cursor:pointer}.multi-option:hover{background:#f4f7fb}.multi-option input{width:auto}.multi-option.inherited{color:#66758a;cursor:not-allowed}.multi-option.inherited:after{content:"部门继承";margin-left:auto;border-radius:999px;padding:2px 7px;background:#e8eef6;color:#53647a;font-size:11px;font-weight:650}.model-type-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px;border:1px solid #c8d2df;border-radius:8px;padding:6px;background:#fff}.field-title{font-size:13px;font-weight:650;color:#24324a;margin-bottom:4px}.multi-empty{padding:10px;color:#66758a}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.list-toolbar{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:12px}.form-panel{display:none;margin:12px 0 16px;padding:14px;border:1px solid #cfd9e6;border-radius:8px;background:#fbfcfe}.form-panel.open{display:block}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.card{border:1px solid #dce3ec;border-radius:8px;padding:14px;background:#fbfcfe}.num{font-size:24px;font-weight:800}table{width:100%;border-collapse:collapse;font-size:13px;margin-top:14px}th,td{border-bottom:1px solid #e2e8f0;padding:10px;text-align:left;vertical-align:top}code{font-family:Consolas,monospace}.formula{margin:12px 0;padding:12px;border:1px solid #dce3ec;border-radius:8px;background:#fbfcfe;color:#24324a;font-size:13px;line-height:1.7}.edit-box{display:none;margin:14px 0;padding:14px;border:1px solid #cfd9e6;border-radius:8px;background:#fbfcfe}.pill{display:inline-block;background:#eef2f7;border-radius:999px;padding:3px 8px;margin:2px}.pager{justify-content:space-between;margin-top:12px}.pager select{width:auto}.bulk-box{display:none;margin:14px 0;padding:14px;border:1px solid #cfd9e6;border-radius:8px;background:#fbfcfe}.bulk-list{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;max-height:260px;overflow:auto;margin:10px 0}.permission-dialog{width:min(560px,calc(100vw - 32px));border:0;border-radius:12px;padding:0;box-shadow:0 20px 60px rgba(15,23,42,.24)}.permission-dialog::backdrop{background:rgba(15,23,42,.42)}.permission-dialog-content{padding:20px}.permission-dialog-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.permission-dialog-head h2{margin:0;font-size:18px}.permission-group{margin-top:16px}.permission-group b{display:block;margin-bottom:8px}.permission-items{display:flex;gap:8px;flex-wrap:wrap}.status-ok{color:#0f8a43}.status-bad{color:#c02626}@media(max-width:960px){.grid,.grid-3,.grid-5,.cards,.bulk-list{grid-template-columns:1fr}header{display:block}.token{margin-top:12px}}
 </style></head><body><main>
 <header><div><h1>LfClaw 企业管理</h1><p class="hint">维护模型、MCP 服务和技能包，再给员工分配激活码、积分和能力。</p></div><div class="token"><label>管理员 Token<input id="token" type="password" placeholder="LFCLAW_ADMIN_TOKEN"></label><button class="secondary" id="refreshBtn">刷新</button></div></header>
-<nav><button data-tab="overview" class="active-tab">总览</button><button data-tab="employees">员工与激活码</button><button data-tab="models">模型配置</button><button data-tab="mcp">MCP 服务</button><button data-tab="skills">技能包</button><button data-tab="asr">语音识别</button><button data-tab="usage">用量监控</button><button data-tab="backup">数据备份</button><button data-tab="release">版本更新</button></nav>
+<nav><button data-tab="overview" class="active-tab">总览</button><button data-tab="employees">员工与激活码</button><button data-tab="models">模型配置</button><button data-tab="mcp">MCP 服务</button><button data-tab="skills">技能包</button><button data-tab="asr">语音识别</button><button data-tab="agentMemory">Agent Memory</button><button data-tab="usage">用量监控</button><button data-tab="backup">数据备份</button><button data-tab="release">版本更新</button></nav>
 <section id="overview" class="active"><div class="cards"><div class="card"><div class="hint">员工数</div><div class="num" id="statEmployees">0</div></div><div class="card"><div class="hint">模型数</div><div class="num" id="statModels">0</div></div><div class="card"><div class="hint">MCP 数量</div><div class="num" id="statMcps">0</div></div><div class="card"><div class="hint">技能数量</div><div class="num" id="statSkills">0</div></div><div class="card"><div class="hint">调用次数</div><div class="num" id="statCalls">0</div></div><div class="card"><div class="hint">已用积分</div><div class="num" id="statCredits">0</div></div></div></section>
 <section id="employees"><div class="list-toolbar"><div class="hint">员工列表默认每页 10 条，授权详情通过弹窗查看。</div><button id="newEmployeeBtn">新增员工</button></div><div id="employeeForm" class="form-panel"><div class="grid"><label>中文姓名<input id="employeeName" placeholder="张三"></label><label>员工 ID<input id="employeeId" placeholder="自动生成"></label><label>积分额度<input id="creditsLimit" type="number" value="1000"></label><label>备注<input id="notes"></label></div><div class="grid grid-3" style="margin-top:12px"><label>可用模型<div id="employeeModels" class="multi-select"></div></label><label>可用 MCP<div id="employeeMcps" class="multi-select"></div></label><label>可用技能<div id="employeeSkills" class="multi-select"></div></label></div><p class="hint">预览：<code id="employeePreview">输入中文姓名后自动生成员工 ID 与激活码前缀</code></p><div class="row"><button id="addEmployeeBtn">添加员工并生成激活码</button><button class="secondary" id="saveEmployeeBtn" style="display:none">保存员工授权</button><button class="secondary" id="cancelEmployeeBtn" style="display:none">取消编辑</button></div></div><table><thead><tr><th>状态</th><th>激活码</th><th>员工</th><th>积分/使用</th><th>最近客户端</th><th>设备</th><th>操作</th></tr></thead><tbody id="employeeRows"></tbody></table><div class="row pager"><div class="hint" id="employeePagerInfo"></div><div class="row"><label>每页<select id="employeePageSize"><option value="10" selected>10</option><option value="20">20</option><option value="50">50</option><option value="100">100</option></select></label><button class="secondary" id="employeePrevPage">上一页</button><button class="secondary" id="employeeNextPage">下一页</button></div></div></section>
 <dialog id="permissionDialog" class="permission-dialog"><div class="permission-dialog-content"><div class="permission-dialog-head"><h2 id="permissionDialogTitle">员工授权</h2><button class="secondary" id="permissionDialogClose">关闭</button></div><div id="permissionDialogBody"></div></div></dialog>
@@ -842,15 +948,15 @@ const adminHtml = () => String.raw`<!doctype html><html lang="zh-CN"><head><meta
 <section id="asr"><div class="formula"><b>全局语音输入：</b>语音能力不按员工单独授权。所有已激活员工都可使用；API Key 只保存在服务端，客户端只拿临时代理地址。</div><div class="grid"><label>显示名称<input id="asrName" placeholder="阿里云实时语音识别"></label><label>Workspace ID<input id="asrWorkspaceId" placeholder="llm-xxxx"></label><label>地域<input id="asrRegion" placeholder="cn-beijing"></label><label>模型<input id="asrModel" placeholder="fun-asr-realtime"></label></div><div class="grid" style="margin-top:12px"><label>API Host<input id="asrApiHost" placeholder="llm-xxx.cn-beijing.maas.aliyuncs.com"></label><label>WebSocket URL<input id="asrWebsocketUrl" placeholder="留空则按 Workspace 自动生成"></label><label>API Key<input id="asrApiKey" type="password" placeholder="sk-..."></label><label>音频格式<select id="asrFormat"><option value="wav">wav</option><option value="pcm">pcm</option></select></label></div><div class="grid" style="margin-top:12px"><label>采样率<input id="asrSampleRate" type="number" value="16000"></label><label>分片间隔(ms)<input id="asrChunkIntervalMillis" type="number" value="200"></label><label>单次最长录音(s)<input id="asrMaxSessionSeconds" type="number" value="60"></label><label>价格备注<input id="asrPriceNote" placeholder="如按秒/分钟计费"></label></div><div id="asrStatus" class="formula"></div><div class="row"><button id="saveAsrBtn">保存语音配置</button><button class="secondary" id="cancelAsrBtn">重置表单</button></div></section>
 <section id="usage"><div class="formula"><b>用量扣费说明：</b>客户端上报模型调用后，服务端按模型价格计算积分，并按天汇总展示。</div><div class="grid grid-5"><label>员工筛选<select id="usageEmployeeFilter"><option value="">全部员工</option></select></label><label>模型筛选<select id="usageModelFilter"><option value="">全部模型</option></select></label><div class="card"><div class="hint">调用次数</div><div class="num" id="usageCalls">0</div></div><div class="card"><div class="hint">消耗积分</div><div class="num" id="usageCredits">0</div></div><div class="card"><div class="hint">折算金额</div><div class="num" id="usageMoney">-</div></div></div><table><thead><tr><th>时间（天）</th><th>员工</th><th>模型</th><th>使用 token</th><th>积分</th><th>折算金额</th></tr></thead><tbody id="usageRows"></tbody></table><div class="row pager"><div class="hint" id="usagePagerInfo"></div><div class="row"><button class="secondary" id="usagePrevPage">上一页</button><button class="secondary" id="usageNextPage">下一页</button></div></div></section>
 <section id="backup"><div class="formula"><b>数据位置：</b>当前企业数据固定保存在 data/enterprise-data.json；备份保存在 data/backups，更新 server.mjs 不会覆盖这里。</div><div class="row"><button id="createBackupBtn">创建备份</button><button class="secondary" id="exportDataBtn">导出当前数据</button></div><table><thead><tr><th>备份文件</th><th>大小</th><th>时间</th><th>操作</th></tr></thead><tbody id="backupRows"></tbody></table></section>
-<section id="release"><div class="formula"><b>自动更新源：</b>把安装包上传到 <code>/opt/LfClaw/releases</code>，文件名带日期流水号即可自动识别，无需手动填写下载地址。示例：<code>LfClaw-Setup-2026071501-win-x64-official.exe</code>、<code>LfClaw-2026071501-mac-arm64-official.dmg</code>。更新日志可放 <code>changelog-2026071501.zh.txt</code>，一行一条。</div><div id="releaseSummary" class="formula"></div><input id="releaseVersion" type="hidden"><input id="releaseDate" type="hidden"><input id="releaseWinUrl" type="hidden"><input id="releaseMacArmUrl" type="hidden"><input id="releaseMacIntelUrl" type="hidden"><input id="releaseManualUrl" type="hidden"><textarea id="releaseNotesZh" style="display:none"></textarea><textarea id="releaseNotesEn" style="display:none"></textarea><div class="row" style="margin-top:12px"><button class="secondary" id="testReleaseBtn">查看自动生成的更新 JSON</button><button id="saveReleaseBtn" style="display:none">保存更新信息</button></div></section>
+<section id="release"><div class="formula"><b>自动更新源：</b>把安装包上传到 <code>/opt/LfClaw/releases</code>，文件名带日期流水号即可自动识别，无需手动填写下载地址。示例：<code>LfClaw-Setup-2026071501-win-x64-official.exe</code>、<code>LfClaw-2026071501-mac-arm64-official.dmg</code>。更新日志可放 <code>changelog-2026071501.zh.txt</code>，一行一条。</div><div id="releaseSummary" class="formula"></div><div class="form-panel" style="display:block"><h3>手动版本记录</h3><div class="grid grid-3"><label>版本号<input id="releaseHistoryVersion" placeholder="例如：2026080903"></label><label style="grid-column:span 2">版本更新描述<textarea id="releaseHistoryDescription" placeholder="简要记录本次更新内容"></textarea></label></div><div class="row" style="margin-top:12px"><button id="addReleaseHistoryBtn">创建版本记录</button></div></div><table><thead><tr><th>版本</th><th>更新描述</th><th>创建时间</th></tr></thead><tbody id="releaseHistoryRows"></tbody></table><input id="releaseVersion" type="hidden"><input id="releaseDate" type="hidden"><input id="releaseWinUrl" type="hidden"><input id="releaseMacArmUrl" type="hidden"><input id="releaseMacIntelUrl" type="hidden"><input id="releaseManualUrl" type="hidden"><textarea id="releaseNotesZh" style="display:none"></textarea><textarea id="releaseNotesEn" style="display:none"></textarea><div class="row" style="margin-top:12px"><button class="secondary" id="testReleaseBtn">查看自动生成的更新 JSON</button><button id="saveReleaseBtn" style="display:none">保存更新信息</button></div></section>
 </main><script>
 var state={modelProviders:[],mcpServers:[],skills:[],employees:[],usageEvents:[],backups:[],release:{},asr:{}};var editingEmployee='';var employeePage=1;var employeePageSize=10;var usagePage=1;var usagePageSize=10;var bulkGrant={type:'',id:''};var $=function(id){return document.getElementById(id);};var esc=function(v){return String(v==null?'':v).replace(/[&<>"']/g,function(s){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s];});};var headers=function(json){localStorage.setItem('lfclaw_admin_token',$('token').value);var h={authorization:'Bearer '+$('token').value};if(json!==false)h['content-type']='application/json';return h;};var api=async function(path,opt){opt=opt||{};var res=await fetch(path,Object.assign({},opt,{headers:Object.assign({},headers(),opt.headers||{})}));var text=await res.text();var body=text?JSON.parse(text):{};if(!res.ok||body.code!==0)throw new Error(body.message||'请求失败');return body.data;};var run=async function(fn){try{await fn();}catch(e){alert(e.message||String(e));}};var openForm=function(id){$(id).classList.add('open');};var closeForm=function(id){$(id).classList.remove('open');};var multiItems={employeeModels:[],employeeMcps:[],employeeSkills:[]};var multiValues={employeeModels:[],employeeMcps:[],employeeSkills:[]};var selected=function(id){return multiValues[id]||[];};var setSelected=function(id,values){multiValues[id]=Array.from(new Set(values||[]));renderMultiSelect(id);};var set=function(id,v){$(id).value=v==null?'':v;};
 function showTab(tab){document.querySelectorAll('section').forEach(function(s){s.classList.toggle('active',s.id===tab);});document.querySelectorAll('nav button').forEach(function(b){b.classList.toggle('active-tab',b.dataset.tab===tab);});}
 function renderMultiSelect(id){var items=multiItems[id]||[];var values=new Set(multiValues[id]||[]);var selectedItems=items.filter(function(x){return values.has(x.id);});var title=selectedItems.length?selectedItems.map(function(x){return x.name||x.id;}).join(', '):'未选择';$(id).innerHTML='<button type="button" class="multi-trigger" data-multi-toggle="'+id+'">'+esc(title)+'</button><div class="multi-options">'+(items.length?items.map(function(x){return '<label class="multi-option"><input type="checkbox" data-multi-id="'+id+'" data-multi-value="'+esc(x.id)+'" '+(values.has(x.id)?'checked':'')+'> <span>'+esc(x.name||x.id)+' ('+esc(x.id)+')</span></label>';}).join(''):'<div class="multi-empty">暂无可选项</div>')+'</div>';}function fillSelect(id,items){multiItems[id]=(items||[]).filter(function(x){return x.enabled!==false;});multiValues[id]=(multiValues[id]||[]).filter(function(value){return multiItems[id].some(function(item){return item.id===value;});});renderMultiSelect(id);}
-function initDepartmentUi(){var nav=document.querySelector('nav');var employeeTab=nav.querySelector('[data-tab="employees"]');var button=document.createElement('button');button.dataset.tab='departments';button.textContent='部门管理';nav.insertBefore(button,employeeTab);var section=document.createElement('section');section.id='departments';section.innerHTML='<div class="list-toolbar"><div class="hint">部门按树级展示；子部门自动继承所有上级部门授权。</div><button id="newDepartmentBtn">新增部门</button></div><div id="departmentForm" class="form-panel"><div class="grid"><label>部门名称<input id="departmentName"></label><label>部门 ID<input id="departmentId" placeholder="留空自动生成"></label><label>上级部门<select id="departmentParent"><option value="">无（根部门）</option></select></label></div><div class="grid grid-3" style="margin-top:12px"><label>部门模型授权<div id="departmentModels" class="multi-select"></div></label><label>部门 MCP 授权<div id="departmentMcps" class="multi-select"></div></label><label>部门技能授权<div id="departmentSkills" class="multi-select"></div></label></div><div class="row" style="margin-top:12px"><button id="saveDepartmentBtn">保存部门</button><button class="secondary" id="cancelDepartmentBtn">取消</button></div></div><table><thead><tr><th>部门</th><th>上级部门</th><th>员工数</th><th>直接授权</th><th>操作</th></tr></thead><tbody id="departmentRows"></tbody></table>';document.querySelector('main').insertBefore(section,$('employees'));var employeeGrid=$('employeeForm').querySelector('.grid');var label=document.createElement('label');label.innerHTML='所属部门<select id="employeeDepartment"><option value="">未分配部门</option></select>';employeeGrid.appendChild(label);['departmentModels','departmentMcps','departmentSkills'].forEach(function(id){multiItems[id]=[];multiValues[id]=[];});}
+function initDepartmentUi(){var nav=document.querySelector('nav');var employeeTab=nav.querySelector('[data-tab="employees"]');var button=document.createElement('button');button.dataset.tab='departments';button.textContent='部门管理';nav.insertBefore(button,employeeTab);var section=document.createElement('section');section.id='departments';section.innerHTML='<div class="list-toolbar"><div class="hint">部门按树级展示，仅用于人员归属和筛选，不参与权限计算。</div><button id="newDepartmentBtn">新增部门</button></div><div id="departmentForm" class="form-panel"><div class="grid"><label>部门名称<input id="departmentName"></label><label>部门 ID<input id="departmentId" placeholder="留空自动生成"></label><label>上级部门<select id="departmentParent"><option value="">无（根部门）</option></select></label></div><div class="row" style="margin-top:12px"><button id="saveDepartmentBtn">保存部门</button><button class="secondary" id="cancelDepartmentBtn">取消</button></div></div><table><thead><tr><th>部门</th><th>上级部门</th><th>员工数</th><th>操作</th></tr></thead><tbody id="departmentRows"></tbody></table>';document.querySelector('main').insertBefore(section,$('employees'));var employeeGrid=$('employeeForm').querySelector('.grid');var label=document.createElement('label');label.innerHTML='所属部门<select id="employeeDepartment"><option value="">未分配部门</option></select>';employeeGrid.appendChild(label);}
 var editingDepartment='';
 async function loadAll(){state=await api('/api/admin/state');state.modelProviders=state.modelProviders||state.models||[];state.departments=state.departments||[];renderAll();}
-function renderAll(){fillSelect('employeeModels',state.modelProviders);fillSelect('employeeMcps',state.mcpServers);fillSelect('employeeSkills',state.skills);renderOverview();renderDepartments();renderEmployees();renderModels();renderMcp();renderSkills();document.querySelectorAll('[data-act="bulkGrant"]').forEach(function(button){button.textContent='分配范围';});renderAsr();renderUsageFilters();renderUsage();renderBackups();renderRelease();}
+function renderAll(){fillSelect('employeeModels',state.modelProviders);fillSelect('employeeMcps',state.mcpServers);fillSelect('employeeSkills',state.skills);renderOverview();renderDepartments();renderEmployees();renderModels();renderMcp();renderSkills();document.querySelectorAll('[data-act="bulkGrant"]').forEach(function(button){button.textContent='分配范围';});renderAsr();renderAgentMemory();renderAgentMemoryAuditEmployees();renderUsageFilters();renderUsage();renderBackups();renderReleaseHistory();renderRelease();}
 function authText(v){return (v&&v.length)?v.join(', '):'未授权';}
 function renderOverview(){var modelIds=state.modelProviders.flatMap(function(provider){var models=provider.models||[];return models.length?models.map(function(model){return model.id;}):[provider.id];}).filter(Boolean);$('statEmployees').textContent=state.employees.length;$('statDepartments').textContent=state.departments.length;$('statModels').textContent=new Set(modelIds).size;$('statMcps').textContent=state.mcpServers.length;$('statSkills').textContent=state.skills.length;$('statCalls').textContent=state.usageEvents.length;$('statCredits').textContent=state.usageEvents.reduce(function(s,e){return s+Number(e.credits||0);},0).toFixed(2);}
 function departmentList(){var result=[];var seen={};function visit(parentId,depth){state.departments.filter(function(d){return (d.parentId||'')===parentId;}).sort(function(a,b){return String(a.name).localeCompare(String(b.name),'zh-CN');}).forEach(function(d){if(seen[d.id])return;seen[d.id]=true;result.push({item:d,depth:depth});visit(d.id,depth+1);});}visit('',0);state.departments.forEach(function(d){if(!seen[d.id])result.push({item:d,depth:0});});return result;}
@@ -858,7 +964,7 @@ function departmentName(id){var d=state.departments.find(function(x){return x.id
 function departmentParentName(id){return id?departmentName(id):'根部门';}
 function departmentSubtreeIds(id){var ids=[id];for(var i=0;i<ids.length;i+=1){state.departments.filter(function(d){return d.parentId===ids[i];}).forEach(function(d){if(ids.indexOf(d.id)<0)ids.push(d.id);});}return ids;}
 function departmentEmployeeCount(id){var ids=departmentSubtreeIds(id);return state.employees.filter(function(e){return ids.indexOf(e.departmentId)>=0;}).length;}
-function employeeHasResource(employee,grantKey,itemId){if((employee[grantKey]||[]).indexOf(itemId)>=0)return true;var current=employee.departmentId;var seen={};while(current&&!seen[current]){seen[current]=true;var d=state.departments.find(function(x){return x.id===current;});if(!d)break;if((d[grantKey]||[]).indexOf(itemId)>=0)return true;current=d.parentId;}return false;}
+function employeeHasResource(employee,grantKey,itemId){return(employee[grantKey]||[]).indexOf(itemId)>=0;}
 function departmentOptions(selected,excluded){return '<option value="">无（根部门）</option>'+departmentList().filter(function(x){return x.item.id!==excluded;}).map(function(x){return '<option value="'+esc(x.item.id)+'" '+(x.item.id===selected?'selected':'')+'>'+Array(x.depth+1).join('　')+esc(x.item.name)+'</option>';}).join('');}
 function renderDepartments(){var rows=departmentList();$('departmentParent').innerHTML=departmentOptions($('departmentParent').value,editingDepartment);$('employeeDepartment').innerHTML='<option value="">未分配部门</option>'+departmentList().map(function(x){return '<option value="'+esc(x.item.id)+'">'+Array(x.depth+1).join('　')+esc(x.item.name)+'</option>';}).join('');$('departmentRows').innerHTML=rows.map(function(x){var d=x.item;var count=departmentEmployeeCount(d.id);return '<tr><td>'+Array(x.depth+1).join('　')+'<b>'+esc(d.name)+'</b><br><code>'+esc(d.id)+'</code></td><td>'+esc(departmentParentName(d.parentId))+'</td><td>'+count+'</td><td><div class="row"><button class="secondary" data-act="editDepartment" data-id="'+esc(d.id)+'">编辑</button><button class="danger" data-act="deleteDepartment" data-id="'+esc(d.id)+'">删除</button></div></td></tr>';}).join('')||'<tr><td colspan="4" class="hint">暂无部门，请先创建根部门。</td></tr>';}
 function clearDepartment(){editingDepartment='';set('departmentName','');set('departmentId','');$('departmentId').readOnly=false;set('departmentParent','');closeForm('departmentForm');renderDepartments();}
@@ -867,7 +973,7 @@ function departmentPayload(){return{id:$('departmentId').value.trim(),name:$('de
 function renderEmployees(){var total=state.employees.length;var pages=Math.max(1,Math.ceil(total/employeePageSize));employeePage=Math.min(Math.max(1,employeePage),pages);var start=(employeePage-1)*employeePageSize;var rows=state.employees.slice(start,start+employeePageSize);$('employeeRows').innerHTML=rows.map(function(e){return '<tr><td>'+esc(e.status)+'</td><td><code>'+esc(e.activationCode)+'</code></td><td>'+esc(e.employeeName)+'<br><code>'+esc(e.employeeId)+'</code><br><span class="pill">'+esc(departmentName(e.departmentId))+'</span></td><td>'+esc(Math.max(0,(e.creditsLimit||0)-(e.creditsUsed||0)))+'/'+esc(e.creditsLimit||0)+'<br><button class="secondary" data-act="credits" data-code="'+esc(e.activationCode)+'">改积分</button></td><td><code>'+esc(e.lastSeenClientVersion||e.clientVersion||'-')+'</code><br>'+esc(e.lastSeenClientVersionAt||'-')+'</td><td><code>'+esc(e.deviceToken||'-')+'</code><br>'+esc(e.lastUsedAt||'-')+'</td><td><div class="row"><button class="secondary" data-act="viewGrants" data-code="'+esc(e.activationCode)+'">授权</button><button class="secondary" data-act="editEmployee" data-code="'+esc(e.activationCode)+'">编辑</button><button class="secondary" data-act="copy" data-code="'+esc(e.activationCode)+'">复制</button><button class="secondary" data-act="toggle" data-code="'+esc(e.activationCode)+'" data-status="'+esc(e.status)+'">'+(e.status==='active'?'禁用':'启用')+'</button><button class="danger" data-act="deleteEmployee" data-code="'+esc(e.activationCode)+'">删除</button></div></td></tr>';}).join('');$('employeePagerInfo').textContent=total?'第 '+employeePage+' / '+pages+' 页，共 '+total+' 人，当前显示 '+(start+1)+'-'+Math.min(start+rows.length,total):'暂无员工';$('employeePrevPage').disabled=employeePage<=1;$('employeeNextPage').disabled=employeePage>=pages;$('employeePageSize').value=String(employeePageSize);}
 function grantNames(ids,items){return (ids||[]).map(function(id){var item=(items||[]).find(function(x){return x.id===id;});return item?(item.name||item.id):id;});}
 function grantGroup(title,ids,items){var names=grantNames(ids,items);return '<div class="permission-group"><b>'+esc(title)+'</b><div class="permission-items">'+(names.length?names.map(function(name){return '<span class="pill">'+esc(name)+'</span>';}).join(''):'<span class="hint">未授权</span>')+'</div></div>';}
-function showEmployeeGrants(code){var e=state.employees.find(function(x){return x.activationCode===code;});if(!e)return;$('permissionDialogTitle').textContent=(e.employeeName||e.employeeId)+' 的有效授权';$('permissionDialogBody').innerHTML='<div class="formula"><b>所属部门：</b>'+esc(departmentName(e.departmentId))+'<br>以下权限为个人与部门层级授权合并后的结果。</div>'+grantGroup('模型',e.effectiveAllowedModelProviderIds||e.allowedModelProviderIds,state.modelProviders)+grantGroup('MCP',e.effectiveAllowedMcpServerIds||e.allowedMcpServerIds,state.mcpServers)+grantGroup('技能',e.effectiveAllowedSkillIds||e.allowedSkillIds,state.skills);$('permissionDialog').showModal();}
+function showEmployeeGrants(code){var e=state.employees.find(function(x){return x.activationCode===code;});if(!e)return;$('permissionDialogTitle').textContent=(e.employeeName||e.employeeId)+' 的个人授权';$('permissionDialogBody').innerHTML='<div class="formula"><b>所属部门：</b>'+esc(departmentName(e.departmentId))+'<br>部门仅用于人员归属，以下权限全部按个人授权生效。</div>'+grantGroup('模型',e.allowedModelProviderIds,state.modelProviders)+grantGroup('MCP',e.allowedMcpServerIds,state.mcpServers)+grantGroup('技能',e.allowedSkillIds,state.skills);$('permissionDialog').showModal();}
 function bulkGrantConfig(){return{model:{title:'模型',section:'models',items:state.modelProviders,grantKey:'allowedModelProviderIds',path:'/api/admin/model-providers'},mcp:{title:'MCP',section:'mcp',items:state.mcpServers,grantKey:'allowedMcpServerIds',path:'/api/admin/mcp'},skill:{title:'技能',section:'skills',items:state.skills,grantKey:'allowedSkillIds',path:'/api/admin/skills'}};}
 function renderModels(){$('modelRows').innerHTML=state.modelProviders.map(function(x){var m=(x.models||[])[0]||{};var b=x.billing||{};return '<tr><td><code>'+esc(m.id||x.id)+'</code></td><td>'+esc(m.name||x.name)+'</td><td>'+esc(x.baseUrl)+'<br><span class="hint">'+esc(b.currency||'')+' 输入 '+esc(b.inputPricePerMillionTokens||0)+'/M，输出 '+esc(b.outputPricePerMillionTokens||0)+'/M</span></td><td>'+esc(x.apiKey?'********':'-')+'</td><td><div class="row"><button class="secondary" data-act="editModel" data-id="'+esc(x.id)+'">编辑</button><button class="secondary" data-act="bulkGrant" data-type="model" data-id="'+esc(x.id)+'">分配员工</button><button class="danger" data-act="delete" data-path="/api/admin/model-providers" data-id="'+esc(x.id)+'">删除</button></div></td></tr>';}).join('');renderBulkGrant();}
 function renderMcp(){$('mcpRows').innerHTML=state.mcpServers.map(function(x){var link=x.transportType==='stdio'?(x.command+' '+(x.args||[]).join(' ')):x.url;return '<tr><td><code>'+esc(x.id)+'</code></td><td>'+esc(x.name)+'</td><td>'+esc(x.transportType)+'</td><td>'+esc(link)+'</td><td><div class="row"><button class="secondary" data-act="editMcp" data-id="'+esc(x.id)+'">编辑</button><button class="secondary" data-act="bulkGrant" data-type="mcp" data-id="'+esc(x.id)+'">分配员工</button><button class="danger" data-act="delete" data-path="/api/admin/mcp" data-id="'+esc(x.id)+'">删除</button></div></td></tr>';}).join('');renderBulkGrant();}
@@ -877,6 +983,12 @@ function syncBulkDepartmentStates(){departmentList().slice().reverse().forEach(f
 function renderBulkGrant(){var box=$('skillBulkBox');if(!box)return;var configs=bulkGrantConfig();var cfg=configs[bulkGrant.type];if(!cfg||!bulkGrant.id){box.style.display='none';return;}var item=(cfg.items||[]).find(function(x){return x.id===bulkGrant.id;});if(!item){bulkGrant={type:'',id:''};box.style.display='none';return;}var section=$(cfg.section);if(section&&box.parentElement!==section){var table=section.querySelector('table');section.insertBefore(box,table||null);}$('skillBulkTitle').textContent='分配'+cfg.title+'：'+(item.name||item.id);box.querySelector('.hint').textContent='可授权整个部门，也可在部门下单独选择人员；部分人员已授权时部门显示减号。';var groups=departmentList().map(function(x){var d=x.item;var employees=state.employees.filter(function(e){return e.departmentId===d.id;});return '<div class="card"><label class="multi-option"><input type="checkbox" data-bulk-grant-department="'+esc(d.id)+'"> <b>'+Array(x.depth+1).join('　')+esc(d.name)+'（整个部门）</b></label>'+employees.map(function(e){var checked=employeeHasResource(e,cfg.grantKey,bulkGrant.id);return '<label class="multi-option"><input type="checkbox" data-bulk-grant-employee="'+esc(e.activationCode)+'" '+(checked?'checked':'')+'> <span>'+esc(e.employeeName)+' / '+esc(e.employeeId)+'</span></label>';}).join('')+'</div>';}).join('');var unassigned=state.employees.filter(function(e){return !e.departmentId||!state.departments.some(function(d){return d.id===e.departmentId;});});if(unassigned.length)groups+='<div class="card"><b>未分配部门</b>'+unassigned.map(function(e){var checked=(e[cfg.grantKey]||[]).indexOf(bulkGrant.id)>=0;return '<label class="multi-option"><input type="checkbox" data-bulk-grant-employee="'+esc(e.activationCode)+'" '+(checked?'checked':'')+'> <span>'+esc(e.employeeName)+' / '+esc(e.employeeId)+'</span></label>';}).join('')+'</div>';$('skillBulkEmployees').innerHTML=groups||'<div class="multi-empty">暂无部门或员工</div>';syncBulkDepartmentStates();box.style.display='block';}
 function renderAsr(){var x=state.asr||{};set('asrName',x.name||'阿里云实时语音识别');set('asrWorkspaceId',x.workspaceId||'');set('asrRegion',x.region||'cn-beijing');set('asrApiHost',x.apiHost||'');set('asrWebsocketUrl',x.websocketUrl||'');set('asrApiKey','');$('asrApiKey').placeholder=x.apiKey?'已保存，留空则不修改':'sk-...';set('asrModel',x.model||'fun-asr-realtime');set('asrFormat',x.format||'wav');set('asrSampleRate',x.sampleRate||16000);set('asrChunkIntervalMillis',x.chunkIntervalMillis||200);set('asrMaxSessionSeconds',x.maxSessionSeconds||60);set('asrPriceNote',x.priceNote||'');$('asrStatus').innerHTML=x.configured?'<b>当前状态：</b>已配置，客户端企业激活后即可使用语音输入。':'<b>当前状态：</b>未配置，请填写 API Key，并填写 Workspace ID / API Host / WebSocket URL 之一。';}
 function asrPayload(){return{name:$('asrName').value,workspaceId:$('asrWorkspaceId').value,region:$('asrRegion').value,apiHost:$('asrApiHost').value,websocketUrl:$('asrWebsocketUrl').value,apiKey:$('asrApiKey').value,model:$('asrModel').value,format:$('asrFormat').value,sampleRate:Number($('asrSampleRate').value),chunkIntervalMillis:Number($('asrChunkIntervalMillis').value),maxSessionSeconds:Number($('asrMaxSessionSeconds').value),priceNote:$('asrPriceNote').value};}
+function initAgentMemoryUi(){var usage=$('usage');var section=document.createElement('section');section.id='agentMemory';section.innerHTML='<div class="formula"><b>Agent Memory 服务：</b>这是整个 Agent Memory 模块的总开关。关闭后 LFCLAW 不再调用该服务；开启对话记忆后，系统会自动读取和保存每位员工自己的记忆，员工之间完全隔离。</div><div class="grid"><label>启用 Agent Memory 服务<select id="agentMemoryEnabled"><option value="false">关闭</option><option value="true">开启</option></select></label><label>企业编码<input id="agentMemoryEnterpriseCode" placeholder="longfeng"></label><label>Memory Core 地址<input id="agentMemoryCoreUrl" placeholder="http://127.0.0.1:8420"></label><label>实例 ID<input id="agentMemoryServiceId" placeholder="default"></label><label>系统管理员 User_Key<input id="agentMemoryAdminUserKey" type="password" placeholder="sk-mem-..."></label><label>Team ID<input id="agentMemoryTeamId" placeholder="team-..."></label></div><label class="row" style="margin-top:12px"><input id="agentMemoryChatEnabled" type="checkbox" style="width:auto"> 启用员工对话记忆</label><div id="agentMemoryStatus" class="formula"></div><div class="row"><button id="saveAgentMemoryBtn">保存配置</button><button class="secondary" id="testAgentMemoryBtn">测试连接</button><button class="secondary" id="cancelAgentMemoryBtn">重置表单</button><span id="agentMemoryTestResult" class="hint"></span></div><div class="formula" style="margin-top:20px"><b>管理员记忆审计：</b>选择员工后读取其 L0-L3 对话记忆。员工密钥仅在服务端使用，不会发送到浏览器。</div><div class="row"><label style="min-width:300px">员工<select id="agentMemoryAuditEmployee"></select></label><button id="loadAgentMemoryAuditBtn">查看记忆</button><span id="agentMemoryAuditStatus" class="hint"></span></div><div id="agentMemoryAuditResult"></div>';usage.parentElement.insertBefore(section,usage);}
+function renderAgentMemory(){var x=state.agentMemory||{};set('agentMemoryEnabled',String(Boolean(x.enabled)));set('agentMemoryEnterpriseCode',x.enterpriseCode||'longfeng');set('agentMemoryCoreUrl',x.coreUrl||'');set('agentMemoryServiceId',x.serviceId||'default');set('agentMemoryAdminUserKey','');$('agentMemoryAdminUserKey').placeholder=x.adminUserKey?'已保存，留空则不修改':'sk-mem-...';set('agentMemoryTeamId',x.teamId||'');$('agentMemoryChatEnabled').checked=Boolean(x.chatMemoryEnabled);var active=Boolean(x.enabled&&x.chatMemoryEnabled&&x.configured);$('agentMemoryStatus').innerHTML=!x.configured?'<b>当前状态：</b>未完整配置，请填写 Memory Core、系统管理员 User_Key 和 Team ID。':!x.enabled?'<b>当前状态：</b>Agent Memory 服务已关闭，LFCLAW 不会调用该服务。':!x.chatMemoryEnabled?'<b>当前状态：</b>Agent Memory 服务已开启，员工对话记忆已关闭，不会召回、写入或审计 L0-L3。':'<b>当前状态：</b>员工对话记忆已开启，所有已授权模型会自动使用员工独立记忆。';$('loadAgentMemoryAuditBtn').disabled=!active;$('agentMemoryAuditStatus').textContent=active?'':'员工对话记忆未启用';$('agentMemoryTestResult').textContent='';$('agentMemoryTestResult').className='hint';}
+function renderAgentMemoryAuditEmployees(){if(!$('agentMemoryAuditEmployee'))return;var selected=$('agentMemoryAuditEmployee').value;$('agentMemoryAuditEmployee').innerHTML='<option value="">请选择员工</option>'+state.employees.map(function(e){return '<option value="'+esc(e.employeeId)+'">'+esc(e.employeeName||e.employeeId)+' ('+esc(e.employeeId)+')</option>';}).join('');set('agentMemoryAuditEmployee',selected);}
+function auditLayer(title,value){return '<div class="card" style="margin-top:12px"><b>'+title+'</b><pre style="white-space:pre-wrap;overflow:auto;max-height:420px">'+esc(JSON.stringify(value,null,2))+'</pre></div>';}
+function renderAgentMemoryAudit(data){$('agentMemoryAuditResult').innerHTML=auditLayer('L0 原始对话',data.l0)+auditLayer('L1 原子记忆',data.l1)+auditLayer('L2 场景记忆',data.l2)+auditLayer('L3 核心记忆',data.l3);}
+function agentMemoryPayload(){return{enabled:$('agentMemoryEnabled').value==='true',enterpriseCode:$('agentMemoryEnterpriseCode').value,coreUrl:$('agentMemoryCoreUrl').value,serviceId:$('agentMemoryServiceId').value,adminUserKey:$('agentMemoryAdminUserKey').value,teamId:$('agentMemoryTeamId').value,chatMemoryEnabled:$('agentMemoryChatEnabled').checked};}
 function selectedModelTypes(){return Array.from(document.querySelectorAll('[data-model-type]:checked')).map(function(o){return o.getAttribute('data-model-type');}).filter(Boolean);}
 function modelTypesSupportImage(types){return types.indexOf('multimodal-understanding')>=0||types.indexOf('ocr-document')>=0;}
 function modelPayload(){var mid=$('modelId').value.trim();var modelTypes=selectedModelTypes();return{id:mid,modelId:mid,name:$('modelName').value||mid,modelName:$('modelName').value||mid,baseUrl:$('modelBaseUrl').value,apiKey:$('modelApiKey').value,apiFormat:'openai',supportsImage:modelTypesSupportImage(modelTypes),modelTypes:modelTypes,currency:$('billingCurrency').value,inputPricePerMillionTokens:Number($('inputPricePerMillionTokens').value),outputPricePerMillionTokens:Number($('outputPricePerMillionTokens').value),cacheWritePricePerMillionTokens:Number($('cacheWritePricePerMillionTokens').value),cacheReadPricePerMillionTokens:Number($('cacheReadPricePerMillionTokens').value),creditsPerCurrencyUnit:Number($('creditsPerCurrencyUnit').value),fixedCreditsPerCall:Number($('fixedCreditsPerCall').value),minimumCreditsPerCall:Number($('minimumCreditsPerCall').value),contextWindow:Number($('modelContextWindow').value),imagePriceNote:$('imagePriceNote').value,audioPriceNote:$('audioPriceNote').value,videoPriceNote:$('videoPriceNote').value,priceSourceUrl:$('priceSourceUrl').value};}
@@ -889,9 +1001,13 @@ function clearSkill(){$('skillId').readOnly=false;['skillId','skillName','skillD
 function editEmployee(code){var e=state.employees.find(function(x){return x.activationCode===code;});if(!e)return;editingEmployee=code;set('employeeName',e.employeeName);set('employeeId',e.employeeId);set('creditsLimit',e.creditsLimit);set('notes',e.notes);set('employeeDepartment',e.departmentId||'');setSelected('employeeModels',e.allowedModelProviderIds);setSelected('employeeMcps',e.allowedMcpServerIds);setSelected('employeeSkills',e.allowedSkillIds);$('addEmployeeBtn').style.display='none';$('saveEmployeeBtn').style.display='inline-block';$('cancelEmployeeBtn').style.display='inline-block';openForm('employeeForm');showTab('employees');}
 function clearEmployee(){editingEmployee='';['employeeName','employeeId','notes'].forEach(function(id){set(id,'');});set('employeeDepartment','');set('creditsLimit',1000);setSelected('employeeModels',[]);setSelected('employeeMcps',[]);setSelected('employeeSkills',[]);$('addEmployeeBtn').style.display='inline-block';$('saveEmployeeBtn').style.display='none';$('cancelEmployeeBtn').style.display='none';closeForm('employeeForm');}
 initDepartmentUi();
+initAgentMemoryUi();
+$('saveAgentMemoryBtn').onclick=function(){run(async function(){await api('/api/admin/agent-memory',{method:'POST',body:JSON.stringify(agentMemoryPayload())});await loadAll();alert('Agent Memory 配置已保存');});};
+$('testAgentMemoryBtn').onclick=function(){run(async function(){$('agentMemoryTestResult').textContent='测试中...';$('agentMemoryTestResult').className='hint';var result=await api('/api/admin/agent-memory/test',{method:'POST',body:JSON.stringify(agentMemoryPayload())});$('agentMemoryTestResult').textContent=result.ok?'连接成功：'+(result.message||('HTTP '+result.status)):'连接失败：'+(result.message||'未知错误');$('agentMemoryTestResult').className=result.ok?'hint status-ok':'hint status-bad';});};
+$('cancelAgentMemoryBtn').onclick=renderAgentMemory;
+$('loadAgentMemoryAuditBtn').onclick=function(){run(async function(){var employeeId=$('agentMemoryAuditEmployee').value;if(!employeeId)throw new Error('请先选择员工');$('agentMemoryAuditStatus').textContent='读取中...';$('agentMemoryAuditResult').innerHTML='';var data=await api('/api/admin/agent-memory/audit/'+encodeURIComponent(employeeId));renderAgentMemoryAudit(data);$('agentMemoryAuditStatus').textContent='读取完成：'+(data.employeeName||employeeId);});};
 $('statEmployees').closest('.card').insertAdjacentHTML('afterend','<div class="card"><div class="hint">部门数</div><div class="num" id="statDepartments">0</div></div>');
 document.head.insertAdjacentHTML('beforeend','<style>#overview .cards{grid-template-columns:repeat(12,minmax(0,1fr));gap:14px}#overview .card{position:relative;min-height:86px;padding:18px 20px;border-color:#d9e2ef;background:linear-gradient(145deg,#fff,#f8fafd);overflow:hidden;transition:transform .18s ease,box-shadow .18s ease}#overview .card:hover{transform:translateY(-2px);box-shadow:0 10px 24px rgba(15,35,65,.08)}#overview .card .hint{font-size:14px;color:#65758b}#overview .card .num{margin-top:5px;font-size:28px;line-height:1;color:#081a38}#overview .card:nth-child(1),#overview .card:nth-child(2){grid-column:span 3;background:linear-gradient(145deg,#f7fbff,#edf5ff);border-color:#cddff5}#overview .card:nth-child(3),#overview .card:nth-child(4),#overview .card:nth-child(5){grid-column:span 2}#overview .card:nth-child(6),#overview .card:nth-child(7){grid-column:span 6;background:linear-gradient(145deg,#fff,#f7f9fc)}#overview .card:nth-child(1):before,#overview .card:nth-child(2):before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:#245b9e}@media(max-width:960px){#overview .cards{grid-template-columns:repeat(2,minmax(0,1fr))}#overview .card:nth-child(n){grid-column:span 1}}@media(max-width:560px){#overview .cards{grid-template-columns:1fr}#overview .card:nth-child(n){grid-column:span 1}}</style>');
-$('departmentForm').querySelector('.grid-3').remove();var departmentHeader=$('departmentRows').closest('table').querySelector('thead tr');departmentHeader.children[3].textContent='操作';departmentHeader.children[4].remove();
 $('skillBulkSelectAll').textContent='全部人员';$('skillBulkSelectAll').insertAdjacentHTML('afterend','<button class="secondary" id="skillBulkSelectDepartments">全部部门</button>');$('skillBulkSelectDepartments').onclick=function(){document.querySelectorAll('[data-bulk-grant-employee]').forEach(function(x){x.checked=true;});syncBulkDepartmentStates();};
 var departmentAwareApi=api;api=async function(path,opt){if(/^\/api\/admin\/employees(?:\/|$)/.test(path)&&opt&&opt.body){var payload=JSON.parse(opt.body);if(payload.employeeName!==undefined)payload.departmentId=$('employeeDepartment').value;opt=Object.assign({},opt,{body:JSON.stringify(payload)});}return departmentAwareApi(path,opt);};
 $('newDepartmentBtn').onclick=function(){clearDepartment();openForm('departmentForm');};$('cancelDepartmentBtn').onclick=clearDepartment;$('saveDepartmentBtn').onclick=function(){run(async function(){var payload=departmentPayload();var target=editingDepartment?'/api/admin/departments/'+encodeURIComponent(editingDepartment):'/api/admin/departments';await api(target,{method:editingDepartment?'PATCH':'POST',body:JSON.stringify(payload)});clearDepartment();await loadAll();});};
@@ -905,8 +1021,10 @@ function providerByModel(modelId){return state.modelProviders.find(function(p){r
 function renderUsage(){var eid=$('usageEmployeeFilter').value;var mid=$('usageModelFilter').value;var rows={};var events=state.usageEvents.filter(function(e){return (!eid||e.employeeId===eid)&&(!mid||e.modelId===mid);});events.forEach(function(e){var day=String(e.createdAt||'').slice(0,10)||'-';var key=day+'|'+e.employeeId+'|'+e.modelId;rows[key]=rows[key]||{day:day,employeeId:e.employeeId,modelId:e.modelId,tokens:0,credits:0};rows[key].tokens+=Number(e.inputTokens||0)+Number(e.outputTokens||0)+Number(e.cacheWriteTokens||0)+Number(e.cacheReadTokens||0);rows[key].credits+=Number(e.credits||0);});var allRows=Object.values(rows).sort(function(a,b){return String(b.day).localeCompare(String(a.day))||String(a.employeeId).localeCompare(String(b.employeeId))||String(a.modelId).localeCompare(String(b.modelId));});var total=allRows.length;var pages=Math.max(1,Math.ceil(total/usagePageSize));usagePage=Math.min(Math.max(1,usagePage),pages);var start=(usagePage-1)*usagePageSize;var pageRows=allRows.slice(start,start+usagePageSize);$('usageCalls').textContent=events.length;$('usageCredits').textContent=events.reduce(function(s,e){return s+Number(e.credits||0);},0).toFixed(4);$('usageMoney').textContent='-';$('usageRows').innerHTML=pageRows.map(function(r){var emp=state.employees.find(function(e){return e.employeeId===r.employeeId;});return '<tr><td>'+esc(r.day)+'</td><td>'+esc(emp?emp.employeeName:r.employeeId)+'<br><code>'+esc(r.employeeId)+'</code></td><td>'+esc(r.modelId)+'</td><td>'+r.tokens+'</td><td>'+r.credits.toFixed(4)+'</td><td>'+esc(money(r.credits,r.modelId))+'</td></tr>';}).join('');$('usagePagerInfo').textContent=total?'第 '+usagePage+' / '+pages+' 页，共 '+total+' 条，当前显示 '+(start+1)+'-'+Math.min(start+pageRows.length,total):'暂无用量记录';$('usagePrevPage').disabled=usagePage<=1;$('usageNextPage').disabled=usagePage>=pages;}
 function downloadAdmin(path,name){return run(async function(){var res=await fetch(path,{headers:headers(false)});if(!res.ok)throw new Error('下载失败');var blob=await res.blob();var url=URL.createObjectURL(blob);var a=document.createElement('a');a.href=url;a.download=name||'';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);});}
 function renderBackups(){if(!$('backupRows'))return;var backups=state.backups||[];$('backupRows').innerHTML=backups.map(function(b){return '<tr><td><code>'+esc(b.name)+'</code></td><td>'+Math.ceil(Number(b.size||0)/1024)+' KB</td><td>'+esc(b.createdAt||'-')+'</td><td><button class="secondary" data-act="downloadBackup" data-name="'+esc(b.name)+'">下载</button></td></tr>';}).join('')||'<tr><td colspan="4" class="hint">暂无备份</td></tr>';}
+function renderReleaseHistory(){var rows=(state.releaseHistory||[]).slice().sort(function(a,b){return String(b.createdAt).localeCompare(String(a.createdAt));});$('releaseHistoryRows').innerHTML=rows.map(function(item){var time=new Date(item.createdAt);var shownTime=Number.isNaN(time.getTime())?item.createdAt:time.toLocaleString('zh-CN',{hour12:false});return '<tr><td><code>'+esc(item.version)+'</code></td><td style="white-space:pre-wrap">'+esc(item.description)+'</td><td>'+esc(shownTime)+'</td></tr>';}).join('')||'<tr><td colspan="3" class="hint">暂无手动版本记录</td></tr>';}
 async function renderRelease(){if(!$('releaseVersion'))return;var r=state.release||{};set('releaseVersion',r.version||'');set('releaseDate',r.date||'');set('releaseWinUrl',r.windowsX64Url||'');set('releaseMacArmUrl',r.macArmUrl||'');set('releaseMacIntelUrl',r.macIntelUrl||'');set('releaseManualUrl',r.manualUrl||'');set('releaseNotesZh',r.notesZh||'');set('releaseNotesEn',r.notesEn||'');if($('releaseSummary')){try{var res=await fetch('/api/enterprise/update');var body=await res.json();var v=(body.data||{}).value||{};$('releaseSummary').innerHTML='<b>当前自动生成：</b><br>版本：<code>'+esc(v.version||'未检测到安装包')+'</code><br>发布日期：'+esc(v.date||'-')+'<br>Windows：'+esc((v.windowsX64||{}).url||'-')+'<br>macOS Apple Silicon：'+esc((v.macArm||{}).url||'-')+'<br>macOS Intel：'+esc((v.macIntel||{}).url||'-')+'<br>更新日志：'+esc((((v.changeLog||{}).ch||{}).content||[]).join('；')||'-');}catch(e){$('releaseSummary').textContent='暂时无法读取更新 JSON：'+(e.message||e);}}}
 document.querySelector('nav').onclick=function(e){if(e.target.dataset.tab)showTab(e.target.dataset.tab);};$('refreshBtn').onclick=function(){run(loadAll);};$('token').value=localStorage.getItem('lfclaw_admin_token')||'lfclaw-admin';$('permissionDialogClose').onclick=function(){$('permissionDialog').close();};$('permissionDialog').onclick=function(e){if(e.target===$('permissionDialog'))$('permissionDialog').close();};$('employeeName').oninput=function(){run(async function(){var d=await api('/api/admin/pinyin?name='+encodeURIComponent($('employeeName').value));$('employeePreview').textContent=d.employeeId+' / '+d.activationPrefix;if(!$('employeeId').value)$('employeeId').placeholder=d.employeeId;});};$('newEmployeeBtn').onclick=function(){clearEmployee();openForm('employeeForm');};$('addEmployeeBtn').onclick=function(){run(async function(){await api('/api/admin/employees',{method:'POST',body:JSON.stringify({employeeName:$('employeeName').value,employeeId:$('employeeId').value,creditsLimit:Number($('creditsLimit').value),notes:$('notes').value,allowedModelProviderIds:selected('employeeModels'),allowedMcpServerIds:selected('employeeMcps'),allowedSkillIds:selected('employeeSkills')})});clearEmployee();employeePage=1;await loadAll();});};$('saveEmployeeBtn').onclick=function(){run(async function(){await api('/api/admin/employees/'+encodeURIComponent(editingEmployee),{method:'PATCH',body:JSON.stringify({employeeName:$('employeeName').value,employeeId:$('employeeId').value,creditsLimit:Number($('creditsLimit').value),notes:$('notes').value,allowedModelProviderIds:selected('employeeModels'),allowedMcpServerIds:selected('employeeMcps'),allowedSkillIds:selected('employeeSkills')})});clearEmployee();await loadAll();});};$('cancelEmployeeBtn').onclick=clearEmployee;$('employeePrevPage').onclick=function(){employeePage=Math.max(1,employeePage-1);renderEmployees();};$('employeeNextPage').onclick=function(){employeePage+=1;renderEmployees();};$('employeePageSize').onchange=function(){employeePageSize=Number($('employeePageSize').value)||10;employeePage=1;renderEmployees();};$('newModelBtn').onclick=function(){clearModel();openForm('modelForm');};$('saveModelBtn').onclick=function(){run(async function(){await api('/api/admin/model-providers',{method:'POST',body:JSON.stringify(modelPayload())});clearModel();await loadAll();});};$('testModelBtn').onclick=function(){run(async function(){$('modelTestResult').textContent='测试中...';$('modelTestResult').className='hint';var result=await api('/api/admin/model-providers/test',{method:'POST',body:JSON.stringify(modelPayload())});$('modelTestResult').textContent=result.ok?'连接成功：'+(result.model||$('modelId').value):'连接失败：'+(result.message||'未知错误');$('modelTestResult').className=result.ok?'hint status-ok':'hint status-bad';});};$('cancelModelBtn').onclick=clearModel;$('newMcpBtn').onclick=function(){clearMcp();openForm('mcpForm');};$('saveMcpBtn').onclick=function(){run(async function(){await api('/api/admin/mcp',{method:'POST',body:JSON.stringify({id:$('mcpId').value.trim(),name:$('mcpName').value,description:$('mcpDesc').value,transportType:$('mcpTransport').value,url:$('mcpUrl').value,headers:$('mcpHeaders').value,command:$('mcpCommand').value,args:$('mcpArgs').value.split(/\r?\n|,/).map(function(x){return x.trim();}).filter(Boolean)} )});clearMcp();await loadAll();});};$('cancelMcpBtn').onclick=clearMcp;$('newSkillBtn').onclick=function(){clearSkill();openForm('skillForm');};$('uploadSkillBtn').onclick=function(){run(async function(){var fd=new FormData();fd.set('id',$('skillId').value.trim());fd.set('name',$('skillName').value);fd.set('version',$('skillVersion').value);fd.set('description',$('skillDesc').value);if($('skillZip').files[0])fd.set('package',$('skillZip').files[0]);var res=await fetch('/api/admin/skills/upload',{method:'POST',headers:headers(false),body:fd});var text=await res.text();var body=text?JSON.parse(text):{};if(!res.ok||body.code!==0)throw new Error(body.message||'上传失败');clearSkill();await loadAll();});};$('cancelSkillBtn').onclick=clearSkill;$('saveAsrBtn').onclick=function(){run(async function(){await api('/api/admin/asr',{method:'POST',body:JSON.stringify(asrPayload())});await loadAll();alert('语音识别配置已保存');});};$('cancelAsrBtn').onclick=renderAsr;$('usageEmployeeFilter').onchange=function(){usagePage=1;renderUsage();};$('usageModelFilter').onchange=function(){usagePage=1;renderUsage();};$('usagePrevPage').onclick=function(){usagePage=Math.max(1,usagePage-1);renderUsage();};$('usageNextPage').onclick=function(){usagePage+=1;renderUsage();};$('createBackupBtn').onclick=function(){run(async function(){await api('/api/admin/backups',{method:'POST',body:'{}'});await loadAll();alert('备份已创建');});};$('exportDataBtn').onclick=function(){downloadAdmin('/api/admin/export','enterprise-data.json');};$('saveReleaseBtn').onclick=function(){run(async function(){await api('/api/admin/release',{method:'POST',body:JSON.stringify({version:$('releaseVersion').value,date:$('releaseDate').value,windowsX64Url:$('releaseWinUrl').value,macArmUrl:$('releaseMacArmUrl').value,macIntelUrl:$('releaseMacIntelUrl').value,manualUrl:$('releaseManualUrl').value,notesZh:$('releaseNotesZh').value,notesEn:$('releaseNotesEn').value})});await loadAll();alert('更新信息已保存');});};$('testReleaseBtn').onclick=function(){window.open('/api/enterprise/update','_blank');};
+$('addReleaseHistoryBtn').onclick=function(){run(async function(){await api('/api/admin/release-history',{method:'POST',body:JSON.stringify({version:$('releaseHistoryVersion').value,description:$('releaseHistoryDescription').value})});set('releaseHistoryVersion','');set('releaseHistoryDescription','');await loadAll();alert('版本记录已创建');});};
 document.body.onchange=function(e){var t=e.target;if(!t.dataset.multiId)return;var id=t.dataset.multiId;var value=t.dataset.multiValue;var set=new Set(multiValues[id]||[]);if(t.checked)set.add(value);else set.delete(value);multiValues[id]=Array.from(set);renderMultiSelect(id);$(id).classList.add('open');};
 document.body.onclick=function(e){var t=e.target;if(t.dataset.multiToggle){$(t.dataset.multiToggle).classList.toggle('open');return;}var a=t.dataset.act;if(!a)return;run(async function(){if(a==='viewGrants')showEmployeeGrants(t.dataset.code);if(a==='editEmployee')editEmployee(t.dataset.code);if(a==='copy')await copyCode(t.dataset.code);if(a==='toggle'){await api('/api/admin/employees/'+encodeURIComponent(t.dataset.code),{method:'PATCH',body:JSON.stringify({status:t.dataset.status==='active'?'disabled':'active'})});await loadAll();}if(a==='credits'){var v=prompt('新积分额度');if(v!==null){await api('/api/admin/employees/'+encodeURIComponent(t.dataset.code),{method:'PATCH',body:JSON.stringify({creditsLimit:Number(v)})});await loadAll();}}if(a==='deleteEmployee'){if(confirm('确定删除？')){await api('/api/admin/employees/'+encodeURIComponent(t.dataset.code),{method:'DELETE'});await loadAll();}}if(a==='editModel')editModel(t.dataset.id);if(a==='editMcp')editMcp(t.dataset.id);if(a==='editSkill')editSkill(t.dataset.id);if(a==='downloadBackup')downloadAdmin('/api/admin/backups/'+encodeURIComponent(t.dataset.name)+'/download',t.dataset.name);if(a==='delete'){if(confirm('确定删除？')){await api(t.dataset.path+'/'+encodeURIComponent(t.dataset.id),{method:'DELETE'});await loadAll();}}});};
 if($('skillBulkSelectAll')){$('skillBulkSelectAll').onclick=function(){document.querySelectorAll('[data-bulk-grant-employee]').forEach(function(x){x.checked=true;});};$('skillBulkClear').onclick=function(){document.querySelectorAll('[data-bulk-grant-employee]').forEach(function(x){x.checked=false;});};$('skillBulkCancel').onclick=function(){bulkGrant={type:'',id:''};renderBulkGrant();};$('skillBulkSave').onclick=function(){run(async function(){var configs=bulkGrantConfig();var cfg=configs[bulkGrant.type];if(!cfg||!bulkGrant.id)throw new Error('请选择要分配的授权对象');var codes=Array.from(document.querySelectorAll('[data-bulk-grant-employee]:checked')).map(function(x){return x.getAttribute('data-bulk-grant-employee');}).filter(Boolean);await api(cfg.path+'/'+encodeURIComponent(bulkGrant.id)+'/employees',{method:'PATCH',body:JSON.stringify({activationCodes:codes})});await loadAll();alert(cfg.title+'分配已保存');});};}
@@ -923,7 +1041,7 @@ function subjectPermissionIds(subject,mcp){var grants=subject.mcpPermissionGrant
 var activePermissionMcp='';
 function openMcpPermissionDialog(id){var mcp=state.mcpServers.find(function(x){return x.id===id;});if(!mcp)return;activePermissionMcp=id;$('mcpPermissionTitle').textContent=mcp.name+' - 细分权限';var subjects=[];(state.departments||[]).filter(function(x){return(x.allowedMcpServerIds||[]).indexOf(id)>=0;}).forEach(function(x){subjects.push({type:'department',key:x.id,label:'部门：'+x.name,data:x});});(state.employees||[]).filter(function(x){return(x.allowedMcpServerIds||[]).indexOf(id)>=0;}).forEach(function(x){subjects.push({type:'employee',key:x.activationCode,label:'员工：'+x.employeeName,data:x});});$('mcpPermissionSubjects').innerHTML=subjects.length?subjects.map(function(subject){var selectedIds=subjectPermissionIds(subject.data,mcp);return'<div class="form-panel" style="display:block;margin-bottom:10px"><strong>'+esc(subject.label)+'</strong><div class="multi-select" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px">'+mcp.permissionOptions.map(function(option){return'<label><input type="checkbox" data-permission-subject="'+subject.type+'" data-subject-id="'+esc(subject.key)+'" data-permission-id="'+esc(option.id)+'" '+(selectedIds.indexOf(option.id)>=0?'checked':'')+'> '+esc(option.name)+'</label>';}).join('')+'</div></div>';}).join(''):'<div class="hint">请先通过“分配员工”给员工或部门授权这个 MCP。</div>';$('mcpPermissionDialog').showModal();}
 initMcpPermissionUi();
-function initEmployeeMcpPermissionUi(){var form=$('employeeForm');var panel=document.createElement('div');panel.style.marginTop='12px';panel.innerHTML='<label>兜知2.0 楼层权限</label><div class="hint">直接设置当前员工可以访问的营运楼层；默认全部勾选，个人选择优先于部门权限。</div><div id="employeeMcpPermissions" style="margin-top:8px"></div>';form.insertBefore(panel,form.lastElementChild);}
+function initEmployeeMcpPermissionUi(){var form=$('employeeForm');var panel=document.createElement('div');panel.style.marginTop='12px';panel.innerHTML='<label>兜知2.0 楼层权限</label><div class="hint">直接设置当前员工可以访问的营运楼层；默认全部勾选，仅按个人权限生效。</div><div id="employeeMcpPermissions" style="margin-top:8px"></div>';form.insertBefore(panel,form.lastElementChild);}
 function renderEmployeeMcpPermissions(employee){var mcps=(state.mcpServers||[]).filter(function(mcp){return(mcp.permissionOptions||[]).length;});$('employeeMcpPermissions').innerHTML=mcps.length?mcps.map(function(mcp){var grants=employee&&employee.mcpPermissionGrants||{};var selectedIds=Object.prototype.hasOwnProperty.call(grants,mcp.id)?grants[mcp.id]:mcp.permissionOptions.map(function(x){return x.id;});return'<div class="form-panel" style="display:block;margin-bottom:10px"><strong>'+esc(mcp.name)+'</strong><div class="multi-select" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px">'+mcp.permissionOptions.map(function(option){return'<label><input type="checkbox" data-employee-mcp="'+esc(mcp.id)+'" data-employee-permission="'+esc(option.id)+'" '+(selectedIds.indexOf(option.id)>=0?'checked':'')+'> '+esc(option.name)+'</label>';}).join('')+'</div></div>';}).join(''):'<div class="hint">尚未配置需要细分权限的企业 MCP。</div>';}
 function employeeMcpPermissionPayload(){var result={};document.querySelectorAll('[data-employee-mcp]').forEach(function(input){var id=input.dataset.employeeMcp;if(!result[id])result[id]=[];if(input.checked)result[id].push(input.dataset.employeePermission);});return result;}
 function employeePayload(){return{employeeName:$('employeeName').value,employeeId:$('employeeId').value,creditsLimit:Number($('creditsLimit').value),notes:$('notes').value,departmentId:$('employeeDepartment').value,allowedModelProviderIds:selected('employeeModels'),allowedMcpServerIds:selected('employeeMcps'),allowedSkillIds:selected('employeeSkills'),mcpPermissionGrants:employeeMcpPermissionPayload()};}
@@ -934,7 +1052,7 @@ function initEmployeeFilters(){var panel=document.createElement('div');panel.cla
 renderEmployees=function(){var employees=filteredEmployees();var total=employees.length;var pages=Math.max(1,Math.ceil(total/employeePageSize));employeePage=Math.min(Math.max(1,employeePage),pages);var start=(employeePage-1)*employeePageSize;var rows=employees.slice(start,start+employeePageSize);$('employeeRows').innerHTML=rows.map(function(e){return '<tr><td>'+esc(e.status)+'</td><td><code>'+esc(e.activationCode)+'</code></td><td>'+esc(e.employeeName)+'<br><code>'+esc(e.employeeId)+'</code><br><span class="pill">'+esc(departmentName(e.departmentId))+'</span></td><td>'+esc(Math.max(0,(e.creditsLimit||0)-(e.creditsUsed||0)))+'/'+esc(e.creditsLimit||0)+'<br><button class="secondary" data-act="credits" data-code="'+esc(e.activationCode)+'">改积分</button></td><td><code>'+esc(e.lastSeenClientVersion||e.clientVersion||'-')+'</code><br>'+esc(e.lastSeenClientVersionAt||'-')+'</td><td><code>'+esc(e.deviceToken||'-')+'</code><br>'+esc(e.lastUsedAt||'-')+'</td><td><div class="row"><button class="secondary" data-act="viewGrants" data-code="'+esc(e.activationCode)+'">授权</button><button class="secondary" data-act="editEmployee" data-code="'+esc(e.activationCode)+'">编辑</button><button class="secondary" data-act="copy" data-code="'+esc(e.activationCode)+'">复制</button><button class="secondary" data-act="toggle" data-code="'+esc(e.activationCode)+'" data-status="'+esc(e.status)+'">'+(e.status==='active'?'禁用':'启用')+'</button><button class="danger" data-act="deleteEmployee" data-code="'+esc(e.activationCode)+'">删除</button></div></td></tr>';}).join('');var filterActive=employeeNameFilter.trim()||employeeDepartmentFilter.trim();$('employeePagerInfo').textContent=total?'第 '+employeePage+' / '+pages+' 页，'+(filterActive?'筛选到 ':'共 ')+total+' 人，当前显示 '+(start+1)+'-'+Math.min(start+rows.length,total):(filterActive?'没有符合筛选条件的员工':'暂无员工');$('employeePrevPage').disabled=employeePage<=1;$('employeeNextPage').disabled=employeePage>=pages;$('employeePageSize').value=String(employeePageSize);}
 initEmployeeFilters();
 initEmployeeMcpPermissionUi();
-showEmployeeGrants=function(code){var e=state.employees.find(function(x){return x.activationCode===code;});if(!e)return;var floorIds=e.effectiveMcpPermissions&&e.effectiveMcpPermissions['dz2.0']||[];var floorNames=operationPermissionPreset.filter(function(option){return floorIds.indexOf(option.id)>=0;}).map(function(option){return option.name;});$('permissionDialogTitle').textContent=(e.employeeName||e.employeeId)+' 的有效授权';$('permissionDialogBody').innerHTML='<div class="formula"><b>所属部门：</b>'+esc(departmentName(e.departmentId))+'<br>以下权限为个人与部门层级授权合并后的结果。</div>'+grantGroup('模型',e.effectiveAllowedModelProviderIds||e.allowedModelProviderIds,state.modelProviders)+grantGroup('MCP',e.effectiveAllowedMcpServerIds||e.allowedMcpServerIds,state.mcpServers)+(floorIds.length?'<div class="permission-group"><b>兜知2.0 楼层权限</b><div class="permission-items">'+floorNames.map(function(name){return'<span class="pill">'+esc(name)+'</span>';}).join('')+'</div></div>':'')+grantGroup('技能',e.effectiveAllowedSkillIds||e.allowedSkillIds,state.skills);$('permissionDialog').showModal();};
+showEmployeeGrants=function(code){var e=state.employees.find(function(x){return x.activationCode===code;});if(!e)return;var floorIds=e.effectiveMcpPermissions&&e.effectiveMcpPermissions['dz2.0']||[];var floorNames=operationPermissionPreset.filter(function(option){return floorIds.indexOf(option.id)>=0;}).map(function(option){return option.name;});$('permissionDialogTitle').textContent=(e.employeeName||e.employeeId)+' 的个人授权';$('permissionDialogBody').innerHTML='<div class="formula"><b>所属部门：</b>'+esc(departmentName(e.departmentId))+'<br>部门仅用于人员归属，以下权限全部按个人授权生效。</div>'+grantGroup('模型',e.allowedModelProviderIds,state.modelProviders)+grantGroup('MCP',e.allowedMcpServerIds,state.mcpServers)+(floorIds.length?'<div class="permission-group"><b>兜知2.0 楼层权限</b><div class="permission-items">'+floorNames.map(function(name){return'<span class="pill">'+esc(name)+'</span>';}).join('')+'</div></div>':'')+grantGroup('技能',e.allowedSkillIds,state.skills);$('permissionDialog').showModal();};
 var baseEditEmployee=editEmployee;editEmployee=function(code){baseEditEmployee(code);var employee=state.employees.find(function(x){return x.activationCode===code;});renderEmployeeMcpPermissions(employee);};
 var baseClearEmployee=clearEmployee;clearEmployee=function(){baseClearEmployee();renderEmployeeMcpPermissions(null);};
 $('addEmployeeBtn').onclick=function(){run(async function(){await api('/api/admin/employees',{method:'POST',body:JSON.stringify(employeePayload())});clearEmployee();employeePage=1;await loadAll();});};
@@ -987,21 +1105,12 @@ const assignEmployeeGrant = (employees, grantKey, itemId, activationCodes) => {
   return assigned;
 };
 
-const assignDepartmentGrant = (departments, grantKey, itemId, departmentIds) => {
+const employeeCodesInDepartments = (data, departmentIds) => {
   const selectedIds = new Set(list(departmentIds));
-  let assigned = 0;
-  for (const department of departments) {
-    const grants = new Set(list(department[grantKey]));
-    if (selectedIds.has(department.id)) {
-      grants.add(itemId);
-      assigned += 1;
-    } else {
-      grants.delete(itemId);
-    }
-    department[grantKey] = [...grants];
-    department.updatedAt = nowIso();
-  }
-  return assigned;
+  if (selectedIds.size === 0) return [];
+  return data.employees.filter(employee => (
+    departmentChain(data, employee.departmentId).some(department => selectedIds.has(department.id))
+  )).map(employee => employee.activationCode);
 };
 
 const normalizeDepartment = (body, existing = {}) => ({
@@ -1103,6 +1212,75 @@ const handleAdmin = async (req, res, url, data) => {
     writeData(data);
     return ok(res, redactAsr(data.asr)), true;
   }
+  if (url.pathname === '/api/admin/agent-memory' && req.method === 'POST') {
+    const body = await readBody(req);
+    data.agentMemory = normalizeAgentMemory(body, data.agentMemory);
+    writeData(data);
+    return ok(res, redactAgentMemory(data.agentMemory)), true;
+  }
+  if (url.pathname === '/api/admin/agent-memory/test' && req.method === 'POST') {
+    const body = await readBody(req);
+    const config = normalizeAgentMemory(body, data.agentMemory);
+    if (!config.coreUrl) return ok(res, { ok: false, message: '请填写 Memory Core 地址。' }), true;
+    if (!config.adminUserKey) return ok(res, { ok: false, message: '请填写系统管理员 User_Key。' }), true;
+    if (!config.teamId) {
+      return ok(res, { ok: false, message: '请填写 Team ID。' }), true;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), AGENT_MEMORY_CONNECTION_TIMEOUT_MS);
+    try {
+      const metadataResponse = await fetch(`${config.coreUrl}/v3/meta/user/list`, {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          'content-type': 'application/json',
+          'x-tdai-service-id': config.serviceId,
+          'x-tdai-user-key': config.adminUserKey,
+        },
+        body: JSON.stringify({ limit: 1, offset: 0 }),
+      });
+      const metadataText = await metadataResponse.text();
+      let metadataBody = {};
+      try { metadataBody = metadataText ? JSON.parse(metadataText) : {}; } catch {}
+      if (!metadataResponse.ok || Number(metadataBody.code) !== 0) {
+        return ok(res, {
+          ok: false,
+          status: metadataResponse.status,
+          message: metadataBody.message || metadataText.slice(0, 300) || 'Memory Core 管理接口校验失败。',
+        }), true;
+      }
+      return ok(res, {
+        ok: true,
+        status: metadataResponse.status,
+        message: 'Memory Core 管理接口可用；所有模型会自动使用员工独立记忆。',
+      }), true;
+    } catch (error) {
+      return ok(res, {
+        ok: false,
+        message: error?.name === 'AbortError' ? '连接超时。' : String(error?.message || error),
+      }), true;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  const agentMemoryAuditMatch = url.pathname.match(/^\/api\/admin\/agent-memory\/audit\/([^/]+)$/);
+  if (agentMemoryAuditMatch && req.method === 'GET') {
+    const employeeId = decodeURIComponent(agentMemoryAuditMatch[1]);
+    const employee = data.employees.find(item => item.employeeId === employeeId);
+    if (!employee) return fail(res, 404, 'Employee not found.'), true;
+    const config = normalizeAgentMemory(data.agentMemory);
+    if (!config.enabled || !config.chatMemoryEnabled || !redactAgentMemory(config).configured) {
+      return fail(res, 400, '员工对话记忆未启用，当前不会读取 L0-L3。'), true;
+    }
+    try {
+      const mapping = await ensureAgentMemoryEmployee(data, employee);
+      const layers = await readAgentMemoryAudit({ config, employee, mapping });
+      return ok(res, { employeeId, employeeName: employee.employeeName, ...layers }), true;
+    } catch (error) {
+      console.error(`[Agent Memory] admin audit failed for ${employeeId}:`, error);
+      return fail(res, 502, String(error?.message || error)), true;
+    }
+  }
   if (url.pathname === '/api/admin/export' && req.method === 'GET') {
     sendJsonDownload(res, `enterprise-data-${backupTimestamp()}.json`, data);
     return true;
@@ -1124,6 +1302,17 @@ const handleAdmin = async (req, res, url, data) => {
     data.release = normalizeRelease(body, data.release);
     writeData(data);
     return ok(res, data.release), true;
+  }
+  if (url.pathname === '/api/admin/release-history' && req.method === 'POST') {
+    const body = await readBody(req);
+    try {
+      const entry = createReleaseHistoryEntry(body);
+      data.releaseHistory.unshift(entry);
+      writeData(data);
+      return ok(res, entry), true;
+    } catch (error) {
+      return fail(res, 400, String(error?.message || error)), true;
+    }
   }
   if (url.pathname === '/api/admin/pinyin' && req.method === 'GET') {
     const name = url.searchParams.get('name') || '';
@@ -1310,23 +1499,21 @@ const handleAdmin = async (req, res, url, data) => {
       const itemId = decodeURIComponent(assignmentMatch[1]);
       if (!collection.some(item => item.id === itemId)) return fail(res, 404, '授权对象不存在。'), true;
       const body = await readBody(req);
+      const activationCodes = [
+        ...list(body.activationCodes ?? body.employeeActivationCodes ?? body.employeeCodes),
+        ...employeeCodesInDepartments(data, body.departmentIds),
+      ];
       const assignedEmployees = assignEmployeeGrant(
         data.employees,
         grantKey,
         itemId,
-        body.activationCodes ?? body.employeeActivationCodes ?? body.employeeCodes,
-      );
-      const assignedDepartments = assignDepartmentGrant(
-        data.departments,
-        grantKey,
-        itemId,
-        body.departmentIds,
+        activationCodes,
       );
       writeData(data);
       return ok(res, {
         [resultKey]: itemId,
         assignedEmployees,
-        assignedDepartments,
+        assignedDepartments: 0,
         employees: data.employees.map(employee => employeeView(employee, data)),
         departments: data.departments.map(departmentView),
       }), true;
@@ -1714,6 +1901,95 @@ const server = http.createServer(async (req, res) => {
         remainingSecondsToday: 86400,
         limitSecondsToday: 86400,
       });
+    }
+    const enterpriseModelProxyMatch = url.pathname.match(/^\/api\/enterprise\/model-proxy\/([^/]+)\/(.+)$/);
+    if (enterpriseModelProxyMatch && req.method === 'POST') {
+      const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
+      const employee = findEmployeeByToken(data, token);
+      if (!employee) return fail(res, 401, 'Enterprise session is invalid.');
+      if (employee.status !== 'active') return fail(res, 403, 'Activation code is disabled.');
+      const providerId = decodeURIComponent(enterpriseModelProxyMatch[1]);
+      const grants = effectiveEmployeeGrants(data, employee);
+      if (!grants.allowedModelProviderIds.includes(providerId)) return fail(res, 403, 'Model provider is not allowed.'), true;
+      const provider = data.modelProviders.find(item => item.id === providerId && item.enabled !== false);
+      if (!provider) return fail(res, 404, 'Model provider not found.'), true;
+      const body = await readBody(req);
+      const modelId = String(body.model || '').trim();
+      if (!provider.models?.some(model => model.id === modelId)) return fail(res, 403, 'Model is not allowed.'), true;
+
+      let upstreamBody = body;
+      let employeeMapping = null;
+      let memoryUserText = '';
+      const config = normalizeAgentMemory(data.agentMemory);
+      if (config.enabled && config.chatMemoryEnabled && redactAgentMemory(config).configured) {
+        try {
+          employeeMapping = await ensureAgentMemoryEmployee(data, employee);
+          memoryUserText = latestUserText(body);
+          const recalledText = await recallAgentMemory({
+            config,
+            employee,
+            mapping: employeeMapping,
+            query: memoryUserText,
+          });
+          upstreamBody = injectAgentMemoryContext(body, recalledText);
+        } catch (error) {
+          console.warn(`[Agent Memory] employee memory unavailable for ${employee.employeeId}:`, error);
+        }
+      }
+
+      const upstreamUrl = upstreamModelUrl(provider.baseUrl, enterpriseModelProxyMatch[2]);
+      const controller = new AbortController();
+      res.once('close', () => {
+        if (!res.writableEnded) controller.abort();
+      });
+      try {
+        const upstream = await fetch(upstreamUrl, {
+          method: 'POST',
+          signal: controller.signal,
+          headers: {
+            'content-type': 'application/json',
+            accept: req.headers.accept || 'application/json',
+            authorization: `Bearer ${provider.apiKey}`,
+            'x-api-key': provider.apiKey,
+            ...(req.headers['anthropic-version'] ? { 'anthropic-version': req.headers['anthropic-version'] } : {}),
+            ...(req.headers['anthropic-beta'] ? { 'anthropic-beta': req.headers['anthropic-beta'] } : {}),
+          },
+          body: JSON.stringify(upstreamBody),
+        });
+        res.writeHead(upstream.status, {
+          'content-type': upstream.headers.get('content-type') || 'application/json; charset=utf-8',
+        });
+        if (!upstream.body) return res.end();
+        const reader = upstream.body.getReader();
+        const memoryResponseChunks = [];
+        let memoryResponseBytes = 0;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (employeeMapping && memoryResponseBytes < 2 * 1024 * 1024) {
+            memoryResponseChunks.push(Buffer.from(value));
+            memoryResponseBytes += value.byteLength;
+          }
+          res.write(Buffer.from(value));
+        }
+        res.end();
+        if (employeeMapping && memoryUserText) {
+          const responseText = Buffer.concat(memoryResponseChunks).toString('utf8');
+          void rememberAgentMemoryTurn({
+              config,
+              employee,
+              mapping: employeeMapping,
+              userText: memoryUserText,
+              assistantText: assistantTextFromResponse(responseText, upstream.headers.get('content-type') || ''),
+            }).catch(error => {
+            console.warn(`[Agent Memory] failed to save conversation for ${employee.employeeId}:`, error);
+          });
+        }
+        return;
+      } catch (error) {
+        if (!res.headersSent) return fail(res, 502, error instanceof Error ? error.message : 'Enterprise model request failed.');
+        return res.end();
+      }
     }
     const skillMatch = url.pathname.match(/^\/api\/enterprise\/skills\/([^/]+)\/download$/);
     if (skillMatch && req.method === 'GET') {

@@ -14,6 +14,7 @@ import type {
   EnterpriseStatus,
   EnterpriseUser,
 } from '../../shared/enterprise/constants';
+import { EnterpriseEnvironment } from '../../shared/enterprise/constants';
 import { ProviderRegistry } from '../../shared/providers';
 import type { SqliteStore } from '../sqliteStore';
 
@@ -29,6 +30,13 @@ type ApiEnvelope = {
   message?: string;
   data?: unknown;
 };
+
+class EnterpriseRequestError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = 'EnterpriseRequestError';
+  }
+}
 
 const nowIso = (): string => new Date().toISOString();
 
@@ -90,7 +98,22 @@ export class LFClawEnterpriseAccess {
   constructor(
     private readonly store: SqliteStore,
     private readonly getClientVersion: () => string = () => app.getVersion(),
-  ) {}
+  ) {
+    this.syncWorkspaceScope(this.store.get<EnterpriseCurrentAccess>(ENTERPRISE_ACCESS_KEY));
+  }
+
+  private syncWorkspaceScope(access: EnterpriseCurrentAccess | null | undefined): void {
+    const userId = access?.user?.userId?.trim();
+    if (!userId) {
+      delete process.env[EnterpriseEnvironment.WorkspaceScope];
+      return;
+    }
+    process.env[EnterpriseEnvironment.WorkspaceScope] = crypto
+      .createHash('sha256')
+      .update(userId)
+      .digest('hex')
+      .slice(0, 16);
+  }
 
   getServerUrl(): string {
     return normalizeUrl(process.env[ENTERPRISE_SERVER_URL_ENV])
@@ -118,8 +141,13 @@ export class LFClawEnterpriseAccess {
 
   getCurrentAccess(): EnterpriseCurrentAccess | null {
     const access = this.store.get<EnterpriseCurrentAccess>(ENTERPRISE_ACCESS_KEY);
-    if (!access || !access.accessToken || !access.activationCode) return null;
-    return this.normalizeAccess(access);
+    if (!access || !access.accessToken || !access.activationCode) {
+      this.syncWorkspaceScope(null);
+      return null;
+    }
+    const normalized = this.normalizeAccess(access);
+    this.syncWorkspaceScope(normalized);
+    return normalized;
   }
 
   async activate(input: EnterpriseActivateInput): Promise<EnterpriseCurrentAccess> {
@@ -148,6 +176,7 @@ export class LFClawEnterpriseAccess {
 
     const access = this.normalizeAccessFromPayload(serverUrl, activationCode, payload);
     this.store.set(ENTERPRISE_ACCESS_KEY, access);
+    this.syncWorkspaceScope(access);
     return access;
   }
 
@@ -166,6 +195,7 @@ export class LFClawEnterpriseAccess {
       refreshToken: current.refreshToken,
     });
     this.store.set(ENTERPRISE_ACCESS_KEY, synced);
+    this.syncWorkspaceScope(synced);
     return synced;
   }
 
@@ -181,7 +211,9 @@ export class LFClawEnterpriseAccess {
       }
       return synced;
     } catch (error) {
-      this.deactivateCurrent();
+      if (error instanceof EnterpriseRequestError && (error.status === 401 || error.status === 403)) {
+        this.deactivateCurrent();
+      }
       throw error instanceof Error
         ? error
         : new Error('企业激活状态校验失败，请重新激活。');
@@ -190,6 +222,7 @@ export class LFClawEnterpriseAccess {
 
   deactivateCurrent(): void {
     this.store.delete(ENTERPRISE_ACCESS_KEY);
+    this.syncWorkspaceScope(null);
   }
 
   async reportUsage(input: {
@@ -295,7 +328,12 @@ export class LFClawEnterpriseAccess {
     const text = await response.text();
     const parsed = text ? JSON.parse(text) as ApiEnvelope | Record<string, unknown> : {};
     if (!response.ok) {
-      throw new Error(isRecord(parsed) && typeof parsed.message === 'string' ? parsed.message : `Enterprise server returned HTTP ${response.status}.`);
+      throw new EnterpriseRequestError(
+        isRecord(parsed) && typeof parsed.message === 'string'
+          ? parsed.message
+          : `Enterprise server returned HTTP ${response.status}.`,
+        response.status,
+      );
     }
     if (isRecord(parsed) && typeof parsed.code === 'number') {
       if (parsed.code !== 0) {

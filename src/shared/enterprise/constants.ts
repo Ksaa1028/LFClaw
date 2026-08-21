@@ -6,6 +6,10 @@ export const EnterpriseIpcChannel = {
   SetServerUrl: 'enterprise:setServerUrl',
 } as const;
 
+export const EnterpriseEnvironment = {
+  WorkspaceScope: 'LFCLAW_ENTERPRISE_WORKSPACE_SCOPE',
+} as const;
+
 export type EnterpriseIpcChannel = typeof EnterpriseIpcChannel[keyof typeof EnterpriseIpcChannel];
 
 export interface EnterpriseQuota {

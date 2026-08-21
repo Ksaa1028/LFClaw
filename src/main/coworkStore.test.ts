@@ -23,6 +23,7 @@ import BetterSqlite3 from 'better-sqlite3';
 import { CoworkSystemMessageKind } from '../common/coworkSystemMessages';
 import { AgentAvatarSvg, DefaultAgentAvatarIcon, encodeAgentAvatarIcon } from '../shared/agent/avatar';
 import { CoworkForkMode } from '../shared/cowork/constants';
+import { EnterpriseEnvironment } from '../shared/enterprise/constants';
 import { CoworkStore } from './coworkStore';
 import { ContinuityCapsuleSource } from './libs/agentEngine/coworkContinuityCapsule';
 
@@ -59,6 +60,7 @@ function setupDb(): void {
       fork_git_branch TEXT,
       fork_git_base_ref TEXT,
       goal_json TEXT,
+      owner_scope TEXT NOT NULL DEFAULT '',
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
@@ -158,12 +160,13 @@ function insertSession(
   updatedAt = Date.now(),
   pinned = 0,
   pinOrder: number | null = null,
+  ownerScope = '',
 ): void {
   const now = updatedAt;
   db.prepare(
-    `INSERT INTO cowork_sessions (id, title, claude_session_id, status, pinned, pin_order, cwd, system_prompt, execution_mode, active_skill_ids, agent_id, created_at, updated_at)
-     VALUES (?, ?, NULL, 'idle', ?, ?, '/tmp', '', 'local', '[]', ?, ?, ?)`,
-  ).run(id, title, pinned, pinOrder, agentId, now, now);
+    `INSERT INTO cowork_sessions (id, title, claude_session_id, status, pinned, pin_order, cwd, system_prompt, execution_mode, active_skill_ids, agent_id, owner_scope, created_at, updated_at)
+     VALUES (?, ?, NULL, 'idle', ?, ?, '/tmp', '', 'local', '[]', ?, ?, ?, ?)`,
+  ).run(id, title, pinned, pinOrder, agentId, ownerScope, now, now);
 }
 
 /** Insert a message row directly, bypassing CoworkStore.addMessage. */
@@ -187,6 +190,7 @@ function insertMessage(
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
+  delete process.env[EnterpriseEnvironment.WorkspaceScope];
   setupDb();
 });
 
@@ -287,6 +291,37 @@ test('searchSessions can be limited to one agent', () => {
 
   expect(results.map((session) => session.id)).toEqual(['writer-task']);
   expect(store.countSearchSessions({ query: 'scoped search', agentId: 'writer' })).toBe(1);
+});
+
+test('enterprise employee scope isolates sessions and conversation search', () => {
+  process.env[EnterpriseEnvironment.WorkspaceScope] = 'employee-a';
+  const first = store.createSession('Employee A private fruit', '/tmp/a');
+  store.addMessage(first.id, {
+    id: 'employee-a-msg',
+    type: 'user',
+    content: '隔离测试饮品是乌龙茶，编号 LF-9186',
+    createdAt: 1000,
+  });
+
+  process.env[EnterpriseEnvironment.WorkspaceScope] = 'employee-b';
+  const second = store.createSession('Employee B private fruit', '/tmp/b');
+  store.addMessage(second.id, {
+    id: 'employee-b-msg',
+    type: 'user',
+    content: '隔离测试饮品是茉莉花茶，编号 LQ-3729',
+    createdAt: 2000,
+  });
+
+  expect(store.getSession(first.id)).toBeNull();
+  expect(store.listSessions(20, 0).map(session => session.id)).toEqual([second.id]);
+  expect(store.searchSessions({ query: 'Employee A', limit: 20, offset: 0 })).toEqual([]);
+  expect(store.conversationSearch({ query: '乌龙茶', maxResults: 5 })).toEqual([]);
+  expect(store.conversationSearch({ query: '茉莉花茶', maxResults: 5 }).map(result => result.sessionId)).toEqual([second.id]);
+
+  process.env[EnterpriseEnvironment.WorkspaceScope] = 'employee-a';
+  expect(store.getSession(first.id)?.title).toBe('Employee A private fruit');
+  expect(store.listSessions(20, 0).map(session => session.id)).toEqual([first.id]);
+  expect(store.conversationSearch({ query: '乌龙茶', maxResults: 5 }).map(result => result.sessionId)).toEqual([first.id]);
 });
 
 test('continuity capsule upsert stores one rolling capsule per session', () => {

@@ -81,6 +81,7 @@ import { DialogIpc } from '../shared/dialog/constants';
 import {
   type EnterpriseActivateInput,
   type EnterpriseCurrentAccess,
+  EnterpriseEnvironment,
   EnterpriseIpcChannel,
 } from '../shared/enterprise/constants';
 import {
@@ -282,6 +283,7 @@ import {
   addMemoryEntry,
   deleteMemoryEntry,
   ensureDefaultIdentity,
+  getAgentWorkspacePath,
   getMainAgentWorkspacePath,
   migrateSqliteToMemoryMd,
   readBootstrapFile,
@@ -3410,7 +3412,13 @@ const syncEnterpriseModelProvidersToAppConfig = (
   const store = getStore();
   const current = store.get<AppConfigSettings>('app_config') ?? {};
   const currentProviders = isRecordValue(current.providers) ? current.providers : {};
-  const nextProviders: Record<string, unknown> = { ...currentProviders };
+  const nextProviders: Record<string, unknown> = Object.fromEntries(
+    Object.entries(currentProviders).filter(([, value]) => {
+      if (!isRecordValue(value)) return true;
+      const baseUrl = typeof value.baseUrl === 'string' ? value.baseUrl : '';
+      return !baseUrl.includes('/api/enterprise/agent-memory/');
+    }),
+  );
   const resolveEnterpriseModelSupportsImage = (providerName: string, model: EnterpriseCurrentAccess['policy']['modelProviders'][number]['models'][number]): boolean => (
     ProviderRegistry.resolveModelSupportsImage(providerName, model.id, model.supportsImage === true)
   );
@@ -4202,6 +4210,10 @@ if (!gotTheLock) {
       await syncEnterpriseSkillsToLocalStore(access).catch(error => {
         console.warn('[Enterprise] failed to sync enterprise skills during activation:', error);
       });
+      await syncOpenClawConfig({
+        reason: 'enterprise-employee-activated',
+        restartGatewayIfRunning: true,
+      });
       notifyEnterprisePolicyChanged();
       return { success: true, access };
     } catch (error) {
@@ -4211,13 +4223,25 @@ if (!gotTheLock) {
 
   ipcMain.handle(EnterpriseIpcChannel.SyncPolicy, async () => {
     try {
+      const previousWorkspaceScope = process.env[EnterpriseEnvironment.WorkspaceScope] || '';
       const access = await getLFClawEnterpriseAccess().syncPolicy();
+      const nextWorkspaceScope = process.env[EnterpriseEnvironment.WorkspaceScope] || '';
       syncEnterpriseModelProvidersToAppConfig(access);
       syncEnterpriseMcpServersToLocalStore(access);
       await syncEnterpriseSkillsToLocalStore(access).catch(error => {
         console.warn('[Enterprise] failed to sync enterprise skills during policy refresh:', error);
       });
-      notifyEnterprisePolicyChanged();
+      await syncOpenClawConfig({
+        reason: previousWorkspaceScope === nextWorkspaceScope
+          ? 'enterprise-policy-updated'
+          : 'enterprise-employee-changed',
+        restartGatewayIfRunning: previousWorkspaceScope !== nextWorkspaceScope,
+      });
+      BrowserWindow.getAllWindows().forEach(win => {
+        if (!win.isDestroyed()) {
+          win.webContents.send('auth:quotaChanged');
+        }
+      });
       return { success: true, access };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to sync enterprise policy' };
@@ -4227,6 +4251,10 @@ if (!gotTheLock) {
   ipcMain.handle(EnterpriseIpcChannel.DeactivateCurrent, async () => {
     try {
       getLFClawEnterpriseAccess().deactivateCurrent();
+      await syncOpenClawConfig({
+        reason: 'enterprise-employee-deactivated',
+        restartGatewayIfRunning: true,
+      });
       return { success: true };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to deactivate' };
@@ -7738,9 +7766,7 @@ if (!gotTheLock) {
 
   const resolveAgentWorkspacePath = (agentId: string): string => {
     const stateDir = getOpenClawEngineManager().getStateDir();
-    return agentId === AgentId.Main
-      ? getMainAgentWorkspacePath(stateDir)
-      : path.join(stateDir, `workspace-${agentId}`);
+    return getAgentWorkspacePath(stateDir, agentId);
   };
 
   const resolveExistingAgentWorkspacePath = (agentId?: string): string => {

@@ -21,6 +21,9 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
+import { AgentId } from '../../shared/agent';
+import { EnterpriseEnvironment } from '../../shared/enterprise/constants';
+
 const TAG = '[OpenClaw Memory]';
 
 // ---------------------------------------------------------------------------
@@ -52,7 +55,16 @@ const DEFAULT_OPENCLAW_WORKSPACE = path.join(os.homedir(), '.openclaw', 'workspa
  * decoupled from the user-visible "working directory" (which is only used as session cwd).
  */
 export function getMainAgentWorkspacePath(stateDir: string): string {
-  return path.join(stateDir, 'workspace-main');
+  return getAgentWorkspacePath(stateDir, AgentId.Main);
+}
+
+export function getAgentWorkspacePath(stateDir: string, agentId: string): string {
+  const normalizedAgentId = String(agentId || AgentId.Main).trim() || AgentId.Main;
+  const scope = String(process.env[EnterpriseEnvironment.WorkspaceScope] || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, '');
+  const workspaceName = `workspace-${normalizedAgentId}`;
+  return path.join(stateDir, scope ? `${workspaceName}-enterprise-${scope}` : workspaceName);
 }
 
 /**

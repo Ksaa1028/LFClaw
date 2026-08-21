@@ -8,9 +8,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { EnterpriseEnvironment } from '../../shared/enterprise/constants';
 import {
   addMemoryEntry,
   deleteMemoryEntry,
+  getAgentWorkspacePath,
+  getMainAgentWorkspacePath,
   migrateSqliteToMemoryMd,
   parseMemoryMd,
   readMemoryFileRaw,
@@ -34,6 +37,36 @@ function cleanupDir(dir: string) {
 function memFilePath(dir: string) {
   return path.join(dir, 'MEMORY.md');
 }
+
+// ==================== enterprise workspace isolation ====================
+
+test('getAgentWorkspacePath: keeps the legacy workspace when no enterprise employee is active', () => {
+  const previousScope = process.env[EnterpriseEnvironment.WorkspaceScope];
+  delete process.env[EnterpriseEnvironment.WorkspaceScope];
+  try {
+    expect(getMainAgentWorkspacePath('/state')).toBe(path.join('/state', 'workspace-main'));
+    expect(getAgentWorkspacePath('/state', 'finance')).toBe(path.join('/state', 'workspace-finance'));
+  } finally {
+    if (previousScope === undefined) delete process.env[EnterpriseEnvironment.WorkspaceScope];
+    else process.env[EnterpriseEnvironment.WorkspaceScope] = previousScope;
+  }
+});
+
+test('getAgentWorkspacePath: isolates every agent workspace by enterprise employee scope', () => {
+  const previousScope = process.env[EnterpriseEnvironment.WorkspaceScope];
+  process.env[EnterpriseEnvironment.WorkspaceScope] = 'employee-a';
+  try {
+    expect(getMainAgentWorkspacePath('/state')).toBe(
+      path.join('/state', 'workspace-main-enterprise-employee-a'),
+    );
+    expect(getAgentWorkspacePath('/state', 'finance')).toBe(
+      path.join('/state', 'workspace-finance-enterprise-employee-a'),
+    );
+  } finally {
+    if (previousScope === undefined) delete process.env[EnterpriseEnvironment.WorkspaceScope];
+    else process.env[EnterpriseEnvironment.WorkspaceScope] = previousScope;
+  }
+});
 
 // ==================== parseMemoryMd ====================
 

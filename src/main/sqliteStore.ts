@@ -93,6 +93,7 @@ export class SqliteStore {
         fork_git_branch TEXT,
         fork_git_base_ref TEXT,
         goal_json TEXT,
+        owner_scope TEXT NOT NULL DEFAULT '',
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
@@ -398,6 +399,16 @@ export class SqliteStore {
         this.db.exec('ALTER TABLE cowork_sessions ADD COLUMN goal_json TEXT;');
         this.didRunMigration = true;
       }
+
+      if (!colNames.includes('owner_scope')) {
+        this.db.exec("ALTER TABLE cowork_sessions ADD COLUMN owner_scope TEXT NOT NULL DEFAULT '';");
+        this.didRunMigration = true;
+      }
+
+      this.db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_cowork_sessions_owner_scope_updated_at
+        ON cowork_sessions(owner_scope, updated_at DESC);
+      `);
 
       // Migration: Add sequence column to cowork_messages
       const msgColumns = this.db.pragma('table_info(cowork_messages)') as Array<{ name: string }>;

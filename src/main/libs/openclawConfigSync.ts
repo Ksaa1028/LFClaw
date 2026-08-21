@@ -46,7 +46,7 @@ import { parseChannelSessionKey } from './openclawChannelSessionSync';
 import { OpenClawConfigImpact } from './openclawConfigImpact';
 import type { OpenClawEngineManager } from './openclawEngineManager';
 import { repairHeartbeatFile, stripProactiveHeartbeatSection } from './openclawHeartbeatRepair';
-import { getMainAgentWorkspacePath } from './openclawMemoryFile';
+import { getAgentWorkspacePath, getMainAgentWorkspacePath } from './openclawMemoryFile';
 import { resolveOpenClawCatalogModelMaxTokens } from './openclawModelCatalog';
 
 const gwDiagTs = (): string => {
@@ -3377,7 +3377,7 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
     for (const agent of agents) {
       if (agent.id === 'main' || !agent.enabled) continue;
 
-      const agentWorkspace = path.join(stateDir, `workspace-${agent.id}`);
+      const agentWorkspace = getAgentWorkspacePath(stateDir, agent.id);
       try {
         ensureDir(agentWorkspace);
 

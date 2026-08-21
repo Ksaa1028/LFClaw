@@ -39,7 +39,7 @@ const directPermissionIds = (subject, mcp) => {
   return permissionOptionIds(mcp);
 };
 
-export const effectiveMcpPermissionIds = (data, employee, mcp, departmentChain) => {
+export const effectiveMcpPermissionIds = (_data, employee, mcp, _departmentChain) => {
   const options = permissionOptionIds(mcp);
   if (options.length === 0) return [];
   const employeeGrants = normalizeMcpPermissionGrants(employee?.mcpPermissionGrants);
@@ -49,15 +49,8 @@ export const effectiveMcpPermissionIds = (data, employee, mcp, departmentChain) 
     const valid = new Set(options);
     return employeeGrants[mcp.id].filter(id => valid.has(id));
   }
-  const result = new Set();
-  if (asList(employee?.allowedMcpServerIds).includes(mcp.id)) {
-    directPermissionIds(employee, mcp).forEach(id => result.add(id));
-  }
-  for (const department of departmentChain(data, employee?.departmentId)) {
-    if (!asList(department?.allowedMcpServerIds).includes(mcp.id)) continue;
-    directPermissionIds(department, mcp).forEach(id => result.add(id));
-  }
-  return options.filter(id => result.has(id));
+  if (!asList(employee?.allowedMcpServerIds).includes(mcp.id)) return [];
+  return directPermissionIds(employee, mcp);
 };
 
 const base64Url = value => Buffer.from(value).toString('base64url');

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { AgentId, DefaultAgentProfile, isDesignedAgentAvatarIcon,LegacyAgentName } from '../../shared/agent';
 import { OpenClawProviderId } from '../../shared/providers/constants';
 import type { Agent } from '../coworkStore';
+import { getAgentWorkspacePath } from './openclawMemoryFile';
 
 type BuildManagedAgentEntriesInput = {
   agents: Agent[];
@@ -274,7 +275,7 @@ export function buildManagedAgentEntries({
   return agents
     .filter((agent) => agent.id !== 'main' && agent.enabled)
     .map((agent) => buildAgentEntry(agent, fallbackPrimaryModel, stateDir
-      ? { workspace: path.join(stateDir, `workspace-${agent.id}`), availableProviders }
+      ? { workspace: getAgentWorkspacePath(stateDir, agent.id), availableProviders }
       : { availableProviders },
     ));
 }

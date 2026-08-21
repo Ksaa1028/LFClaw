@@ -41,11 +41,10 @@ test('explicit employee permissions can select multiple values', () => {
   assert.deepEqual(effectiveMcpPermissionIds({ departments: [] }, employee, mcp, chain), ['operation.floor.2']);
 });
 
-test('employee selection overrides broader department permissions', () => {
+test('department permissions do not grant an employee MCP access', () => {
   const departmentMcp = { id: 'operations', permissionOptions: mcp.permissionOptions };
   const employee = {
     departmentId: 'sales',
-    mcpPermissionGrants: { operations: ['operation.floor.2'] },
   };
   const departments = [{
     id: 'sales',
@@ -53,7 +52,7 @@ test('employee selection overrides broader department permissions', () => {
   }];
   assert.deepEqual(
     effectiveMcpPermissionIds({ departments }, employee, departmentMcp, () => departments),
-    ['operation.floor.2'],
+    [],
   );
 });
 
