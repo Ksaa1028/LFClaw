@@ -9,10 +9,7 @@ const mocks = vi.hoisted(() => ({
   quit: vi.fn(),
   relaunch: vi.fn(),
   getPath: vi.fn(),
-  launchWindowsUpdate: vi.fn(),
 }));
-
-vi.mock('./windowsUpdateLauncher', () => ({ launchWindowsUpdate: mocks.launchWindowsUpdate }));
 
 const cpMocks = vi.hoisted(() => ({
   exec: vi.fn(),
@@ -64,9 +61,8 @@ describe('Windows update install', () => {
   const originalPlatform = process.platform;
 
   beforeEach(() => {
-    mocks.launchWindowsUpdate.mockReset().mockResolvedValue(vi.fn());
     mocks.getPath.mockReturnValue('C:\\Program Files\\LFClaw\\LFClaw.exe');
-    mocks.openPath.mockReset();
+    mocks.openPath.mockReset().mockResolvedValue('');
     mocks.showItemInFolder.mockReset();
     mocks.quit.mockReset();
     Object.defineProperty(process, 'platform', { value: 'win32' });
@@ -85,33 +81,28 @@ describe('Windows update install', () => {
     vi.restoreAllMocks();
   });
 
-  test('starts a silent update worker and quits only after it is ready', async () => {
-    mocks.openPath.mockResolvedValue('');
-
+  test('opens the installer in the foreground and then quits', async () => {
     await installUpdate(INSTALLER_PATH);
 
-    expect(mocks.launchWindowsUpdate).toHaveBeenCalledWith(INSTALLER_PATH, 'C:\\Program Files\\LFClaw\\LFClaw.exe');
-    expect(mocks.openPath).not.toHaveBeenCalled();
+    expect(mocks.openPath).toHaveBeenCalledWith(INSTALLER_PATH);
     expect(mocks.quit).toHaveBeenCalledOnce();
     expect(mocks.showItemInFolder).not.toHaveBeenCalled();
   });
 
-  test('keeps the app running when elevation is cancelled', async () => {
-    mocks.launchWindowsUpdate.mockRejectedValue(new Error('The operation was canceled by the user.'));
+  test('reveals the installer and keeps the app running when opening fails', async () => {
+    mocks.openPath.mockResolvedValue('The operation was canceled by the user.');
 
     await expect(installUpdate(INSTALLER_PATH)).rejects.toThrow(
       'The operation was canceled by the user.',
     );
 
-    expect(mocks.showItemInFolder).not.toHaveBeenCalled();
+    expect(mocks.showItemInFolder).toHaveBeenCalledWith(INSTALLER_PATH);
     expect(mocks.quit).not.toHaveBeenCalled();
   });
 
-  test('cancels the waiting worker if work starts before quitting', async () => {
-    const cancel = vi.fn();
-    mocks.launchWindowsUpdate.mockResolvedValue(cancel);
+  test('does not open the installer if work starts before quitting', async () => {
     await expect(installUpdate(INSTALLER_PATH, () => { throw new Error('busy'); })).rejects.toThrow('busy');
-    expect(cancel).toHaveBeenCalledOnce();
+    expect(mocks.openPath).not.toHaveBeenCalled();
     expect(mocks.quit).not.toHaveBeenCalled();
   });
 

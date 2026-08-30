@@ -6,7 +6,6 @@ import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
 
 import { type AppUpdateSource } from '../../shared/appUpdate/constants';
-import { launchWindowsUpdate } from './windowsUpdateLauncher';
 
 export interface AppUpdateDownloadProgress {
   received: number;
@@ -873,13 +872,18 @@ async function installMacDmg(dmgPath: string): Promise<void> {
 }
 
 async function installWindowsNsis(exePath: string, beforeQuit: () => void): Promise<void> {
-  const cancel = await launchWindowsUpdate(exePath, app.getPath('exe'));
-  try {
-    beforeQuit();
-    console.log('[AppUpdate] Update worker ready; waiting for graceful application shutdown');
-    app.quit();
-  } catch (error) {
-    await cancel();
-    throw error;
+  // Use the original, reliable interactive installation flow. The user
+  // finishes the reinstall in the foreground installer; the installer keeps
+  // userData intact and only replaces application files after confirmation.
+  beforeQuit();
+  console.log(`[AppUpdate] Opening Windows installer in the foreground: ${exePath}`);
+  const launchError = await shell.openPath(exePath);
+  if (launchError) {
+    console.error(`[AppUpdate] Failed to open Windows installer: ${launchError}`);
+    shell.showItemInFolder(exePath);
+    throw new Error(launchError);
   }
+
+  console.log('[AppUpdate] Installer opened; quitting application');
+  app.quit();
 }
