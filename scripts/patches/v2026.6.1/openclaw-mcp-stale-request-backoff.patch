@@ -1,0 +1,26 @@
+diff --git a/src/agents/agent-bundle-mcp-runtime.ts b/src/agents/agent-bundle-mcp-runtime.ts
+--- a/src/agents/agent-bundle-mcp-runtime.ts
++++ b/src/agents/agent-bundle-mcp-runtime.ts
+@@ -536,8 +536,9 @@
+       // gateway restart. Do not replay this request because MCP tools may
+       // have side effects and the server might have processed it already.
+-      const recovered = await recoverServerConnection(serverName);
+-      if (!recovered) {
+-        recordServerToolFailure(serverName, nowMs);
+-      }
++      await recoverServerConnection(serverName);
++      // MCP_REQUEST_FAILURE_BACKOFF: reconnecting is not a successful request.
++      // Keep protection against repeatedly failing handlers; the next successful
++      // request clears the counter, and cooldown never deletes the conversation.
++      recordServerToolFailure(serverName, nowMs);
+       throw error;
+     }
+@@ -769,7 +770,5 @@
+     }
+     const recovered = sessions.has(serverName);
+-    if (recovered) {
+-      serverBackoff.delete(serverName);
+-    } else {
++    if (!recovered) {
+       // Do not cache a diagnostic-only catalog: retry the connection on the
+       // next request as soon as the remote service becomes available.

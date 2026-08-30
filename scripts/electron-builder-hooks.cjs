@@ -8,6 +8,7 @@ const { ensurePortablePythonRuntime, checkRuntimeHealth } = require('./setup-pyt
 const { syncLocalOpenClawExtensions } = require('./sync-local-openclaw-extensions.cjs');
 const { packMultipleSources } = require('./pack-openclaw-tar.cjs');
 const { DIST_DIFFS_EXTENSION_DIR, DIST_EXTENSIONS_DIR, summarizeGatewayAsarEntries } = require('./openclaw-runtime-packaging.cjs');
+const { assertRuntimeCurrent } = require('./verify-openclaw-runtime.cjs');
 
 function isWindowsTarget(context) {
   return context?.electronPlatformName === 'win32';
@@ -193,6 +194,8 @@ function ensureBundledLocalExtensions(runtimeRoot, buildHint) {
 function ensureBundledOpenClawRuntime(context) {
   const { runtimeRoot, targetId } = syncCurrentOpenClawRuntimeForTarget(context);
   const buildHint = getOpenClawRuntimeBuildHint(targetId);
+
+  assertRuntimeCurrent(path.join(__dirname, '..'), runtimeRoot, targetId);
 
   ensureBundledLocalExtensions(runtimeRoot, buildHint);
 

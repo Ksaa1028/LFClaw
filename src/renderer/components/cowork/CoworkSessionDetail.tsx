@@ -6,12 +6,14 @@ import {
   ExclamationTriangleIcon,
   PhotoIcon,
   QuestionMarkCircleIcon,
+  ShareIcon,
 } from '@heroicons/react/24/outline';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useDispatch, useSelector } from 'react-redux';
 
 import { stripGoalCommandPrefixForDisplay } from '../../../common/sessionTitle';
+import { ConversationShareEvent } from '../../../shared/conversationShare/constants';
 import { CoworkGoalStatus } from '../../../shared/cowork/goal';
 import type { CoworkImageAttachmentPreview } from '../../../shared/cowork/imageAttachments';
 import {
@@ -4651,6 +4653,20 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
               </div>
             </div>
           )}
+          {currentSession?.id && (
+            <button
+              type="button"
+              onClick={() => window.dispatchEvent(new CustomEvent(ConversationShareEvent.Compose, {
+                detail: { sessionId: currentSession.id },
+              }))}
+              className="non-draggable inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-sm text-secondary transition-colors hover:bg-surface-raised hover:text-foreground"
+              aria-label={i18nService.t('shareConversation')}
+              title={i18nService.t('shareConversation')}
+            >
+              <ShareIcon className="h-4 w-4" />
+              <span>{i18nService.t('shareConversation')}</span>
+            </button>
+          )}
           {/* Artifact panel toggle */}
           {isPanelOpen && (
             <button
@@ -4740,6 +4756,10 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
               </h3>
             </div>
             <div className="py-1">
+              <button type="button" className="w-full px-5 py-3 text-left text-sm hover:bg-surface" onClick={() => {
+                setShowExportOptions(false);
+                window.dispatchEvent(new CustomEvent(ConversationShareEvent.Compose, { detail: { sessionId: currentSession?.id } }));
+              }}>{i18nService.t('shareConversation')}</button>
               <button
                 type="button"
                 onClick={(e) => { setShowExportOptions(false); handleShareClick(e); }}

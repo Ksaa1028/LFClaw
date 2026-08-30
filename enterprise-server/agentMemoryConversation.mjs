@@ -153,6 +153,8 @@ export const injectAgentMemoryContext = (body, recalledText) => {
 export const upstreamModelUrl = (baseUrl, suffix) => {
   const base = String(baseUrl || '').replace(/\/+$/, '');
   let path = String(suffix || '').replace(/^\/+/, '');
-  if (base.endsWith('/v1') && path.startsWith('v1/')) path = path.slice(3);
+  // BigModel's standard API is already versioned as /api/paas/v4.
+  const isBigModelV4 = /^https?:\/\/open\.bigmodel\.cn\/api\/paas\/v4$/i.test(base);
+  if ((base.endsWith('/v1') || isBigModelV4) && path.startsWith('v1/')) path = path.slice(3);
   return `${base}/${path}`;
 };

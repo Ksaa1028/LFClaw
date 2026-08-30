@@ -104,11 +104,6 @@ jobs:
           restore-keys: npm-${{ runner.os }}-
       - run: npm install
       - run: npm run build
-      - uses: actions/upload-artifact@v4
-        with:
-          name: renderer-dist
-          path: dist/
-          retention-days: 1
 
   # ========== Stage 4: Main 进程构建 ==========
   build-main:
@@ -127,11 +122,6 @@ jobs:
           restore-keys: npm-${{ runner.os }}-
       - run: npm install
       - run: npm run compile:electron
-      - uses: actions/upload-artifact@v4
-        with:
-          name: main-dist
-          path: dist-electron/
-          retention-days: 1
 
   # ========== Stage 5: Skill 构建 ==========
   build-skills:

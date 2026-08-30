@@ -11,6 +11,7 @@ import { coworkService } from '../../services/cowork';
 import { buildCoworkCapabilitySelection } from '../../services/coworkCapabilitySelection';
 import { i18nService } from '../../services/i18n';
 import { quickActionService } from '../../services/quickAction';
+import { restoreUpdateWorkspace } from '../../services/updateWorkspaceRecovery';
 import { RootState } from '../../store';
 import {
   selectCoworkConfig,
@@ -197,6 +198,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({
   useEffect(() => {
     const init = async () => {
       await coworkService.init();
+      await restoreUpdateWorkspace(id => coworkService.loadSession(id));
       const initialEngineStatus = await coworkService.getOpenClawEngineStatus();
       if (initialEngineStatus) {
         setOpenClawStatus(initialEngineStatus);

@@ -61,4 +61,4 @@ jobs:
           name: LFClaw-mac-${{ matrix.arch }}
           path: github-artifacts/*
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1

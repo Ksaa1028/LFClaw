@@ -66,6 +66,9 @@ https://git.code.tencent.com/tongkai/LfClaw.git
 ├── enterprise-server/
 │   ├── server.mjs
 │   ├── mcpPermissions.mjs
+│   ├── conversationShareRoutes.mjs
+│   ├── conversationShares.mjs
+│   ├── conversationShareViewer.html
 │   ├── package.json
 │   └── README.md
 ├── data/
@@ -82,10 +85,13 @@ https://git.code.tencent.com/tongkai/LfClaw.git
 ```text
 /opt/LfClaw/enterprise-server/server.mjs
 /opt/LfClaw/enterprise-server/mcpPermissions.mjs
+/opt/LfClaw/enterprise-server/conversationShareRoutes.mjs
+/opt/LfClaw/enterprise-server/conversationShares.mjs
+/opt/LfClaw/enterprise-server/conversationShareViewer.html
 /opt/LfClaw/enterprise-server/package.json
 ```
 
-随后在 `/opt/LfClaw/enterprise-server` 执行 `npm install --omit=dev` 并重启企业服务。不要只上传 `server.mjs`，否则楼层权限模块会缺失。
+随后在 `/opt/LfClaw/enterprise-server` 执行 `npm install --omit=dev` 并重启企业服务。不要只上传 `server.mjs`，否则楼层权限和对话分享模块会缺失。旧客户端仍可正常使用；网页查看链接无需升级客户端，客户端内接收和续聊需要新版本。
 
 不要覆盖：
 

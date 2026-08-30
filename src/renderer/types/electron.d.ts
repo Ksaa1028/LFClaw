@@ -12,6 +12,7 @@ import type {
   BrowserDiagnosticResult,
   BrowserRuntimeProfile,
 } from '../../shared/browserWebAccess/constants';
+import type { ConversationShareApi } from '../../shared/conversationShare/constants';
 import type {
   CoworkContextUsageFailureReason,
   CoworkContextUsageSource,
@@ -468,6 +469,7 @@ interface HtmlShareResult {
 interface IElectronAPI {
   platform: string;
   arch: string;
+  conversationShare: ConversationShareApi;
   store: {
     get: (key: string) => Promise<any>;
     set: (key: string, value: any) => Promise<void>;

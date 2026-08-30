@@ -19,6 +19,7 @@ import { ENGINE_SWITCHED_CODE } from './types';
 type RouterDeps = {
   getCurrentEngine: () => CoworkAgentEngine;
   openclawRuntime: CoworkRuntime;
+  assertCanStart?: () => void;
 };
 
 export class CoworkEngineRouter extends EventEmitter implements CoworkRuntime {
@@ -29,7 +30,7 @@ export class CoworkEngineRouter extends EventEmitter implements CoworkRuntime {
   private readonly requestSession = new Map<string, string>();
   private currentEngine: CoworkAgentEngine;
 
-  constructor(deps: RouterDeps) {
+  constructor(private readonly deps: RouterDeps) {
     super();
     this.getCurrentEngine = deps.getCurrentEngine;
     this.runtime = deps.openclawRuntime;
@@ -53,6 +54,7 @@ export class CoworkEngineRouter extends EventEmitter implements CoworkRuntime {
   }
 
   async startSession(sessionId: string, prompt: string, options: CoworkStartOptions = {}): Promise<void> {
+    this.deps.assertCanStart?.();
     const engine = this.safeResolveEngine();
     this.sessionEngine.set(sessionId, engine);
     try {
@@ -65,6 +67,7 @@ export class CoworkEngineRouter extends EventEmitter implements CoworkRuntime {
   }
 
   async continueSession(sessionId: string, prompt: string, options: CoworkContinueOptions = {}): Promise<void> {
+    this.deps.assertCanStart?.();
     const engine = this.safeResolveEngine();
     this.sessionEngine.set(sessionId, engine);
     try {
@@ -86,6 +89,7 @@ export class CoworkEngineRouter extends EventEmitter implements CoworkRuntime {
   }
 
   async runGoalCommand(sessionId: string, command: string): Promise<CoworkGoal | null> {
+    this.deps.assertCanStart?.();
     const engine = this.safeResolveEngine();
     this.sessionEngine.set(sessionId, engine);
     if (!this.runtime.runGoalCommand) {

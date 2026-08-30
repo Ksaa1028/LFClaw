@@ -6,6 +6,7 @@ import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
 
 import { type AppUpdateSource } from '../../shared/appUpdate/constants';
+import { launchWindowsUpdate } from './windowsUpdateLauncher';
 
 export interface AppUpdateDownloadProgress {
   received: number;
@@ -252,7 +253,7 @@ export async function downloadUpdate(
   }
 }
 
-export async function installUpdate(filePath: string): Promise<void> {
+export async function installUpdate(filePath: string, beforeQuit: () => void = () => {}): Promise<void> {
   console.log(`[AppUpdate] Installing update from: ${filePath}`);
   console.log(`[AppUpdate] Platform: ${process.platform}, Arch: ${process.arch}`);
 
@@ -274,10 +275,11 @@ export async function installUpdate(filePath: string): Promise<void> {
   }
 
   if (process.platform === 'darwin') {
+    beforeQuit();
     return installMacDmg(filePath);
   }
   if (process.platform === 'win32') {
-    return installWindowsNsis(filePath);
+    return installWindowsNsis(filePath, beforeQuit);
   }
   throw new Error('Unsupported platform');
 }
@@ -870,30 +872,14 @@ async function installMacDmg(dmgPath: string): Promise<void> {
   }
 }
 
-async function installWindowsNsis(exePath: string): Promise<void> {
-  // Launch the installer while the app still owns the foreground so the UAC
-  // elevation prompt (the installer requests admin) appears in front of the
-  // user. Launching it from a hidden background process after the app exited
-  // left the prompt flashing in the taskbar where users never noticed it, so
-  // the elevation timed out and the update silently went nowhere.
-  //
-  // Quitting in parallel with the installer starting is safe: once the user
-  // confirms the wizard, the NSIS customCheckAppRunning macro stops remaining
-  // LobsterAI processes by image name and polls until they are gone before
-  // replacing files. The installer process itself is named lobsterai-update-*,
-  // so it is not affected by that kill. Until the user confirms, the installer
-  // touches nothing, so cancelling the wizard leaves the current install
-  // usable (this app instance has quit, but the user can simply relaunch it).
-  console.log(`[AppUpdate] Launching Windows installer in the foreground: ${exePath}`);
-  const launchError = await shell.openPath(exePath);
-  if (launchError) {
-    console.error(`[AppUpdate] failed to launch installer: ${launchError}`);
-    // Leave the user a manual path instead of failing silently: reveal the
-    // downloaded installer in Explorer so they can double-click it.
-    shell.showItemInFolder(exePath);
-    throw new Error(launchError);
+async function installWindowsNsis(exePath: string, beforeQuit: () => void): Promise<void> {
+  const cancel = await launchWindowsUpdate(exePath, app.getPath('exe'));
+  try {
+    beforeQuit();
+    console.log('[AppUpdate] Update worker ready; waiting for graceful application shutdown');
+    app.quit();
+  } catch (error) {
+    await cancel();
+    throw error;
   }
-
-  console.log('[AppUpdate] Installer launched, quitting app');
-  app.quit();
 }

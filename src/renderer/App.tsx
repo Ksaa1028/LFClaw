@@ -11,6 +11,8 @@ import {
   isManualDownloadUrl,
 } from '../shared/appUpdate/constants';
 import { ProviderAuthType, ProviderName, ProviderRegistry } from '../shared/providers';
+import ConversationShareInboxView from './components/conversationShare/ConversationShareInboxView';
+import ConversationSharing from './components/conversationShare/ConversationSharing';
 import { CoworkView } from './components/cowork';
 import { CoworkShortcutDirection, CoworkUiEvent } from './components/cowork/constants';
 import CoworkPermissionModal from './components/cowork/CoworkPermissionModal';
@@ -31,6 +33,7 @@ import AppUpdateModal from './components/update/AppUpdateModal';
 import WelcomeDialog from './components/WelcomeDialog';
 import WindowsAppTitleBar from './components/window/WindowsAppTitleBar';
 import { defaultConfig, getProviderDisplayName, ShortcutAction } from './config';
+import { agentService } from './services/agent';
 import type { ApiConfig } from './services/api';
 import { apiService } from './services/api';
 import { authService } from './services/auth';
@@ -43,6 +46,7 @@ import { matchesShortcut } from './services/shortcuts';
 import { skillService } from './services/skill';
 import { themeService } from './services/theme';
 import { applyTypographyPreferences } from './services/typography';
+import { installUpdateWithWorkspace } from './services/updateWorkspaceRecovery';
 import { RootState, store } from './store';
 import {
   selectCurrentSessionId,
@@ -94,7 +98,8 @@ const ENTERPRISE_POLICY_SYNC_INTERVAL_MS = 30_000;
 const App: React.FC = () => {
   const [showSettings, setShowSettings] = useState(false);
   const [settingsOptions, setSettingsOptions] = useState<SettingsOpenOptions & { requestId: number }>({ requestId: 0 });
-  const [mainView, setMainView] = useState<'cowork' | 'skills' | 'scheduledTasks' | 'kits' | 'mcp' | 'enterprise'>('cowork');
+  const [mainView, setMainView] = useState<'cowork' | 'skills' | 'scheduledTasks' | 'kits' | 'mcp' | 'conversationShares' | 'enterprise'>('cowork');
+  const [conversationShareTarget, setConversationShareTarget] = useState<string | null>(null);
   const [isInitialized, setIsInitialized] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -120,6 +125,7 @@ const App: React.FC = () => {
   const toastTimerRef = useRef<number | null>(null);
   const hasInitialized = useRef(false);
   const hasReportedAppStartedRef = useRef(false);
+  const previousAuthIdentityRef = useRef<string | null>();
   const previousUpdateStatusRef = useRef<AppUpdateRuntimeState['status']>(AppUpdateStatus.Idle);
   const shouldInstallReadyUpdateRef = useRef(false);
   const dispatch = useDispatch();
@@ -128,6 +134,7 @@ const App: React.FC = () => {
   const pendingPermission = useSelector(selectFirstCurrentSessionPendingPermission);
   const pendingPermissions = useSelector(selectPendingPermissions);
   const authUser = useSelector((state: RootState) => state.auth.user);
+  const authIdentity = authUser?.userId?.trim() || authUser?.yid?.trim() || null;
   const platform = window.electron?.platform ?? 'win32';
   const isWindows = platform === 'win32';
   const [minimizedPermissionIds, setMinimizedPermissionIds] = useState<string[]>([]);
@@ -300,6 +307,19 @@ const App: React.FC = () => {
     }
   }, [authUser]);
 
+  useEffect(() => {
+    if (!isInitialized) return;
+
+    const previousIdentity = previousAuthIdentityRef.current;
+    previousAuthIdentityRef.current = authIdentity;
+    if (previousIdentity === authIdentity) return;
+
+    const currentAgentId = store.getState().agent.currentAgentId;
+    void coworkService.reloadSessionsForIdentityChange(currentAgentId).catch((error) => {
+      console.error('[App] failed to reload sessions after identity change:', error);
+    });
+  }, [authIdentity, isInitialized]);
+
   // Listen for Copilot token auto-refresh events from the main process
   useEffect(() => {
     const removeListener = window.electron.githubCopilot.onTokenUpdated(({ token, baseUrl }) => {
@@ -376,6 +396,11 @@ const App: React.FC = () => {
 
   const handleShowMcp = useCallback(() => {
     setMainView('mcp');
+  }, []);
+
+  const handleShowConversationShares = useCallback((share?: string) => {
+    setConversationShareTarget(share?.trim() || null);
+    setMainView('conversationShares');
   }, []);
 
   const handleShowKits = useCallback(() => {
@@ -516,7 +541,7 @@ const App: React.FC = () => {
       if (state.status === AppUpdateStatus.Ready && previousStatus !== AppUpdateStatus.Ready) {
         if (shouldInstallReadyUpdateRef.current && state.readyFilePath) {
           shouldInstallReadyUpdateRef.current = false;
-          void window.electron.appUpdate.installReady().then((installResult) => {
+          void installUpdateWithWorkspace().then((installResult) => {
             if (!installResult.success) {
               showToast(installResult.error || i18nService.t('updateInstallFailed'));
             }
@@ -571,7 +596,7 @@ const App: React.FC = () => {
 
     if (appUpdateState.readyFilePath) {
       shouldInstallReadyUpdateRef.current = false;
-      const installResult = await window.electron.appUpdate.installReady();
+      const installResult = await installUpdateWithWorkspace();
       if (!installResult.success) {
         showToast(installResult.error || i18nService.t('updateInstallFailed'));
       }
@@ -1190,6 +1215,7 @@ const App: React.FC = () => {
           onShowScheduledTasks={handleShowScheduledTasks}
           onShowKits={handleShowKits}
           onShowMcp={handleShowMcp}
+          onShowConversationShares={handleShowConversationShares}
           onShowEnterprise={handleShowEnterprise}
           onLogoutSuccess={handleShowEnterpriseLogin}
           onNewChat={handleNewChat}
@@ -1229,6 +1255,21 @@ const App: React.FC = () => {
               />
             ) : mainView === 'mcp' ? (
               <McpView
+                isSidebarCollapsed={isSidebarCollapsed}
+                onToggleSidebar={handleToggleSidebar}
+                onNewChat={handleNewChat}
+                updateBadge={collapsedHeaderUpdateBadge}
+              />
+            ) : mainView === 'conversationShares' ? (
+              <ConversationShareInboxView
+                initialShare={conversationShareTarget}
+                onInitialShareConsumed={() => setConversationShareTarget(null)}
+                onContinue={async sessionId => {
+                  setMainView('cowork');
+                  agentService.switchAgent('main');
+                  await coworkService.loadSessions('main');
+                  await coworkService.loadSession(sessionId);
+                }}
                 isSidebarCollapsed={isSidebarCollapsed}
                 onToggleSidebar={handleToggleSidebar}
                 onNewChat={handleNewChat}
@@ -1289,6 +1330,14 @@ const App: React.FC = () => {
         />
       )}
       {permissionModal}
+      {appUpdateState.status === AppUpdateStatus.Installing && <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40" role="alert" aria-live="polite">
+        <div className="max-w-md rounded-2xl bg-surface p-6 text-foreground shadow-xl">{i18nService.t('updatePreparingSafely')}</div>
+      </div>}
+      {authUser && window.electron.conversationShare && <ConversationSharing
+        key={authUser.yid}
+        inboxActive={mainView === 'conversationShares'}
+        onOpenInbox={handleShowConversationShares}
+      />}
       {showWelcome && (
         <WelcomeDialog
           onEnterpriseActivate={handleWelcomeEnterpriseActivate}

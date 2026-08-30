@@ -1108,6 +1108,15 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
 
   // Restore active kit/skill IDs from draft when draftKey changes
   useEffect(() => {
+    const flushDraft = () => {
+      dispatch(setDraftPrompt({ sessionId: draftKey, draft: value }));
+      if (sessionId) dispatch(setSteerDraft({ sessionId, draft: steerValue }));
+    };
+    window.addEventListener(CoworkUiEvent.PrepareUpdate, flushDraft);
+    return () => window.removeEventListener(CoworkUiEvent.PrepareUpdate, flushDraft);
+  }, [dispatch, draftKey, sessionId, value, steerValue]);
+
+  useEffect(() => {
     dispatch(setActiveKitIds(draftKitIdsForKey || []));
     dispatch(setActiveSkillIds(draftSkillIdsForKey || []));
     // eslint-disable-next-line react-hooks/exhaustive-deps

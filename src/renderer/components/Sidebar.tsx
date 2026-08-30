@@ -3,6 +3,7 @@ import { AgentId } from '@shared/agent';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSelector } from 'react-redux';
 
+import { ConversationShareEvent } from '../../shared/conversationShare/constants';
 import { agentService } from '../services/agent';
 import { coworkService } from '../services/cowork';
 import { i18nService } from '../services/i18n';
@@ -37,12 +38,13 @@ import LoginButton from './LoginButton';
 interface SidebarProps {
   onShowSettings: () => void;
   onShowLogin?: () => void;
-  activeView: 'cowork' | 'skills' | 'scheduledTasks' | 'kits' | 'mcp' | 'enterprise';
+  activeView: 'cowork' | 'skills' | 'scheduledTasks' | 'kits' | 'mcp' | 'conversationShares' | 'enterprise';
   onShowSkills: () => void;
   onShowCowork: () => void;
   onShowScheduledTasks: () => void;
   onShowKits: () => void;
   onShowMcp: () => void;
+  onShowConversationShares: () => void;
   onShowEnterprise: () => void;
   onLogoutSuccess?: () => void;
   onNewChat: () => void;
@@ -133,6 +135,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   onShowScheduledTasks,
   onShowKits,
   onShowMcp,
+  onShowConversationShares,
   onShowEnterprise,
   onLogoutSuccess,
   onNewChat,
@@ -157,6 +160,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   const [isResizing, setIsResizing] = useState(false);
   const [agentScrollEdges, setAgentScrollEdges] = useState({ top: false, bottom: false });
   const [showKitsNewBadge, setShowKitsNewBadge] = useState(false);
+  const [unreadShareCount, setUnreadShareCount] = useState(0);
   const isResizingRef = useRef(false);
   const resizeStartXRef = useRef(0);
   const resizeStartWidthRef = useRef(DEFAULT_SIDEBAR_WIDTH);
@@ -193,6 +197,15 @@ const Sidebar: React.FC<SidebarProps> = ({
       selectableCount: batchSelectableItems.length,
     };
   }, [batchSelectableItemByKey, batchSelectableItems.length, batchSelectableKeySet, selectedKeys]);
+
+  useEffect(() => {
+    const handleUnreadShares = (event: Event) => {
+      const value = (event as CustomEvent<number>).detail;
+      setUnreadShareCount(Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0);
+    };
+    window.addEventListener(ConversationShareEvent.UnreadChanged, handleUnreadShares);
+    return () => window.removeEventListener(ConversationShareEvent.UnreadChanged, handleUnreadShares);
+  }, []);
 
   useEffect(() => {
     let isCurrent = true;
@@ -611,6 +624,20 @@ const Sidebar: React.FC<SidebarProps> = ({
           >
             <SidebarMcpIcon className="h-4 w-4 shrink-0" />
             {i18nService.t('mcpServers')}
+          </button>
+          <button
+            type="button"
+            className={activeView === 'conversationShares' ? activeSidebarNavItemClassName : sidebarNavItemClassName}
+            aria-current={activeView === 'conversationShares' ? 'page' : undefined}
+            onClick={() => {
+              reportSidebarAction('open_conversation_shares', { activeView, isCollapsed });
+              setIsSearchOpen(false);
+              onShowConversationShares();
+            }}
+          >
+            <SidebarSearchIcon className="h-4 w-4 shrink-0" />
+            {i18nService.t('shareInbox')}
+            {unreadShareCount > 0 && <span className="ml-auto min-w-5 rounded-full bg-red-500 px-1.5 text-center text-[11px] leading-5 text-white">{unreadShareCount > 99 ? '99+' : unreadShareCount}</span>}
           </button>
           <button
             type="button"

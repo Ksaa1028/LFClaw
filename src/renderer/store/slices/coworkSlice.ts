@@ -93,6 +93,8 @@ interface CoworkState {
   pendingMediaStatusUpdates: Record<string, Array<{ toolCallId: string; details: Record<string, unknown> }>>;
 }
 
+export type CoworkDraftState = Pick<CoworkState, 'draftPrompts' | 'draftAttachments' | 'draftSelectedTextSnippets' | 'draftKitIds' | 'draftSkillIds' | 'draftCollaborationModes' | 'steerDrafts'>;
+
 const initialState: CoworkState = {
   sessions: [],
   hasMoreSessions: false,
@@ -399,6 +401,9 @@ const coworkSlice = createSlice({
   name: 'cowork',
   initialState,
   reducers: {
+    restoreDraftState(state, action: PayloadAction<CoworkDraftState>) {
+      Object.assign(state, action.payload);
+    },
     setCoworkActive(state, action: PayloadAction<boolean>) {
       state.isCoworkActive = action.payload;
     },
@@ -1026,6 +1031,7 @@ const coworkSlice = createSlice({
 });
 
 export const {
+  restoreDraftState,
   setCoworkActive,
   setSessions,
   setHasMoreSessions,

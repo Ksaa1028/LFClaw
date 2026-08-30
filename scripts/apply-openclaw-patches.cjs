@@ -10,8 +10,8 @@
  * Usage:
  *   node scripts/apply-openclaw-patches.cjs [openclaw-src-dir]
  *
- * If openclaw-src-dir is not specified, defaults to ../openclaw relative to
- * the LobsterAI project root.
+ * If openclaw-src-dir is not specified, uses OPENCLAW_SRC or defaults to
+ * ../openclaw relative to the LobsterAI project root, matching the runtime build.
  *
  * Safe to run multiple times — already-applied patches are skipped.
  */
@@ -22,8 +22,9 @@ const os = require('os');
 const path = require('path');
 
 const rootDir = path.resolve(__dirname, '..');
-const openclawSrc = process.argv[2]
-  ? path.resolve(process.argv[2])
+const configuredSource = process.argv[2] || process.env.OPENCLAW_SRC;
+const openclawSrc = configuredSource
+  ? path.resolve(configuredSource)
   : path.resolve(rootDir, '..', 'openclaw');
 
 // Read pinned openclaw version from package.json.
@@ -63,6 +64,23 @@ if (patchFiles.length === 0) {
 console.log(`[apply-openclaw-patches] Applying patches for openclaw ${openclawVersion} (${patchFiles.length} file(s))`);
 
 const strongPatchValidators = {
+  'openclaw-mcp-stale-connection-recovery.patch': [{
+    file: 'src/agents/agent-bundle-mcp-runtime.ts',
+    snippets: ['await recoverServerConnection(serverName);', 'failed to reconnect server'],
+  }],
+  'openclaw-mcp-stale-request-backoff.patch': [{
+    file: 'src/agents/agent-bundle-mcp-runtime.ts',
+    snippets: ['MCP_REQUEST_FAILURE_BACKOFF', 'if (!recovered) {'],
+  }],
+  'openclaw-mcp-timeout-and-catalog-retry.patch': [{
+    file: 'src/agents/agent-bundle-mcp-runtime.ts',
+    snippets: [
+      'BUNDLE_MCP_CATALOG_LIST_TIMEOUT_MS = 30_000',
+      'Math.min(requestTimeoutMs, BUNDLE_MCP_CATALOG_LIST_TIMEOUT_MS)',
+      'catalog = nextCatalog.diagnostics?.length ? null : nextCatalog;',
+      'MCP_CATALOG_RETRY_ON_FAILURE',
+    ],
+  }],
   'openclaw-dashscope-context-cache.patch': [
     {
       file: 'src/agents/embedded-agent-runner/prompt-cache-retention.ts',

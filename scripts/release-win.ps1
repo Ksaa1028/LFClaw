@@ -205,7 +205,17 @@ if (-not (Test-Path -LiteralPath $changelog -PathType Leaf)) {
   throw "Matching changelog was not found: $changelog"
 }
 
-$hash = (Get-FileHash -LiteralPath $package.FullName -Algorithm SHA256).Hash
+$stream = [System.IO.File]::OpenRead($package.FullName)
+try {
+  $sha256 = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $hash = [System.BitConverter]::ToString($sha256.ComputeHash($stream)).Replace('-', '')
+  } finally {
+    $sha256.Dispose()
+  }
+} finally {
+  $stream.Dispose()
+}
 Write-Host ''
 Write-Host 'Windows package completed.' -ForegroundColor Green
 Write-Host "Version: $version"

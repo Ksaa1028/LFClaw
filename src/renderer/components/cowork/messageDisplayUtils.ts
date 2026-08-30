@@ -526,6 +526,9 @@ export const buildDisplayItems = (messages: CoworkMessage[]): DisplayItem[] => {
   let pendingAdjacentGroup: ToolGroupItem | null = null;
 
   for (const message of messages) {
+    if (message.metadata?.hidden === true) {
+      continue;
+    }
     if (isSilentAssistantMessage(message)) {
       continue;
     }

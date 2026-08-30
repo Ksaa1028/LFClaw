@@ -7,6 +7,8 @@ import path from 'path';
 
 import { AgentId, DefaultAgentAvatarIcon, DefaultAgentProfile, LegacyAgentName, normalizeAgentAvatarIcon } from '../shared/agent';
 import { DB_FILENAME } from './appConstants';
+import { migrateLegacySessionOwnership } from './libs/legacySessionOwnership';
+import { migrateLegacyUserDataConversations } from './libs/legacyUserDataConversations';
 import {
   openSqliteDatabaseWithRecovery,
   SqliteBackupManager,
@@ -60,7 +62,18 @@ export class SqliteStore {
 
     const store = new SqliteStore(db, dbPath);
     store.initializeTables(basePath);
+    if (migrateLegacyUserDataConversations(db, basePath) > 0) store.didRunMigration = true;
+    // Run outside the legacy best-effort schema catch: a failed repair must not
+    // silently open an apparently empty history. Also repairs already-upgraded DBs.
+    if (migrateLegacySessionOwnership(db)) store.didRunMigration = true;
     return store;
+  }
+
+  migrateLegacyConversationsAfterActivation(): boolean {
+    const imported = migrateLegacyUserDataConversations(this.db, path.dirname(this.dbPath));
+    const repaired = migrateLegacySessionOwnership(this.db);
+    if (imported > 0 || repaired) this.didRunMigration = true;
+    return imported > 0 || repaired;
   }
 
   private initializeTables(basePath: string) {

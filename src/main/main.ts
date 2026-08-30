@@ -36,6 +36,7 @@ import {
 import { AppIpcChannel } from '../shared/app/constants';
 import { AppSettingsAutoLaunchErrorCode, AppSettingsIpc } from '../shared/appSettings/constants';
 import { AppUpdateIpc } from '../shared/appUpdate/constants';
+import { AppUpdateStatus } from '../shared/appUpdate/constants';
 import { ArtifactBrowserPartition, ArtifactPreviewIpc, ArtifactPreviewProtocol } from '../shared/artifactPreview/constants';
 import { AuthIpcChannel } from '../shared/auth/constants';
 import {
@@ -173,6 +174,7 @@ import {
   type PermissionResult,
 } from './libs/agentEngine';
 import { AppUpdateCoordinator, INSTALLATION_UUID_KEY } from './libs/appUpdateCoordinator';
+import { backupBeforeAppUpdate } from './libs/appUpdateSafety';
 import { AuthCallbackRouter } from './libs/authCallbackRouter';
 import {
   appendCallbackReturnTo,
@@ -191,6 +193,8 @@ import {
   setStoreGetter,
   updateServerModelMetadata,
 } from './libs/claudeSettings';
+import { queueConversationShareLink, registerConversationShareLinks } from './libs/conversationShareLinks';
+import { ConversationShareService, registerConversationShareHandlers } from './libs/conversationShareService';
 import {
   clearCopilotTokenState,
   initCopilotTokenManager,
@@ -1616,7 +1620,17 @@ const formatAutoLaunchStatusForLog = (status: AutoLaunchStatus): string => {
 
 const getAppUpdateCoordinator = (): AppUpdateCoordinator => {
   if (!appUpdateCoordinator) {
-    appUpdateCoordinator = new AppUpdateCoordinator(getStore());
+    const assertIdle = () => {
+      if (hasActiveGatewayWorkloads() || pendingMediaTasks.size > 0) throw new Error(t('updateBusy'));
+    };
+    appUpdateCoordinator = new AppUpdateCoordinator(getStore(), {
+      prepare: async () => {
+        assertIdle();
+        await backupBeforeAppUpdate(getStore().getDatabase(), app.getPath('userData'));
+        assertIdle();
+      },
+      beforeQuit: assertIdle,
+    });
   }
   return appUpdateCoordinator;
 };
@@ -2688,6 +2702,9 @@ const getCoworkEngineRouter = () => {
     coworkEngineRouter = new CoworkEngineRouter({
       getCurrentEngine: resolveCoworkAgentEngine,
       openclawRuntime: openClawRuntimeAdapter,
+      assertCanStart: () => {
+        if (appUpdateCoordinator?.getState().status === AppUpdateStatus.Installing) throw new Error(t('updateInstalling'));
+      },
     });
   }
   return coworkEngineRouter;
@@ -3817,11 +3834,39 @@ const resolveEnterpriseModelRef = (
   const providerId = slashIndex >= 0 ? trimmed.slice(0, slashIndex) : '';
   const modelId = slashIndex >= 0 ? trimmed.slice(slashIndex + 1) : trimmed;
   if (!modelId) return trimmed;
-  if (providerId.startsWith('custom_')) return trimmed;
-  const providerIndex = (access.policy.modelProviders ?? []).findIndex(provider => (
-    provider.models.some(model => model.id === modelId)
-  ));
-  return providerIndex >= 0 ? `custom_${providerIndex}/${modelId}` : trimmed;
+  const matches = (access.policy.modelProviders ?? [])
+    .map((provider, index) => ({ provider, ref: `custom_${index}/${modelId}` }))
+    .filter(({ provider }) => provider.models.some(model => model.id === modelId));
+  // Numbered provider slots can move after a policy refresh. Only retain an
+  // existing slot if it still offers this model; never fall back to another model.
+  const current = matches.find(({ ref }) => ref === trimmed);
+  if (current) return current.ref;
+  const named = matches.find(({ provider }) => provider.id === providerId);
+  if (named) return named.ref;
+  if (matches.length === 1) return matches[0].ref;
+  // Missing or ambiguous models require an explicit selection in this session,
+  // not a request with credentials belonging to an unrelated/stale provider.
+  throw new Error(t('coworkErrorModelAccessDenied'));
+};
+
+const resolveEnterpriseContinuationModels = (
+  access: EnterpriseCurrentAccess | null,
+  sessionModelRef?: string | null,
+  agentModelRef?: string | null,
+): {
+  sessionModel?: string;
+  agentModel?: string;
+  effectiveModel?: string;
+} => {
+  const sessionModel = resolveEnterpriseModelRef(access, sessionModelRef)?.trim();
+  const agentModel = sessionModel
+    ? undefined
+    : resolveEnterpriseModelRef(access, agentModelRef)?.trim();
+  return {
+    sessionModel,
+    agentModel,
+    effectiveModel: sessionModel || agentModel,
+  };
 };
 
 const hasBrowserWebAccessConfigChanged = (
@@ -4003,6 +4048,7 @@ if (!gotTheLock) {
    * Parse a lobsterai:// deep link and send (or buffer) the auth code.
    */
   const handleDeepLink = (url: string) => {
+    if (queueConversationShareLink(url)) return;
     authCallbackRouter.handleDeepLink(url);
   };
 
@@ -4156,10 +4202,19 @@ if (!gotTheLock) {
     await syncEnterpriseSkillsToLocalStore(access).catch(error => {
       console.warn('[Enterprise] failed to sync enterprise skills during preflight:', error);
     });
-    await syncOpenClawConfig({
+    const syncResult = await syncOpenClawConfig({
       reason: 'enterprise-preflight',
       restartGatewayIfRunning: false,
-    }).catch(error => console.warn('[Enterprise] failed to sync config during preflight:', error));
+    });
+    if (!syncResult.success) {
+      console.error('[Enterprise] Failed to apply model configuration during preflight:', syncResult.error);
+      throw new Error(t('coworkErrorServerError'));
+    }
+    // Preflight can change credentials after the initial engine readiness check.
+    // A deferred restart has not applied them to the running process yet.
+    if (await waitForOpenClawConfigApply('enterprise preflight')) {
+      throw new Error(t('coworkErrorServiceRestart'));
+    }
     BrowserWindow.getAllWindows().forEach(win => {
       if (!win.isDestroyed()) {
         win.webContents.send('auth:quotaChanged');
@@ -4205,6 +4260,7 @@ if (!gotTheLock) {
   ipcMain.handle(EnterpriseIpcChannel.Activate, async (_event, input: EnterpriseActivateInput) => {
     try {
       const access = await getLFClawEnterpriseAccess().activate(input);
+      getStore().migrateLegacyConversationsAfterActivation();
       syncEnterpriseModelProvidersToAppConfig(access);
       syncEnterpriseMcpServersToLocalStore(access);
       await syncEnterpriseSkillsToLocalStore(access).catch(error => {
@@ -6914,6 +6970,14 @@ if (!gotTheLock) {
   });
 
   // Cowork IPC handlers
+  registerConversationShareLinks();
+  registerConversationShareHandlers(new ConversationShareService({
+    access: getLFClawEnterpriseAccess,
+    store: getCoworkStore,
+    db: () => getStore().getDatabase(),
+    cwd: () => resolveAgentDefaultWorkingDirectory('main') || getMainAgentWorkspacePath(getOpenClawEngineManager().getStateDir()),
+  }));
+
   ipcMain.handle(
     'cowork:session:start',
     async (
@@ -7177,11 +7241,21 @@ if (!gotTheLock) {
         const existingSession = coworkStoreInstance.getSession(options.sessionId);
         const enterpriseAccess = await ensureEnterpriseAccessForCowork();
         const enterpriseCurrentAccess = enterpriseAccess.getCurrentAccess();
-        const sessionModel = resolveEnterpriseModelRef(enterpriseCurrentAccess, existingSession?.modelOverride)?.trim();
+        const sessionAgent = existingSession
+          ? coworkStoreInstance.getAgent(existingSession.agentId)
+          : null;
+        const { sessionModel, agentModel, effectiveModel } = resolveEnterpriseContinuationModels(
+          enterpriseCurrentAccess,
+          existingSession?.modelOverride,
+          sessionAgent?.model,
+        );
         if (sessionModel && sessionModel !== existingSession?.modelOverride?.trim()) {
           coworkStoreInstance.updateSession(options.sessionId, { modelOverride: sessionModel });
         }
-        if (sessionModel && !enterpriseAccess.isModelAllowed(sessionModel)) {
+        if (sessionAgent && agentModel && agentModel !== sessionAgent.model.trim()) {
+          coworkStoreInstance.updateAgent(sessionAgent.id, { model: agentModel });
+        }
+        if (effectiveModel && !enterpriseAccess.isModelAllowed(effectiveModel)) {
           return {
             success: false,
             error: 'This model is not enabled for the current enterprise activation.',

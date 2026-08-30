@@ -8,6 +8,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 import { CoworkSystemMessageKind } from '../common/coworkSystemMessages';
 import { AgentId, normalizeAgentAvatarIcon } from '../shared/agent';
+import { SHARED_CONTEXT_KIND } from '../shared/conversationShare/constants';
 import {
   COWORK_MESSAGE_PAGE_SIZE,
   COWORK_SESSION_PAGE_SIZE,
@@ -890,6 +891,16 @@ export class CoworkStore {
       createdAt: now,
       updatedAt: now,
     };
+  }
+
+  getSharedConversationContext(sessionId: string): string | null {
+    const owner = this.currentOwnerScope();
+    const row = this.db.prepare(`SELECT m.content FROM cowork_messages m
+      JOIN cowork_sessions s ON s.id = m.session_id
+      WHERE s.id = ? AND s.owner_scope = ? AND m.type = 'system'
+      AND json_valid(m.metadata) AND json_extract(m.metadata, '$.kind') = ? LIMIT 1`)
+      .get(sessionId, owner, SHARED_CONTEXT_KIND) as { content: string } | undefined;
+    return row?.content ?? null;
   }
 
   getSession(id: string, messageLimit = COWORK_MESSAGE_PAGE_SIZE): CoworkSession | null {

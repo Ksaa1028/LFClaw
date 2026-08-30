@@ -1,8 +1,8 @@
-import { beforeEach, describe, expect, test } from 'vitest';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { store } from '../store';
 import { setAgents, setCurrentAgentId } from '../store/slices/agentSlice';
-import { setCurrentSession } from '../store/slices/coworkSlice';
+import { setCurrentSession, setSessions } from '../store/slices/coworkSlice';
 import { clearActiveSkills, setActiveSkillIds } from '../store/slices/skillSlice';
 import { type CoworkSession,CoworkSessionStatusValue } from '../types/cowork';
 import { coworkService } from './cowork';
@@ -32,6 +32,7 @@ beforeEach(() => {
   store.dispatch(setCurrentAgentId('main'));
   store.dispatch(setCurrentSession(null));
   store.dispatch(clearActiveSkills());
+  vi.unstubAllGlobals();
 });
 
 describe('coworkService.clearSession', () => {
@@ -92,5 +93,67 @@ describe('coworkService.clearSession', () => {
     coworkService.clearSession({ restoreAgentSkills: true });
 
     expect(store.getState().skill.activeSkillIds).toEqual([]);
+  });
+});
+
+describe('coworkService.reloadSessionsForIdentityChange', () => {
+  test('clears the previous identity and loads the active identity session list', async () => {
+    store.dispatch(setCurrentSession(makeSession()));
+    store.dispatch(setSessions([makeSession()]));
+    vi.stubGlobal('window', {
+      electron: {
+        cowork: {
+          listSessions: vi.fn(async () => ({
+            success: true,
+            sessions: [{
+              id: 'session-2',
+              title: 'Session 2',
+              status: CoworkSessionStatusValue.Completed,
+              pinned: false,
+              pinOrder: null,
+              agentId: 'main',
+              parentSessionId: null,
+              forkedAt: null,
+              createdAt: 2,
+              updatedAt: 2,
+            }],
+            hasMore: false,
+          })),
+        },
+      },
+    });
+
+    await coworkService.reloadSessionsForIdentityChange('main');
+
+    expect(store.getState().cowork.currentSession).toBeNull();
+    expect(store.getState().cowork.sessions.map(session => session.id)).toEqual(['session-2']);
+    expect(window.electron.cowork.listSessions).toHaveBeenCalledWith({
+      limit: 50,
+      offset: 0,
+      agentId: 'main',
+    });
+  });
+
+  test('ignores a session detail response started before the identity changed', async () => {
+    let resolveSession: ((value: { success: true; session: CoworkSession }) => void) | undefined;
+    const staleSessionResult = new Promise<{ success: true; session: CoworkSession }>((resolve) => {
+      resolveSession = resolve;
+    });
+    vi.stubGlobal('window', {
+      electron: {
+        cowork: {
+          getSession: vi.fn(() => staleSessionResult),
+          listSessions: vi.fn(async () => ({ success: true, sessions: [], hasMore: false })),
+        },
+        log: { fromRenderer: vi.fn() },
+      },
+    });
+
+    const staleLoad = coworkService.loadSession('session-1');
+    await coworkService.reloadSessionsForIdentityChange('main');
+    resolveSession?.({ success: true, session: makeSession() });
+    await staleLoad;
+
+    expect(store.getState().cowork.currentSession).toBeNull();
   });
 });

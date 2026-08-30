@@ -7,7 +7,6 @@ const { spawnSync } = require('child_process');
 const rootDir = path.resolve(__dirname, '..');
 const releaseDir = path.join(rootDir, 'release');
 const buildVersionPath = path.join(rootDir, '.lfclaw-build', 'build-version.json');
-const runtimeInfoPath = path.join(rootDir, 'vendor', 'openclaw-runtime', 'current', 'runtime-build-info.json');
 const VERSION_PATTERN = /^\d{10}$/;
 
 function pad2(value) {
@@ -109,16 +108,6 @@ function run(label, command, args, env) {
   }
 }
 
-function readRuntimeTarget() {
-  try {
-    if (!fs.existsSync(runtimeInfoPath)) return null;
-    const parsed = JSON.parse(fs.readFileSync(runtimeInfoPath, 'utf8'));
-    return typeof parsed?.target === 'string' ? parsed.target : null;
-  } catch {
-    return null;
-  }
-}
-
 function ensureChangelogEnv(env) {
   if (env.LFCLAW_CHANGELOG?.trim()) return env;
   return env;
@@ -186,14 +175,12 @@ function main() {
   run('write build version', 'npm', ['run', 'build:version'], env);
   run('write changelog', 'npm', ['run', 'build:changelog'], env);
 
-  const currentRuntimeTarget = readRuntimeTarget();
-  if (options.withRuntime || currentRuntimeTarget !== target) {
-    const reason = options.withRuntime ? 'requested' : `current runtime is ${currentRuntimeTarget || 'missing'}`;
-    console.log(`[LFClaw Release] building OpenClaw runtime because ${reason}.`);
-    run('build OpenClaw runtime', 'npm', ['run', `openclaw:runtime:${target}`], env);
-  } else {
-    console.log(`[LFClaw Release] OpenClaw runtime is already ${target}, skip rebuild.`);
-  }
+  // The runtime pipeline checks the pinned version, patch fingerprint and layout.
+  // A matching platform alone is not proof that recent fixes are in the bundle.
+  run('ensure current OpenClaw runtime', 'npm', ['run', `openclaw:runtime:${target}`], {
+    ...env,
+    ...(options.withRuntime ? { OPENCLAW_FORCE_BUILD: '1' } : {}),
+  });
 
   if (options.platform === 'win') {
     run('prepare Python runtime', 'npm', ['run', 'setup:python-runtime'], env);

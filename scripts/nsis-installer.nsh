@@ -34,7 +34,8 @@
 
 ; -- Stop every process that might hold file handles in the install dir --
 ;
-; 1. LobsterAI.exe -- the main app AND the OpenClaw gateway (ELECTRON_RUN_AS_NODE)
+; 1. LFClaw.exe -- the current main app AND OpenClaw gateway
+;    LobsterAI.exe is retained for upgrades from legacy builds.
 ; 2. node.exe whose binary lives inside the LobsterAI install tree
 ;    (Web Search bridge server, MCP servers spawned with detached:true)
 ;
@@ -48,12 +49,12 @@
   DetailPrint "[Installer] Stopping running LobsterAI processes"
   System::Call 'kernel32::GetTickCount()i .r7'
   nsExec::ExecToLog 'powershell -NoProfile -NonInteractive -Command "\
-    Stop-Process -Name LobsterAI -Force -ErrorAction SilentlyContinue;\
-    Get-Process node -ErrorAction SilentlyContinue | Where-Object { $$_.Path -like \"*LobsterAI*\" } | Stop-Process -Force -ErrorAction SilentlyContinue;\
+    Stop-Process -Name LFClaw,LobsterAI -Force -ErrorAction SilentlyContinue;\
+    Get-Process node -ErrorAction SilentlyContinue | Where-Object { $$_.Path -like \"*LFClaw*\" -or $$_.Path -like \"*LobsterAI*\" } | Stop-Process -Force -ErrorAction SilentlyContinue;\
     for ($$i = 0; $$i -lt 15; $$i++) {\
       $$procs = @();\
-      $$procs += Get-Process -Name LobsterAI -ErrorAction SilentlyContinue;\
-      $$procs += Get-Process node -ErrorAction SilentlyContinue | Where-Object { $$_.Path -like \"*LobsterAI*\" };\
+      $$procs += Get-Process -Name LFClaw,LobsterAI -ErrorAction SilentlyContinue;\
+      $$procs += Get-Process node -ErrorAction SilentlyContinue | Where-Object { $$_.Path -like \"*LFClaw*\" -or $$_.Path -like \"*LobsterAI*\" };\
       if ($$procs.Count -eq 0) { break };\
       Start-Sleep -Milliseconds 500;\
     }"'
@@ -153,32 +154,26 @@
     ; shown. User skills are already safe in the AppData backup above, so skill
     ; preservation does not depend on this rename succeeding.
     ;
-    ; Important: never reuse a fixed "$INSTDIR.old" path. If a previous async
-    ; delete leaves that directory behind, Rename fails immediately and the old
-    ; uninstaller remains in place. Instead, schedule cleanup of any stale
-    ; *.old* dirs, then rename to a unique per-run suffix and schedule deletion
-    ; of that unique directory in the background so extraction can start
-    ; immediately after the rename succeeds.
-    DetailPrint "[Installer] Removing previous installation directory"
+    ; Preserve the previous program as a recovery source. Never delete it
+    ; before the replacement has been installed and verified. User data is
+    ; outside this directory and must not be removed by an upgrade.
+    DetailPrint "[Installer] Preserving previous installation directory"
     System::Call 'kernel32::GetTickCount()i .r7'
     IfFileExists "$INSTDIR\*.*" 0 SkipOldDirRemoval
-      nsExec::ExecToLog 'cmd /c for /d %D in ("$INSTDIR.old*") do @start "" /b cmd /c rd /s /q "%~fD"'
-      Pop $0
       System::Call 'kernel32::GetTickCount()i .r4'
       StrCpy $3 "$INSTDIR.old.$4"
       Rename "$INSTDIR" "$3"
       IfErrors 0 RenameOK
-        Goto SkipOldDirRemoval
+        Abort "Cannot preserve the previous installation. Close LFClaw and retry the update."
       RenameOK:
-        nsExec::ExecToLog 'cmd /c start "" /b cmd /c rd /s /q "$3"'
-        Pop $0
+        DetailPrint "[Installer] Previous installation preserved at $3"
     SkipOldDirRemoval:
     System::Call 'kernel32::GetTickCount()i .r6'
     IntOp $5 $6 - $7
     FileOpen $9 "$APPDATA\LobsterAI\install-timing.log" a
     FileSeek $9 0 END
     !insertmacro GetTimestamp $8
-    FileWrite $9 "$8 phase=old-install-cleanup-complete elapsed_ms=$5 renamed_path=$3 cleanup_mode=async$\r$\n"
+    FileWrite $9 "$8 phase=old-install-preserved elapsed_ms=$5 renamed_path=$3$\r$\n"
     FileClose $9
   !endif
 !macroend

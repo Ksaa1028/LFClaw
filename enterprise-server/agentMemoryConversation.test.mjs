@@ -47,6 +47,35 @@ test('avoids duplicating the v1 segment in upstream URLs', () => {
   );
 });
 
+test('maps client v1 requests to the BigModel v4 API without an extra version', () => {
+  for (const base of [
+    'https://open.bigmodel.cn/api/paas/v4',
+    'https://open.bigmodel.cn/api/paas/v4/',
+  ]) {
+    for (const suffix of ['v1/chat/completions', '/v1/chat/completions', 'chat/completions']) {
+      assert.equal(
+        upstreamModelUrl(base, suffix),
+        'https://open.bigmodel.cn/api/paas/v4/chat/completions',
+      );
+    }
+  }
+});
+
+test('preserves existing URL routing for other providers and API paths', () => {
+  const cases = [
+    ['https://dashscope.aliyuncs.com/compatible-mode/v1', '/v1/chat/completions', 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions'],
+    ['https://api.openai.com/v1/', 'v1/chat/completions', 'https://api.openai.com/v1/chat/completions'],
+    ['https://api.deepseek.com', 'v1/chat/completions', 'https://api.deepseek.com/v1/chat/completions'],
+    ['https://example.com/custom', 'v1/chat/completions', 'https://example.com/custom/v1/chat/completions'],
+    ['https://example.com/api/paas/v4', 'v1/chat/completions', 'https://example.com/api/paas/v4/v1/chat/completions'],
+    ['https://open.bigmodel.cn/api/anthropic', 'v1/messages', 'https://open.bigmodel.cn/api/anthropic/v1/messages'],
+    ['https://open.bigmodel.cn/api/paas/v4', 'embeddings', 'https://open.bigmodel.cn/api/paas/v4/embeddings'],
+  ];
+  for (const [base, suffix, expected] of cases) {
+    assert.equal(upstreamModelUrl(base, suffix), expected);
+  }
+});
+
 test('collects assistant text from an OpenAI-compatible event stream', () => {
   const body = [
     'data: {"choices":[{"delta":{"content":"你"}}]}',

@@ -83,7 +83,7 @@ export class AppUpdateCoordinator {
   private activeFlowId = 0;
   private activeFlowSource: AppUpdateSource | null = null;
 
-  constructor(store: SqliteStore) {
+  constructor(store: SqliteStore, private readonly installHooks?: { prepare: () => Promise<void>; beforeQuit: () => void }) {
     this.store = store;
     this.restoreStoredReadyState();
   }
@@ -383,7 +383,11 @@ export class AppUpdateCoordinator {
     }
 
     try {
-      await installUpdate(filePath);
+      if (!readyFileHash || !await this.isReadyFileValid(filePath, readyFileHash, readyInfo ?? undefined)) {
+        throw new Error('Update package failed integrity verification');
+      }
+      await this.installHooks?.prepare();
+      await installUpdate(filePath, this.installHooks?.beforeQuit);
       return { success: true, state: this.getState() };
     } catch (error) {
       console.error('[AppUpdate] install failed:', error);

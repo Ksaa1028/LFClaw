@@ -18,6 +18,7 @@ import { AgentId } from '@shared/agent';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 
+import { ConversationShareEvent } from '../../../shared/conversationShare/constants';
 import { agentService } from '../../services/agent';
 import { coworkService } from '../../services/cowork';
 import { i18nService } from '../../services/i18n';
@@ -291,7 +292,7 @@ const MyAgentSidebarTree: React.FC<MyAgentSidebarTreeProps> = ({
 
     window.setTimeout(() => {
       window.dispatchEvent(new CustomEvent<CoworkOpenShareOptionsEventDetail>(
-        CoworkUiEvent.OpenShareOptions,
+        ConversationShareEvent.Compose,
         { detail: { sessionId: task.id } },
       ));
     }, 0);

@@ -191,6 +191,28 @@ describe('AppUpdateCoordinator', () => {
     expect(mocks.downloadUpdate).not.toHaveBeenCalled();
   });
 
+  test('a blocked or failed pre-update backup never launches the installer', async () => {
+    const store = createStoreStub();
+    seedReadyFile(store, updatesDir, AppUpdateSource.Auto);
+    const prepare = vi.fn().mockRejectedValue(new Error('busy or backup failed'));
+    const coordinator = new AppUpdateCoordinator(store, { prepare, beforeQuit: vi.fn() });
+    const result = await coordinator.installReadyUpdate();
+    expect(result.success).toBe(false);
+    expect(result.state.status).toBe(AppUpdateStatus.Ready);
+    expect(mocks.installUpdate).not.toHaveBeenCalled();
+  });
+
+  test('detects a modified package before backing up or installing', async () => {
+    const store = createStoreStub();
+    const file = seedReadyFile(store, updatesDir, AppUpdateSource.Auto);
+    const prepare = vi.fn();
+    const coordinator = new AppUpdateCoordinator(store, { prepare, beforeQuit: vi.fn() });
+    fs.writeFileSync(file, 'tampered');
+    expect((await coordinator.installReadyUpdate()).success).toBe(false);
+    expect(prepare).not.toHaveBeenCalled();
+    expect(mocks.installUpdate).not.toHaveBeenCalled();
+  });
+
   test('does not report an update when the current platform has no package url', async () => {
     const store = createStoreStub();
     const coordinator = new AppUpdateCoordinator(store);

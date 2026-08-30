@@ -9,7 +9,10 @@ const mocks = vi.hoisted(() => ({
   quit: vi.fn(),
   relaunch: vi.fn(),
   getPath: vi.fn(),
+  launchWindowsUpdate: vi.fn(),
 }));
+
+vi.mock('./windowsUpdateLauncher', () => ({ launchWindowsUpdate: mocks.launchWindowsUpdate }));
 
 const cpMocks = vi.hoisted(() => ({
   exec: vi.fn(),
@@ -61,6 +64,8 @@ describe('Windows update install', () => {
   const originalPlatform = process.platform;
 
   beforeEach(() => {
+    mocks.launchWindowsUpdate.mockReset().mockResolvedValue(vi.fn());
+    mocks.getPath.mockReturnValue('C:\\Program Files\\LFClaw\\LFClaw.exe');
     mocks.openPath.mockReset();
     mocks.showItemInFolder.mockReset();
     mocks.quit.mockReset();
@@ -80,24 +85,33 @@ describe('Windows update install', () => {
     vi.restoreAllMocks();
   });
 
-  test('launches the installer in the foreground and quits on success', async () => {
+  test('starts a silent update worker and quits only after it is ready', async () => {
     mocks.openPath.mockResolvedValue('');
 
     await installUpdate(INSTALLER_PATH);
 
-    expect(mocks.openPath).toHaveBeenCalledWith(INSTALLER_PATH);
+    expect(mocks.launchWindowsUpdate).toHaveBeenCalledWith(INSTALLER_PATH, 'C:\\Program Files\\LFClaw\\LFClaw.exe');
+    expect(mocks.openPath).not.toHaveBeenCalled();
     expect(mocks.quit).toHaveBeenCalledOnce();
     expect(mocks.showItemInFolder).not.toHaveBeenCalled();
   });
 
-  test('reveals the installer in Explorer and throws when launch fails', async () => {
-    mocks.openPath.mockResolvedValue('The operation was canceled by the user.');
+  test('keeps the app running when elevation is cancelled', async () => {
+    mocks.launchWindowsUpdate.mockRejectedValue(new Error('The operation was canceled by the user.'));
 
     await expect(installUpdate(INSTALLER_PATH)).rejects.toThrow(
       'The operation was canceled by the user.',
     );
 
-    expect(mocks.showItemInFolder).toHaveBeenCalledWith(INSTALLER_PATH);
+    expect(mocks.showItemInFolder).not.toHaveBeenCalled();
+    expect(mocks.quit).not.toHaveBeenCalled();
+  });
+
+  test('cancels the waiting worker if work starts before quitting', async () => {
+    const cancel = vi.fn();
+    mocks.launchWindowsUpdate.mockResolvedValue(cancel);
+    await expect(installUpdate(INSTALLER_PATH, () => { throw new Error('busy'); })).rejects.toThrow('busy');
+    expect(cancel).toHaveBeenCalledOnce();
     expect(mocks.quit).not.toHaveBeenCalled();
   });
 
@@ -196,8 +210,8 @@ describe('mac swap builders', () => {
   test('places staging and backup next to the target app, hidden and not .app-suffixed', () => {
     const swapPaths = buildMacSwapPaths('/Applications/Lobster AI.app', 1234);
 
-    expect(path.dirname(swapPaths.staging)).toBe('/Applications');
-    expect(path.dirname(swapPaths.backup)).toBe('/Applications');
+    expect(path.dirname(swapPaths.staging)).toBe(path.normalize('/Applications'));
+    expect(path.dirname(swapPaths.backup)).toBe(path.normalize('/Applications'));
     expect(path.basename(swapPaths.staging)).toBe(`.Lobster AI.app${MAC_SWAP_STAGING_INFIX}1234`);
     expect(path.basename(swapPaths.backup)).toBe(`.Lobster AI.app${MAC_SWAP_BACKUP_INFIX}1234`);
     expect(swapPaths.staging.endsWith('.app')).toBe(false);
@@ -451,7 +465,7 @@ describe('macOS DMG install', () => {
 
     expect(attachCommands).toHaveLength(2);
     expect(attachCommands[1]).toContain('-mountpoint');
-    expect(attachCommands[1]).toContain(`${USER_DATA}/updates/mnt-`);
+    expect(attachCommands[1]).toContain(path.join(USER_DATA, 'updates', 'mnt-'));
     // Stale attachment from the failed first attach is torn down before the retry.
     expect(detachCommands.some((cmd) => cmd.includes('/dev/disk4'))).toBe(true);
     expect(mocks.relaunch).toHaveBeenCalledOnce();
@@ -583,11 +597,11 @@ describe('macOS DMG install', () => {
     await installUpdate(DMG_PATH);
 
     expect(fs.promises.rm).toHaveBeenCalledWith(
-      `/Applications/.LFClaw.app${MAC_SWAP_STAGING_INFIX}1`,
+      path.join('/Applications', `.LFClaw.app${MAC_SWAP_STAGING_INFIX}1`),
       { recursive: true, force: true },
     );
     expect(fs.promises.rm).toHaveBeenCalledWith(
-      `/Applications/.LFClaw.app${MAC_SWAP_BACKUP_INFIX}2`,
+      path.join('/Applications', `.LFClaw.app${MAC_SWAP_BACKUP_INFIX}2`),
       { recursive: true, force: true },
     );
     expect(fs.promises.rm).not.toHaveBeenCalledWith('/Applications/Other.app', expect.anything());

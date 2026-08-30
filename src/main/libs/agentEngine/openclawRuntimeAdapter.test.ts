@@ -1564,6 +1564,7 @@ function createRunTurnAdapter(options: {
   holdFirstModelPatch?: boolean;
   sessionCwd?: string;
   chatSendError?: Error;
+  chatEventError?: string;
 } = {}) {
   const session = {
     id: 'session-1',
@@ -1674,10 +1675,12 @@ function createRunTurnAdapter(options: {
           (adapter as unknown as {
             handleChatEvent: (payload: unknown, seq?: number) => void;
           }).handleChatEvent({
-            state: 'final',
+            state: options.chatEventError ? 'error' : 'final',
             runId,
             sessionKey,
-            message: { role: 'assistant', content: 'Done' },
+            ...(options.chatEventError
+              ? { errorMessage: options.chatEventError }
+              : { message: { role: 'assistant', content: 'Done' } }),
           }, 1);
         });
         return { runId };
@@ -1893,6 +1896,51 @@ test('continueSession clears the pending turn when chat.send fails immediately',
     pendingTurns: Map<string, unknown>;
   }).pendingTurns;
   expect(pendingTurns.has('session-1')).toBe(false);
+});
+
+test.each([false, true])('same conversation resumes after auth repair without losing history (stream error: %s)', async streamed => {
+  const options: Parameters<typeof createRunTurnAdapter>[0] = {
+    sessionModelOverride: 'custom_1/model-a',
+    ...(streamed
+      ? { chatEventError: '401 Unauthorized: API key is invalid' }
+      : { chatSendError: new Error('401 Unauthorized: API key is invalid') }),
+  };
+  const { adapter, requests, session } = createRunTurnAdapter(options);
+  const errors = vi.fn();
+  adapter.on('error', errors);
+  const history = [
+    { id: 'history-user', type: 'user', content: 'Previous question', timestamp: 1, metadata: {} },
+    { id: 'history-answer', type: 'assistant', content: 'Previous answer', timestamp: 2, metadata: {} },
+  ];
+  session.messages.push(...structuredClone(history));
+  const originalSessionId = session.id;
+  const firstAttempt = adapter.continueSession(session.id, 'Continue my existing task');
+  await expect(firstAttempt).rejects.toThrow(streamed ? 'API 密钥无效或已过期' : '401');
+  expect(errors).toHaveBeenCalled();
+  expect(session.status).toBe('error');
+  expect(adapter.activeTurns.has(session.id)).toBe(false);
+  expect(adapter.pendingTurns.has(session.id)).toBe(false);
+  const originalRuntimeSessionKey = session.claudeSessionId;
+
+  // Simulate credentials repaired and the preflight correcting the provider slot.
+  // Do not create/reset a session or clear any messages, runtime state, or caches.
+  delete options.chatSendError;
+  delete options.chatEventError;
+  session.modelOverride = 'custom_0/model-a';
+  await adapter.continueSession(session.id, 'Credentials are fixed; continue');
+
+  expect(session.id).toBe(originalSessionId);
+  expect(session.claudeSessionId).toBe(originalRuntimeSessionKey);
+  expect(session.status).toBe('completed');
+  expect(session.messages.slice(0, history.length)).toEqual(history);
+  expect(session.messages.some(message => message.type === 'assistant' && message.content === 'Done')).toBe(true);
+  const sends = requests.filter(request => request.method === 'chat.send');
+  expect(sends).toHaveLength(2);
+  expect(sends[1].params.sessionKey).toBe(sends[0].params.sessionKey);
+  expect(sends[1].params.idempotencyKey).not.toBe(sends[0].params.idempotencyKey);
+  expect(requests.filter(request => request.method === 'sessions.patch').at(-1)?.params.model)
+    .toBe('custom_0/model-a');
+  expect(requests.some(request => ['sessions.delete', 'sessions.reset'].includes(request.method))).toBe(false);
 });
 
 test('pre-send model patch uses the extended send timeout while patchSession keeps the default', async () => {

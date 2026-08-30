@@ -14,6 +14,7 @@ vi.mock('electron', () => ({
 }));
 
 import { DB_FILENAME } from './appConstants';
+import { CoworkStore } from './coworkStore';
 import { SqliteStore } from './sqliteStore';
 
 let tempDirs: string[] = [];
@@ -83,6 +84,47 @@ const createLegacyDatabase = (userDataPath: string): void => {
 
   db.close();
 };
+
+test.each([false, true])('startup preserves sidebar history across upgrade and restart (owner column exists: %s)', async hasOwnerColumn => {
+  const userDataPath = createTempUserDataPath();
+  createLegacyDatabase(userDataPath);
+  const legacy = new Database(path.join(userDataPath, DB_FILENAME));
+  legacy.exec(`
+    CREATE TABLE cowork_sessions (
+      id TEXT PRIMARY KEY, title TEXT NOT NULL, claude_session_id TEXT,
+      status TEXT NOT NULL, cwd TEXT NOT NULL, system_prompt TEXT NOT NULL,
+      model_override TEXT NOT NULL, execution_mode TEXT, active_skill_ids TEXT,
+      agent_id TEXT, pinned INTEGER DEFAULT 0, created_at INTEGER, updated_at INTEGER
+    );
+    CREATE TABLE cowork_messages (
+      id TEXT PRIMARY KEY, session_id TEXT NOT NULL, type TEXT NOT NULL,
+      content TEXT NOT NULL, metadata TEXT, created_at INTEGER NOT NULL
+    );
+    INSERT INTO cowork_sessions VALUES
+      ('old', 'Preserved report', 'original-runtime-id', 'idle', '/project', '', '', 'local', '[]', 'main', 1, 1000, 2000);
+    INSERT INTO cowork_messages VALUES ('message', 'old', 'assistant', 'Original complete answer', NULL, 2000);
+  `);
+  if (hasOwnerColumn) legacy.exec("ALTER TABLE cowork_sessions ADD COLUMN owner_scope TEXT NOT NULL DEFAULT ''");
+  legacy.prepare('INSERT INTO kv VALUES (?, ?, ?)').run(
+    'lfclaw_enterprise_access', JSON.stringify({ user: { userId: 'original-employee' } }), 1,
+  );
+  legacy.close();
+
+  for (let restart = 0; restart < 2; restart += 1) {
+    const store = await SqliteStore.create(userDataPath);
+    try {
+      const conversations = new CoworkStore(store.getDatabase());
+      expect(conversations.listSessions(6, 0, 'main').map(s => s.id)).toEqual(['old']);
+      const session = conversations.getSession('old');
+      expect(session?.claudeSessionId).toBe('original-runtime-id');
+      expect(session?.messages.map(m => m.content)).toEqual(['Original complete answer']);
+      expect(session?.pinned).toBe(true);
+      expect(session?.updatedAt).toBe(2000);
+    } finally {
+      store.close();
+    }
+  }
+});
 
 test('backfills agent working directories from legacy cowork config only once', async () => {
   const userDataPath = createTempUserDataPath();

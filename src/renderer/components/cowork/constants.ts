@@ -1,4 +1,5 @@
 export const CoworkUiEvent = {
+  PrepareUpdate: 'cowork:prepare-update',
   OpenShareOptions: 'cowork:open-share-options',
   SelectSubagent: 'cowork:select-subagent',
   FocusInput: 'cowork:focus-input',

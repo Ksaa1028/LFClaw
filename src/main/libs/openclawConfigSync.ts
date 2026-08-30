@@ -12,6 +12,7 @@ import {
   normalizeBrowserHostnamePolicyList,
   normalizeBrowserWebAccessConfig,
 } from '../../shared/browserWebAccess/constants';
+import { McpTimeout } from '../../shared/mcp/constants';
 import { normalizeMcpServerUrlInput } from '../../shared/mcp/url';
 import {
   AuthType,
@@ -1305,7 +1306,10 @@ function buildOpenClawMcpServers(
 ): Record<string, Record<string, unknown>> {
   const result: Record<string, Record<string, unknown>> = {};
   for (const server of servers) {
-    const entry: Record<string, unknown> = {};
+    const entry: Record<string, unknown> = {
+      connectionTimeoutMs: McpTimeout.ConnectionMs,
+      requestTimeoutMs: McpTimeout.RequestMs,
+    };
     let normalizedRemoteUrl = '';
     if (server.transportType !== 'stdio') {
       const normalizedUrl = normalizeMcpServerUrlInput(server.url);

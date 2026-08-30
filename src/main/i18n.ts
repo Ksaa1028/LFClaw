@@ -16,6 +16,19 @@ export type LanguageType = 'zh' | 'en';
 
 const translations: Record<LanguageType, Record<string, string>> = {
   zh: {
+    shareWrongServer: '此分享不属于当前企业服务器。',
+    shareInvalidLink: '分享链接格式不正确。',
+    shareSignIn: '请先激活或登录当前企业账号。',
+    shareServerUnavailable: '分享不存在，或企业服务器尚未升级以支持对话分享。',
+    sharePermissionDenied: '登录已失效，或你没有查看此分享的权限。',
+    shareRequestFailed: '分享服务暂时不可用，请检查网络后重试。普通对话不受影响。',
+    shareTooLarge: '分享最多 2000 条消息、2 MB 正文，以及 10 个附件（合计 10 MB）。',
+    shareSessionMissing: '对话不存在，或不属于当前账号。',
+    shareSelectRecipient: '请从同事列表中至少选择一位接收人。',
+    shareAttachmentMissing: '对话中的附件已被移动、删除或无法读取，无法完整分享。',
+    shareReceivedPrefix: '收到的分享 · ',
+    updateBusy: '有任务正在运行，请等待任务结束后再点击更新。',
+    updateInstalling: '正在准备更新，请稍后继续对话。',
     // Tray menu
     trayShowWindow: '打开 LFClaw',
     trayNewTask: '新建任务',
@@ -291,6 +304,19 @@ const translations: Record<LanguageType, Record<string, string>> = {
     'enterprise.updateBlocked': '版本更新由企业统一管理',
   },
   en: {
+    shareWrongServer: 'This share belongs to a different enterprise server.',
+    shareInvalidLink: 'Invalid share link.',
+    shareSignIn: 'Activate or sign in to your enterprise account first.',
+    shareServerUnavailable: 'Share not found, or the enterprise server needs an update to support conversation sharing.',
+    sharePermissionDenied: 'Your session is invalid or you cannot access this share.',
+    shareRequestFailed: 'Sharing is unavailable. Check your connection and retry. Normal chat is unaffected.',
+    shareTooLarge: 'Share up to 2000 messages / 2 MB of text and 10 attachments / 10 MB total.',
+    shareSessionMissing: 'The conversation is missing or belongs to another account.',
+    shareSelectRecipient: 'Select at least one recipient from the colleague list.',
+    shareAttachmentMissing: 'An attachment in this conversation was moved, deleted, or cannot be read, so the complete conversation cannot be shared.',
+    shareReceivedPrefix: 'Received share · ',
+    updateBusy: 'Tasks are running. Wait for them to finish before updating.',
+    updateInstalling: 'Preparing an update. Please continue chatting afterwards.',
     // Tray menu
     trayShowWindow: 'Open LFClaw',
     trayNewTask: 'New Task',

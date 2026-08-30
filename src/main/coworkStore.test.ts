@@ -26,6 +26,7 @@ import { CoworkForkMode } from '../shared/cowork/constants';
 import { EnterpriseEnvironment } from '../shared/enterprise/constants';
 import { CoworkStore } from './coworkStore';
 import { ContinuityCapsuleSource } from './libs/agentEngine/coworkContinuityCapsule';
+import { migrateLegacySessionOwnership } from './libs/legacySessionOwnership';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -322,6 +323,40 @@ test('enterprise employee scope isolates sessions and conversation search', () =
   expect(store.getSession(first.id)?.title).toBe('Employee A private fruit');
   expect(store.listSessions(20, 0).map(session => session.id)).toEqual([first.id]);
   expect(store.conversationSearch({ query: '乌龙茶', maxResults: 5 }).map(result => result.sessionId)).toEqual([first.id]);
+});
+
+test('upgrade restores sidebar history and complete messages without changing session data', () => {
+  db.exec('CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL)');
+  db.prepare('INSERT INTO kv VALUES (?, ?, ?)').run(
+    'lfclaw_enterprise_access', JSON.stringify({ user: { userId: 'existing-employee' } }), 1,
+  );
+  insertSession('old-pinned', 'main', 'Historical report', 1000, 1, 1);
+  insertSession('old-recent', 'main', 'Historical question', 2000);
+  insertSession('other-agent', 'writer', 'Historical draft', 1500);
+  insertMessage('old-user', 'old-pinned', 'user', 'Original question', null, 1, 1000);
+  insertMessage('old-assistant', 'old-pinned', 'assistant', 'Original answer', '{"saved":true}', 2, 1001);
+  const before = db.prepare('SELECT * FROM cowork_sessions ORDER BY id').all() as Record<string, unknown>[];
+  const messagesBefore = db.prepare('SELECT * FROM cowork_messages ORDER BY id').all();
+
+  // This is the exact query used by the sidebar preview before the repair.
+  expect(store.listSessions(6, 0, 'main')).toEqual([]);
+  expect(store.getSession('old-pinned')).toBeNull();
+  expect(migrateLegacySessionOwnership(db)).toBe(true);
+  expect(store.listSessions(1, 0, 'main').map(s => s.id)).toEqual(['old-pinned']);
+  expect(store.listSessions(1, 1, 'main').map(s => s.id)).toEqual(['old-recent']);
+  expect(store.countSessions('main')).toBe(2);
+  expect(store.searchSessions({ query: 'Historical', agentId: 'main' })).toHaveLength(2);
+  expect(store.getSession('old-pinned')?.messages.map(m => m.content))
+    .toEqual(['Original question', 'Original answer']);
+  const after = db.prepare('SELECT * FROM cowork_sessions ORDER BY id').all() as Record<string, unknown>[];
+  expect(after.map(row => ({ ...row, owner_scope: '' }))).toEqual(before);
+  expect(db.prepare('SELECT * FROM cowork_messages ORDER BY id').all()).toEqual(messagesBefore);
+  expect(db.prepare('SELECT COUNT(*) AS n FROM cowork_legacy_session_ownership').get()).toEqual({ n: 3 });
+
+  expect(migrateLegacySessionOwnership(db)).toBe(false);
+  process.env[EnterpriseEnvironment.WorkspaceScope] = 'another-employee';
+  expect(store.listSessions(6, 0, 'main')).toEqual([]);
+  expect(store.getSession('old-pinned')).toBeNull();
 });
 
 test('continuity capsule upsert stores one rolling capsule per session', () => {

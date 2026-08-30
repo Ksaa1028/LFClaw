@@ -4820,6 +4820,12 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     const currentModel = rawCurrentModel ? this.normalizeModelRef(rawCurrentModel) : '';
 
     const sections: string[] = [];
+    const sharedContext = this.store.getSharedConversationContext?.(sessionId);
+    if (sharedContext) {
+      // Full snapshot/excerpt on the first turn of this runtime, provenance and
+      // local source pointers thereafter. Not dependent on UI message pagination.
+      sections.push(this.bridgedSessions.has(sessionId) ? sharedContext.split('\n\n')[0] : sharedContext);
+    }
     if (shouldInjectSystemPrompt) {
       sections.push(this.buildSystemPromptPrefix(normalizedSystemPrompt));
     }
@@ -4948,6 +4954,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
     const source = messages
       .filter((message) => {
+        if (message.metadata?.sharedSnapshotId) return false;
         if (message.type !== 'user' && message.type !== 'assistant') {
           return false;
         }

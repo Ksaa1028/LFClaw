@@ -13,6 +13,7 @@ import {
 import { AuthIpcChannel } from '../shared/auth/constants';
 import { BrowserIpc, type BrowserRuntimeProfile } from '../shared/browserWebAccess/constants';
 import { ClipboardIpc } from '../shared/clipboard/constants';
+import { ConversationShareIpc, type ShareCreateInput } from '../shared/conversationShare/constants';
 import { CoworkIpcChannel } from '../shared/cowork/constants';
 import { DataMigrationIpc } from '../shared/dataMigration/constants';
 import { DialogIpc } from '../shared/dialog/constants';
@@ -52,6 +53,21 @@ import { OpenClawSessionPolicyIpc } from './openclawSessionPolicy/constants';
 
 // 暴露安全的 API 到渲染进程
 contextBridge.exposeInMainWorld('electron', {
+  conversationShare: {
+    preview: (sessionId: string) => ipcRenderer.invoke(ConversationShareIpc.Preview, sessionId),
+    recipients: () => ipcRenderer.invoke(ConversationShareIpc.Recipients),
+    create: (input: ShareCreateInput) => ipcRenderer.invoke(ConversationShareIpc.Create, input),
+    inbox: () => ipcRenderer.invoke(ConversationShareIpc.Inbox),
+    read: (id: string) => ipcRenderer.invoke(ConversationShareIpc.Read, id),
+    delete: (id: string) => ipcRenderer.invoke(ConversationShareIpc.Delete, id),
+    import: (id: string) => ipcRenderer.invoke(ConversationShareIpc.Import, id),
+    pendingLink: () => ipcRenderer.invoke(ConversationShareIpc.PendingLink),
+    onLink: (callback: () => void) => {
+      const listener = () => callback();
+      ipcRenderer.on(ConversationShareIpc.LinkAvailable, listener);
+      return () => ipcRenderer.removeListener(ConversationShareIpc.LinkAvailable, listener);
+    },
+  },
   platform: process.platform,
   arch: process.arch,
   store: {

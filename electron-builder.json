@@ -261,7 +261,7 @@
     "oneClick": false,
     "allowToChangeInstallationDirectory": true,
     "runAfterFinish": true,
-    "deleteAppDataOnUninstall": true,
+    "deleteAppDataOnUninstall": false,
     "include": "scripts/nsis-installer.nsh"
   },
   "electronVersion": "40.2.1",

@@ -1,0 +1,49 @@
+===================================================================
+--- a/src/agents/agent-bundle-mcp-runtime.ts
++++ b/src/agents/agent-bundle-mcp-runtime.ts
+@@ -55,9 +55,9 @@
+ const DEFAULT_SESSION_MCP_RUNTIME_IDLE_TTL_MS = 10 * 60 * 1000;
+ const SESSION_MCP_RUNTIME_SWEEP_INTERVAL_MS = 60 * 1000;
+ const BUNDLE_MCP_FAILURE_THRESHOLD = 3;
+ const BUNDLE_MCP_FAILURE_COOLDOWN_MS = 60_000;
+-const BUNDLE_MCP_CATALOG_LIST_TIMEOUT_MS = 1_500;
++const BUNDLE_MCP_CATALOG_LIST_TIMEOUT_MS = 30_000;
+ const BUNDLE_MCP_METADATA_TEXT_LIMIT = 1_200;
+ let bundleMcpCatalogListTimeoutMs: number | undefined;
+
+ type McpToolSelection = {
+@@ -266,9 +266,9 @@
+   if (bundleMcpCatalogListTimeoutMs !== undefined) {
+     return bundleMcpCatalogListTimeoutMs;
+   }
+   return hasConfiguredMcpRequestTimeout(rawServer)
+-    ? requestTimeoutMs
++    ? Math.min(requestTimeoutMs, BUNDLE_MCP_CATALOG_LIST_TIMEOUT_MS)
+     : BUNDLE_MCP_CATALOG_LIST_TIMEOUT_MS;
+ }
+
+ function setBundleMcpCatalogListTimeoutMsForTest(timeoutMs?: number): void {
+@@ -701,9 +701,9 @@
+             const message = redactErrorUrls(error);
+             if (!disposed) {
+               const action = reusedSession ? "refresh" : "start";
+               logWarn(
+-                `bundle-mcp: failed to ${action} server "${serverName}" (${resolved.description}): ${message}`,
++                `bundle-mcp: failed to ${action} server "${serverName}" (${resolved.description}): ${message} [MCP_CATALOG_RETRY_ON_FAILURE]`,
+               );
+             }
+             diagnostics.push({
+               serverName,
+@@ -740,9 +740,11 @@
+     try {
+       const nextCatalog = await inFlight;
+       failIfDisposed();
+       if (catalogInvalidationGeneration === catalogGeneration) {
+-        catalog = nextCatalog;
++        // MCP_CATALOG_RETRY_ON_FAILURE: do not cache offline/failed discovery.
++        // The next request must be able to reconnect without a new conversation.
++        catalog = nextCatalog.diagnostics?.length ? null : nextCatalog;
+       }
+       return nextCatalog;
+     } finally {
+       if (catalogInFlight === inFlight) {

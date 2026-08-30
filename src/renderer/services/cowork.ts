@@ -701,6 +701,19 @@ class CoworkService {
     }
   }
 
+  async reloadSessionsForIdentityChange(agentId?: string): Promise<void> {
+    // Invalidate both list and detail requests issued for the previous identity.
+    // Their IPC responses may arrive after the account switch and must not put
+    // the previous user's session back into Redux.
+    this.latestLoadSessionsRequestId += 1;
+    this.latestLoadSessionRequestId += 1;
+    store.dispatch(clearCurrentSession());
+    store.dispatch(clearPendingPermissions());
+    store.dispatch(setSessions([]));
+    store.dispatch(setHasMoreSessions(false));
+    await this.loadSessions(agentId);
+  }
+
   async listSessionsForAgentPreview(
     agentId: string,
     limit: number,
@@ -1671,6 +1684,7 @@ class CoworkService {
   }
 
   clearSession(options: { restoreAgentSkills?: boolean } = {}): void {
+    this.latestLoadSessionRequestId += 1;
     store.dispatch(clearCurrentSession());
     if (options.restoreAgentSkills) {
       restoreCurrentAgentDefaultSkills();

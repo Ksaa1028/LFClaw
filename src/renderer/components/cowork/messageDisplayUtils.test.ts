@@ -2,6 +2,7 @@ import { expect, test } from 'vitest';
 
 import type { CoworkMessage } from '../../types/cowork';
 import {
+  buildDisplayItems,
   formatStructuredText,
   getStreamingActivityStatusText,
   getToolResultCollapsedDisplay,
@@ -95,4 +96,25 @@ test('streaming activity status keeps unresolved tool progress visible', () => {
 
 test('streaming activity status shows context maintenance state', () => {
   expect(getStreamingActivityStatusText([], true)).toBe('正在整理上下文...');
+});
+
+test('hidden model context is never rendered as a conversation message', () => {
+  const visible: CoworkMessage = {
+    id: 'assistant-visible',
+    type: 'assistant',
+    content: '用户可以看到的回答',
+    timestamp: 1,
+  };
+  const hidden: CoworkMessage = {
+    id: 'shared-context-hidden',
+    type: 'system',
+    content: '[Shared conversation — quoted historical reference]',
+    timestamp: 2,
+    metadata: {
+      hidden: true,
+      kind: 'shared-conversation-context',
+    },
+  };
+
+  expect(buildDisplayItems([visible, hidden])).toEqual([{ type: 'message', message: visible }]);
 });

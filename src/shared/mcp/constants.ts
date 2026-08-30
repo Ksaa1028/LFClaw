@@ -12,3 +12,8 @@ export const McpIpcChannel = {
   Changed: 'mcp:changed',
 } as const;
 export type McpIpcChannel = typeof McpIpcChannel[keyof typeof McpIpcChannel];
+
+export const McpTimeout = {
+  ConnectionMs: 45_000,
+  RequestMs: 180_000,
+} as const;
