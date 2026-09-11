@@ -30,6 +30,11 @@ test('auth: HTTP 401', () => {
   expect(classifyError('Request failed with status 401')).toBe('coworkErrorAuthInvalid');
 });
 
+test('auth: enterprise MCP assertion rejected', () => {
+  expect(classifyError('Error POSTing to endpoint (HTTP 403): {"error":"MCP_AUTH_FAILED_AFTER_REFRESH"}'))
+    .toBe('coworkErrorEnterpriseMcpAuthInvalid');
+});
+
 test('auth: remote MCP ApiKey expired or inactive', () => {
   expect(classifyError('ApiKey is expired, deleted, or user is inactive')).toBe('coworkErrorAuthInvalid');
 });

@@ -42,5 +42,6 @@ describe('OpenClaw extension manifests', () => {
     expect(readPackageOpenClawExtensions('mcp-bridge')).toEqual(['./index.ts']);
     expect(readPackageOpenClawExtensions('ask-user-question')).toEqual(['./index.ts']);
     expect(readPackageOpenClawExtensions('lobster-media-generation')).toEqual(['./index.ts']);
+    expect(readPackageOpenClawExtensions('lfclaw-openviking-memory')).toEqual(['./index.ts']);
   });
 });

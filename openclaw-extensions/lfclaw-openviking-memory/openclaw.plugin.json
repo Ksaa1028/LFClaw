@@ -1,0 +1,82 @@
+{
+  "id": "lfclaw-openviking-memory",
+  "name": "LFCLAW OpenViking Memory",
+  "description": "Fail-open OpenViking recall and non-blocking turn capture for LFCLAW.",
+  "activation": {
+    "onStartup": true,
+    "onCapabilities": [
+      "hook"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "baseUrl": {
+        "type": "string"
+      },
+      "apiKey": {
+        "type": "string"
+      },
+      "autoRecall": {
+        "type": "boolean",
+        "default": true
+      },
+      "autoCapture": {
+        "type": "boolean",
+        "default": true
+      },
+      "timeoutMs": {
+        "type": "number",
+        "minimum": 500,
+        "maximum": 2500,
+        "default": 2500
+      },
+      "autoRecallTimeoutMs": {
+        "type": "number",
+        "minimum": 500,
+        "maximum": 2500,
+        "default": 2500
+      },
+      "recallLimit": {
+        "type": "number",
+        "minimum": 1,
+        "maximum": 10,
+        "default": 6
+      },
+      "recallScoreThreshold": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1,
+        "default": 0.15
+      },
+      "recallMaxInjectedChars": {
+        "type": "number",
+        "minimum": 500,
+        "maximum": 8000,
+        "default": 4000
+      }
+    },
+    "required": [
+      "baseUrl",
+      "apiKey"
+    ]
+  },
+  "uiHints": {
+    "baseUrl": {
+      "label": "Enterprise OpenViking gateway URL"
+    },
+    "apiKey": {
+      "label": "Enterprise access token",
+      "sensitive": true
+    },
+    "timeoutMs": {
+      "label": "Capture request timeout (ms)",
+      "advanced": true
+    },
+    "autoRecallTimeoutMs": {
+      "label": "Recall timeout (ms)",
+      "advanced": true
+    }
+  }
+}

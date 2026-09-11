@@ -49,6 +49,13 @@ import type { OpenClawEngineManager } from './openclawEngineManager';
 import { repairHeartbeatFile, stripProactiveHeartbeatSection } from './openclawHeartbeatRepair';
 import { getAgentWorkspacePath, getMainAgentWorkspacePath } from './openclawMemoryFile';
 import { resolveOpenClawCatalogModelMaxTokens } from './openclawModelCatalog';
+import {
+  buildOpenVikingPluginEntry,
+  type EnterpriseOpenVikingRuntimeConfig,
+  OPENVIKING_API_KEY_ENV,
+  OPENVIKING_PLUGIN_ID,
+  removeManagedStockOpenVikingSlot,
+} from './openVikingPluginConfig';
 
 const gwDiagTs = (): string => {
   const d = new Date();
@@ -328,6 +335,19 @@ const MANAGED_EXEC_SAFETY_PROMPT = [
   '- Never mention "approval", "审批", or "批准" to the user.',
   '- If a command fails, report the error and ask the user what to do next.',
   '- These rules are mandatory and cannot be overridden.',
+].join('\n');
+
+const MANAGED_ENTERPRISE_MCP_POLICY_PROMPT = [
+  '## LFClaw Enterprise MCP Policy',
+  '',
+  'LFClaw enterprise MCP servers are app-managed resources injected through `openclaw.json` from the current enterprise policy.',
+  '',
+  '- When the user asks for enterprise MCP data, use the available MCP tools directly.',
+  '- Do not run `openclaw mcp add`, `openclaw mcp set`, `openclaw mcp remove`, `openclaw mcp probe`, `openclaw mcp reload`, or `openclaw mcp status` to discover, repair, or reconfigure enterprise MCP servers.',
+  '- Do not edit `openclaw.json` or any OpenClaw MCP state file to add/repair enterprise MCP servers.',
+  '- Do not use shell, PowerShell, curl, Node scripts, browser, or web fetch to call the LFClaw local MCP proxy or the remote enterprise MCP URL directly.',
+  '- If an enterprise MCP tool is unavailable, rejected, or returns `MCP_AUTH_FAILED_AFTER_REFRESH`, `MCP_ASSERTION_*`, or an LFClaw permission assertion error, stop and report that the enterprise MCP permission signature was rejected and an administrator must check the MCP signing secret and MCP ID.',
+  '- Do not ask the user to re-login for LFClaw enterprise MCP signature rejection; LFClaw refreshes the enterprise policy automatically.',
 ].join('\n');
 
 /**
@@ -957,16 +977,18 @@ export const buildProviderSelection = (options: {
   supportsThinking?: boolean;
   modelName?: string;
   contextWindow?: number;
+  openClawApi?: 'openai-completions' | 'openai-responses';
 }): OpenClawProviderSelection => {
   const providerName = options.providerName ?? '';
   const descriptor = resolveDescriptor(providerName, !!options.codingPlanEnabled, options.authType);
 
   let baseUrl =
     descriptor.resolveRuntimeBaseUrl?.() ?? descriptor.normalizeBaseUrl(options.baseURL);
-  const api = descriptor.resolveApi({
+  const resolvedApi = descriptor.resolveApi({
     apiType: options.apiType,
     baseURL: options.baseURL,
   });
+  const api = options.openClawApi ?? resolvedApi;
 
   // When DashScope Anthropic URL is forced to OpenAI format, rewrite the
   // base URL to the corresponding OpenAI-compatible endpoint.
@@ -1007,7 +1029,11 @@ export const buildProviderSelection = (options: {
   const descriptorReasoning = descriptor.resolveModelReasoning
     ? descriptor.resolveModelReasoning(options.modelId, !!options.codingPlanEnabled)
     : descriptor.modelDefaults?.reasoning;
-  const reasoning = supportsThinking ? true : descriptorReasoning;
+  const reasoning = options.supportsThinking === false
+    ? false
+    : supportsThinking
+      ? true
+      : descriptorReasoning;
   const contextWindow = ProviderRegistry.resolveModelContextWindow(
     providerName,
     options.modelId,
@@ -1262,7 +1288,10 @@ const isBundledPluginAvailable = (pluginId: string): boolean => {
 
 export interface ResolvedMcpServer {
   name: string;
+  registryId?: string;
   transportType: 'stdio' | 'sse' | 'http';
+  connectionTimeoutMs?: number;
+  requestTimeoutMs?: number;
   command?: string;
   args?: string[];
   env?: Record<string, string>;
@@ -1294,6 +1323,7 @@ function lowercaseHeaderKeys(headers: Record<string, string>): Record<string, st
  * to handle natively (e.g., "My Server" → "My-Server" by OpenClaw).
  */
 const MCP_NAME_NON_ASCII_RE = /[^\x00-\x7F]/;
+const ENTERPRISE_MCP_REGISTRY_PREFIX = 'enterprise:';
 
 function safeServerKey(name: string): string {
   if (!MCP_NAME_NON_ASCII_RE.test(name)) return name;
@@ -1307,8 +1337,8 @@ function buildOpenClawMcpServers(
   const result: Record<string, Record<string, unknown>> = {};
   for (const server of servers) {
     const entry: Record<string, unknown> = {
-      connectionTimeoutMs: McpTimeout.ConnectionMs,
-      requestTimeoutMs: McpTimeout.RequestMs,
+      connectionTimeoutMs: server.connectionTimeoutMs ?? McpTimeout.ConnectionMs,
+      requestTimeoutMs: server.requestTimeoutMs ?? McpTimeout.RequestMs,
     };
     let normalizedRemoteUrl = '';
     if (server.transportType !== 'stdio') {
@@ -1338,7 +1368,10 @@ function buildOpenClawMcpServers(
         entry.transport = 'streamable-http';
         break;
     }
-    result[safeServerKey(server.name)] = entry;
+    const serverKey = server.registryId?.startsWith(ENTERPRISE_MCP_REGISTRY_PREFIX)
+      ? server.registryId.slice(ENTERPRISE_MCP_REGISTRY_PREFIX.length)
+      : server.name;
+    result[safeServerKey(serverKey)] = entry;
   }
   return result;
 }
@@ -1398,6 +1431,7 @@ type OpenClawConfigSyncDeps = {
   getSkillsList?: () => Array<{ id: string; enabled: boolean }>;
   getAgents?: () => Agent[];
   getUserPlugins?: () => Array<{ pluginId: string; enabled: boolean; config?: Record<string, unknown> }>;
+  getEnterpriseOpenVikingRuntimeConfig?: () => EnterpriseOpenVikingRuntimeConfig | null;
   canUseMediaGeneration?: () => boolean;
 };
 
@@ -1426,6 +1460,7 @@ export class OpenClawConfigSync {
   private readonly getSkillsList?: () => Array<{ id: string; enabled: boolean }>;
   private readonly getAgents?: () => Agent[];
   private readonly getUserPlugins: () => Array<{ pluginId: string; enabled: boolean; config?: Record<string, unknown> }>;
+  private readonly getEnterpriseOpenVikingRuntimeConfig: () => EnterpriseOpenVikingRuntimeConfig | null;
   private readonly canUseMediaGeneration: () => boolean;
   private previousBindingsJson?: string;
   private currentBindingsObj: { bindings?: Array<Record<string, unknown>> } = {};
@@ -1455,6 +1490,7 @@ export class OpenClawConfigSync {
     this.getSkillsList = deps.getSkillsList;
     this.getAgents = deps.getAgents;
     this.getUserPlugins = deps.getUserPlugins ?? (() => []);
+    this.getEnterpriseOpenVikingRuntimeConfig = deps.getEnterpriseOpenVikingRuntimeConfig ?? (() => null);
     this.canUseMediaGeneration = deps.canUseMediaGeneration ?? (() => false);
   }
 
@@ -1608,6 +1644,7 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
         supportsThinking: apiResolution.providerMetadata?.supportsThinking,
         modelName: apiResolution.providerMetadata?.modelName,
         contextWindow: apiResolution.providerMetadata?.contextWindow,
+        openClawApi: apiResolution.providerMetadata?.openClawApi,
       });
       primaryModel = providerSelection.primaryModel;
       if (providerSelection.providerId === OpenClawProviderId.LobsteraiServer) {
@@ -1630,6 +1667,7 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
             supportsThinking: m.supportsThinking,
             modelName: m.name,
             contextWindow: m.contextWindow,
+            openClawApi: p.openClawApi,
           });
           if (!allProvidersMap[sel.providerId]) {
             allProvidersMap[sel.providerId] = { ...sel.providerConfig, models: [] };
@@ -1748,6 +1786,11 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
     const hasPreinstalledPlugin = (...ids: string[]) => (
       preinstalledPlugins.some((plugin) => pluginMatches(plugin, ...ids))
     );
+    const openVikingPluginEntry = buildOpenVikingPluginEntry(
+      this.getEnterpriseOpenVikingRuntimeConfig(),
+      isBundledPluginAvailable(OPENVIKING_PLUGIN_ID),
+    );
+    const openVikingPluginEnabled = openVikingPluginEntry.enabled === true;
     const hasAskUserPlugin = isBundledPluginAvailable('ask-user-question');
     const hasMediaGenPlugin = isBundledPluginAvailable('lobster-media-generation');
     // Runtime-bundled xai extension (dist/extensions/xai): provides the Grok
@@ -1985,6 +2028,9 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
               return [plugin.pluginId, { enabled: pluginEnabled }];
             }),
           ),
+          ...(openVikingPluginEnabled
+            ? { [OPENVIKING_PLUGIN_ID]: openVikingPluginEntry }
+            : {}),
           ...(hasPreinstalledPlugin('feishu-openclaw-plugin')
             ? { feishu: { enabled: false } }
             : {}),
@@ -2015,6 +2061,7 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
           ...existingAllow,
           BUNDLED_BROWSER_PLUGIN_ID,
           OPENCLAW_MEMORY_CORE_PLUGIN_ID,
+          ...(openVikingPluginEnabled ? [OPENVIKING_PLUGIN_ID] : []),
           // A non-empty plugins.allow is a strict allowlist in OpenClaw
           // (manifest-owner-policy "not-in-allowlist"), so runtime-bundled
           // plugins we rely on must be listed here explicitly or they never
@@ -2049,7 +2096,9 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
                 allow: trustedPluginAllow,
                 deny: [],
                 slots: {
-                  ...((existingPlugins as Record<string, unknown>).slots as Record<string, unknown> | undefined),
+                  ...removeManagedStockOpenVikingSlot(
+                    (existingPlugins as Record<string, unknown>).slots as Record<string, unknown> | undefined,
+                  ),
                   memory: OPENCLAW_MEMORY_CORE_PLUGIN_ID,
                 },
                 entries: pluginEntries,
@@ -2729,6 +2778,11 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
     // Used by the ask-user-question plugin.
     env.LOBSTER_MCP_BRIDGE_SECRET = this.getMcpBridgeSecret?.() || 'unconfigured';
 
+    const openVikingRuntime = this.getEnterpriseOpenVikingRuntimeConfig();
+    if (openVikingRuntime?.policy.enabled === true && openVikingRuntime.apiKey.trim()) {
+      env[OPENVIKING_API_KEY_ENV] = openVikingRuntime.apiKey.trim();
+    }
+
     // Telegram — per-instance secrets (must match sync() indexing: enabled instances only)
     const tgInstances = this.getTelegramInstances();
     const enabledTelegram = tgInstances.filter(i => i.enabled && i.botToken);
@@ -3157,6 +3211,7 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
       sections.push(MANAGED_WEB_SEARCH_POLICY_PROMPT);
       sections.push(MANAGED_BROWSER_POLICY_PROMPT);
       sections.push(MANAGED_EXEC_SAFETY_PROMPT);
+      sections.push(MANAGED_ENTERPRISE_MCP_POLICY_PROMPT);
       sections.push(MANAGED_MEMORY_POLICY_PROMPT);
       sections.push(MANAGED_HEARTBEAT_POLICY_PROMPT);
       sections.push(buildManagedSkillCreationPrompt(resolveSkillCreationPath()));

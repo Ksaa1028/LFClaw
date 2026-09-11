@@ -156,6 +156,85 @@ describe('AppUpdateCoordinator', () => {
     expect(store.get(readyFileStoreKey(AppUpdateSource.Auto))).toBeUndefined();
   });
 
+  test('check failure keeps a verified ready update installable', async () => {
+    const store = createStoreStub();
+    const filePath = seedReadyFile(store, updatesDir, AppUpdateSource.Auto);
+    const coordinator = new AppUpdateCoordinator(store);
+    expect(coordinator.getState().status).toBe(AppUpdateStatus.Ready);
+
+    mocks.fetch.mockRejectedValue(new Error('net::ERR_NETWORK_IO_SUSPENDED'));
+
+    const check = await coordinator.checkNow();
+
+    expect(check.success).toBe(false);
+    expect(check.error).toBe('net::ERR_NETWORK_IO_SUSPENDED');
+    expect(check.state.status).toBe(AppUpdateStatus.Ready);
+    expect(check.state.readyFilePath).toBe(filePath);
+    expect(check.state.errorMessage).toBeNull();
+
+    mocks.installUpdate.mockResolvedValue(undefined);
+    const install = await coordinator.installReadyUpdate();
+    expect(install.success).toBe(true);
+    expect(mocks.installUpdate).toHaveBeenCalledOnce();
+  });
+
+  test('check failure without a verified installer still degrades to Error', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    const store = createStoreStub();
+    mocks.fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        code: 0,
+        data: {
+          value: {
+            version: READY_VERSION,
+            windowsX64: {
+              url: `https://updates.example.com/LobsterAI-${READY_VERSION}.exe`,
+            },
+          },
+        },
+      }),
+    });
+    const coordinator = new AppUpdateCoordinator(store);
+
+    const first = await coordinator.checkNow({ manual: true });
+    expect(first.state.status).toBe(AppUpdateStatus.Available);
+
+    mocks.fetch.mockRejectedValueOnce(new Error('net::ERR_NETWORK_IO_SUSPENDED'));
+    const second = await coordinator.checkNow({ manual: true });
+
+    expect(second.success).toBe(false);
+    expect(second.state.status).toBe(AppUpdateStatus.Error);
+    expect(second.state.errorMessage).toBe('net::ERR_NETWORK_IO_SUSPENDED');
+  });
+
+  test('installReadyUpdate accepts an Error state that still has a verified installer', async () => {
+    const store = createStoreStub();
+    seedReadyFile(store, updatesDir, AppUpdateSource.Auto);
+    const coordinator = new AppUpdateCoordinator(store);
+    const internal = coordinator as unknown as {
+      state: { status: AppUpdateStatus; errorMessage: string | null };
+    };
+    internal.state.status = AppUpdateStatus.Error;
+    internal.state.errorMessage = 'net::ERR_NETWORK_IO_SUSPENDED';
+
+    mocks.installUpdate.mockResolvedValue(undefined);
+    const result = await coordinator.installReadyUpdate();
+
+    expect(result.success).toBe(true);
+    expect(mocks.installUpdate).toHaveBeenCalledOnce();
+  });
+
+  test('installReadyUpdate still rejects when no verified installer exists', async () => {
+    const coordinator = new AppUpdateCoordinator(createStoreStub());
+
+    const result = await coordinator.installReadyUpdate();
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('Update is not ready to install');
+    expect(mocks.installUpdate).not.toHaveBeenCalled();
+  });
+
   test('manual check reuses an installer downloaded by the auto flow', async () => {
     const store = createStoreStub();
     const filePath = seedReadyFile(store, updatesDir, AppUpdateSource.Auto);

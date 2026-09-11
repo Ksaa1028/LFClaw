@@ -236,6 +236,10 @@ import {
   syncEnterpriseConfig,
 } from './libs/enterpriseConfigSync';
 import {
+  fromEnterpriseMcpRegistryId,
+  toEnterpriseMcpRegistryId,
+} from './libs/enterpriseMcpProxy';
+import {
   createOfficePreviewSession,
   createPreviewSession,
   destroyPreviewSession,
@@ -1865,7 +1869,7 @@ const getOpenClawConfigSync = (): OpenClawConfigSync => {
       engineManager: getOpenClawEngineManager(),
       getCoworkConfig: () => getCoworkStore().getConfig(),
       getBrowserWebAccessConfig: () => getStore().get<AppConfigSettings>('app_config')?.browserWebAccess,
-      isEnterprise: () => !!getStore().get('enterprise_config'),
+      isEnterprise: () => !!getStore().get('enterprise_config') || !!getLFClawEnterpriseAccess().getCurrentAccess(),
       getOpenClawSessionPolicy: () => loadOpenClawSessionPolicyConfig(getStore()),
       getSkillsList: () =>
         getSkillManager()
@@ -1971,7 +1975,15 @@ const getOpenClawConfigSync = (): OpenClawConfigSync => {
         const mcpServers = getMcpRuntime().getStore().listServers();
         return getMcpRuntime().getResolvedServersCache().filter(server => (
           mcpServers.some(storedServer => (
-            storedServer.name === server.name
+            (
+              (!!server.registryId && storedServer.registryId === server.registryId)
+              || (!!server.registryId && fromEnterpriseMcpRegistryId(server.registryId) === storedServer.registryId)
+              || (!!storedServer.registryId && fromEnterpriseMcpRegistryId(storedServer.registryId) === server.name)
+              || storedServer.name === server.name
+              || storedServer.id === server.name
+              || storedServer.registryId === server.name
+              || storedServer.registryId === toEnterpriseMcpRegistryId(server.name)
+            )
             && (
               !isEnterpriseManagedMcpServer(storedServer)
               || enterpriseAccess.isMcpAllowed(storedServer.id, storedServer.registryId, storedServer.name)
@@ -1988,6 +2000,13 @@ const getOpenClawConfigSync = (): OpenClawConfigSync => {
           .listUserPlugins()
           .filter(p => !isHiddenUserPluginId(p.pluginId))
           .map(p => ({ pluginId: p.pluginId, enabled: p.enabled, config: p.config })),
+      getEnterpriseOpenVikingRuntimeConfig: () => {
+        const access = getLFClawEnterpriseAccess().getCurrentAccess();
+        const policy = access?.policy.openViking;
+        return access && policy
+          ? { policy, apiKey: access.accessToken }
+          : null;
+      },
       canUseMediaGeneration: () => cachedMediaGenerationEntitled,
     });
   }
@@ -2755,6 +2774,12 @@ const getMcpRuntime = (): McpRuntime => {
     mcpRuntime = new McpRuntime({
       getStore,
       syncOpenClawConfig,
+      getEnterpriseMcpIdentity: () => getLFClawEnterpriseAccess().getCurrentAccess()?.accessToken,
+      getEnterpriseMcpPolicy: async forceMcpRefresh => {
+        const enterpriseAccess = getLFClawEnterpriseAccess();
+        if (forceMcpRefresh) return (await enterpriseAccess.syncPolicy(forceMcpRefresh))?.policy ?? null;
+        return enterpriseAccess.getCurrentAccess()?.policy ?? null;
+      },
     });
   }
   return mcpRuntime;
@@ -3455,6 +3480,7 @@ const syncEnterpriseModelProvidersToAppConfig = (
       apiKey: provider.apiKey,
       baseUrl: provider.baseUrl,
       apiFormat: provider.apiFormat,
+      ...(provider.openClawApi ? { openClawApi: provider.openClawApi } : {}),
       models: provider.models.map(model => ({
         id: model.id,
         name: model.name || model.id,
@@ -3482,27 +3508,30 @@ const syncEnterpriseModelProvidersToAppConfig = (
   });
 };
 
-const syncEnterpriseMcpServersToLocalStore = (access: EnterpriseCurrentAccess | null): void => {
+const syncEnterpriseMcpServersToLocalStore = (access: EnterpriseCurrentAccess | null): boolean => {
   const servers = access?.policy.mcpServers ?? [];
   const mcpRuntimeInstance = getMcpRuntime();
   const store = mcpRuntimeInstance.getStore();
   const existingServers = store.listServers();
-  const allowedRegistryIds = new Set(servers.map(server => `enterprise:${server.id}`).filter(Boolean));
+  const allowedRegistryIds = new Set(servers.map(server => toEnterpriseMcpRegistryId(server.id)).filter(Boolean));
   const legacyAllowedRegistryIds = new Set(servers.map(server => server.id).filter(Boolean));
+  let changed = false;
 
   existingServers
     .filter(server => isEnterpriseManagedMcpServer(server) || legacyAllowedRegistryIds.has(server.registryId || ''))
     .filter(server => server.registryId && !allowedRegistryIds.has(server.registryId) && !legacyAllowedRegistryIds.has(server.registryId))
     .forEach(server => {
-      store.setEnabled(server.id, false);
+      if (server.enabled && store.setEnabled(server.id, false)) {
+        changed = true;
+      }
     });
 
   if (servers.length === 0) {
-    return;
+    return changed;
   }
 
   servers.forEach(server => {
-    const registryId = `enterprise:${server.id}`;
+    const registryId = toEnterpriseMcpRegistryId(server.id);
     const legacyRegistryId = server.id;
     const transportType: 'stdio' | 'sse' | 'http' = server.transportType === 'stdio' || server.transportType === 'sse'
       ? server.transportType
@@ -3522,23 +3551,47 @@ const syncEnterpriseMcpServersToLocalStore = (access: EnterpriseCurrentAccess | 
     const existing = existingServers.find(item =>
       item.registryId === registryId
       || item.registryId === legacyRegistryId
-      || (isEnterpriseManagedMcpServer(item) && item.name === server.name),
+      || (isEnterpriseManagedMcpServer(item) && item.name === server.name)
+      || (server.url && item.url === server.url),
     );
     if (existing) {
       store.updateServer(existing.id, data);
-      store.setEnabled(existing.id, true);
+      if (!existing.enabled && store.setEnabled(existing.id, true)) {
+        changed = true;
+      }
       mcpRuntimeInstance.ensureLaunchResolution(existing.id, 'enterprise-mcp-synced');
       return;
     }
     const created = store.createServer(data);
+    changed = true;
     mcpRuntimeInstance.ensureLaunchResolution(created.id, 'enterprise-mcp-synced');
   });
+
+  return changed;
 };
 
 function isEnterpriseManagedMcpServer(server: { registryId?: string | null; description?: string | null }): boolean {
-  return server.registryId?.startsWith('enterprise:') === true
+  return !!fromEnterpriseMcpRegistryId(server.registryId)
     || server.description === 'LFClaw enterprise MCP';
 }
+
+const syncEnterprisePolicyToLocalCapabilities = async (reason: string): Promise<void> => {
+  const enterpriseAccess = getLFClawEnterpriseAccess();
+  const current = enterpriseAccess.getCurrentAccess();
+  if (!current) return;
+  let access: EnterpriseCurrentAccess | null = current;
+  try {
+    access = await enterpriseAccess.syncPolicy();
+  } catch (error) {
+    console.warn(`[Enterprise] failed to sync enterprise policy during ${reason}:`, error);
+  }
+  if (!access) return;
+  syncEnterpriseModelProvidersToAppConfig(access);
+  syncEnterpriseMcpServersToLocalStore(access);
+  await syncEnterpriseSkillsToLocalStore(access).catch(error => {
+    console.warn(`[Enterprise] failed to sync enterprise skills during ${reason}:`, error);
+  });
+};
 
 const ENTERPRISE_INSTALLED_SKILLS_KEY = 'lfclaw_enterprise_installed_skills';
 type EnterpriseInstalledSkillMeta = {
@@ -4198,13 +4251,13 @@ if (!gotTheLock) {
       throw new Error('企业积分已用完，请联系管理员分配积分。');
     }
     syncEnterpriseModelProvidersToAppConfig(access);
-    syncEnterpriseMcpServersToLocalStore(access);
+    const enterpriseMcpChanged = syncEnterpriseMcpServersToLocalStore(access);
     await syncEnterpriseSkillsToLocalStore(access).catch(error => {
       console.warn('[Enterprise] failed to sync enterprise skills during preflight:', error);
     });
     const syncResult = await syncOpenClawConfig({
       reason: 'enterprise-preflight',
-      restartGatewayIfRunning: false,
+      restartGatewayIfRunning: enterpriseMcpChanged,
     });
     if (!syncResult.success) {
       console.error('[Enterprise] Failed to apply model configuration during preflight:', syncResult.error);
@@ -4283,7 +4336,7 @@ if (!gotTheLock) {
       const access = await getLFClawEnterpriseAccess().syncPolicy();
       const nextWorkspaceScope = process.env[EnterpriseEnvironment.WorkspaceScope] || '';
       syncEnterpriseModelProvidersToAppConfig(access);
-      syncEnterpriseMcpServersToLocalStore(access);
+      const enterpriseMcpChanged = syncEnterpriseMcpServersToLocalStore(access);
       await syncEnterpriseSkillsToLocalStore(access).catch(error => {
         console.warn('[Enterprise] failed to sync enterprise skills during policy refresh:', error);
       });
@@ -4291,7 +4344,7 @@ if (!gotTheLock) {
         reason: previousWorkspaceScope === nextWorkspaceScope
           ? 'enterprise-policy-updated'
           : 'enterprise-employee-changed',
-        restartGatewayIfRunning: previousWorkspaceScope !== nextWorkspaceScope,
+        restartGatewayIfRunning: previousWorkspaceScope !== nextWorkspaceScope || enterpriseMcpChanged,
       });
       BrowserWindow.getAllWindows().forEach(win => {
         if (!win.isDestroyed()) {
@@ -5899,6 +5952,7 @@ if (!gotTheLock) {
               providerKey: `custom_${index}`,
               openClawProviderId: `custom_${index}`,
               apiFormat: provider.apiFormat,
+              openClawApi: provider.openClawApi,
               supportsImage: ProviderRegistry.resolveModelSupportsImage(
                 provider.provider || provider.id,
                 model.id,
@@ -11669,6 +11723,8 @@ if (!gotTheLock) {
       }
     }
     profiler.measure('enterpriseConfigSync');
+
+    await syncEnterprisePolicyToLocalCapabilities('startup');
 
     bindCoworkRuntimeForwarder();
     bindOpenClawStatusForwarder();

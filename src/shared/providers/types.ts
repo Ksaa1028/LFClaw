@@ -5,6 +5,8 @@ export interface ProviderConfig {
   apiKey: string;
   baseUrl: string;
   apiFormat?: ApiFormat;
+  /** Explicit OpenClaw transport selected by enterprise policy. */
+  openClawApi?: 'openai-completions' | 'openai-responses';
   models?: Array<{
     id: string;
     name: string;

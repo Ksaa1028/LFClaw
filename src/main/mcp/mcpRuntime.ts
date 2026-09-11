@@ -3,11 +3,17 @@ import { app, BrowserWindow } from 'electron';
 import path from 'path';
 
 import { SESSION_AGNOSTIC_PERMISSION_SESSION_ID } from '../../shared/cowork/constants';
+import type { EnterprisePolicy } from '../../shared/enterprise/constants';
 import { McpIpcChannel } from '../../shared/mcp/constants';
 import { isComputerUseKitInstalled } from '../computerUse/computerUseKit';
 import { resolveComputerUseMcpServer } from '../computerUse/computerUseMcpServer';
 import { installComputerUseRuntime } from '../computerUse/computerUseRuntime';
 import { getElectronNodeRuntimePath } from '../libs/coworkUtil';
+import {
+  EnterpriseMcpProxy,
+  fromEnterpriseMcpRegistryId,
+  toEnterpriseMcpRegistryId,
+} from '../libs/enterpriseMcpProxy';
 import {
   type AskUserRequest,
   type AskUserResponse,
@@ -27,6 +33,8 @@ import { McpStore } from './mcpStore';
 export type { AskUserResponse, MediaGenerationRequest, MediaGenerationResponse };
 
 export interface McpRuntimeDeps {
+  getEnterpriseMcpIdentity?: () => string | undefined;
+  getEnterpriseMcpPolicy?: (forceMcpRefresh?: string) => Promise<EnterprisePolicy | null>;
   getStore: () => SqliteStore;
   syncOpenClawConfig: (options: {
     reason: string;
@@ -35,7 +43,52 @@ export interface McpRuntimeDeps {
   }) => Promise<{ success: boolean; changed: boolean }>;
 }
 
+const EnterpriseMcpTimeout = {
+  ConnectionMs: 8_000,
+  RequestMs: 30_000,
+} as const;
+
+type EnterpriseMcpServer = NonNullable<EnterprisePolicy['mcpServers']>[number];
+
+const normalizeEnterpriseTransportType = (
+  transportType: EnterpriseMcpServer['transportType'],
+): ResolvedMcpServer['transportType'] => {
+  if (transportType === 'stdio' || transportType === 'sse') return transportType;
+  return 'http';
+};
+
+const isEnterpriseManagedServer = (
+  server: { registryId?: string | null; description?: string | null },
+): boolean => (
+  !!fromEnterpriseMcpRegistryId(server.registryId)
+  || server.description === 'LFClaw enterprise MCP'
+);
+
+const resolveEnterpriseMcpId = (
+  server: { id: string; name: string; registryId?: string | null },
+): string => (
+  fromEnterpriseMcpRegistryId(server.registryId)
+  || (server.registryId && !server.registryId.includes(':') ? server.registryId : '')
+  || server.id
+  || server.name
+);
+
+const findEnterpriseMcpServer = (
+  policy: EnterprisePolicy | null | undefined,
+  server: { name: string; registryId?: string | null; url?: string | null },
+  enterpriseMcpId: string,
+): EnterpriseMcpServer | null => {
+  const servers = policy?.mcpServers ?? [];
+  return servers.find(item => (
+    item.id === enterpriseMcpId
+    || toEnterpriseMcpRegistryId(item.id) === server.registryId
+    || (!!server.url && item.url === server.url)
+    || item.name === server.name
+  )) ?? null;
+};
+
 export class McpRuntime {
+  private readonly enterpriseProxy = new EnterpriseMcpProxy();
   private mcpStore: McpStore | null = null;
   private launchResolverManager: McpLaunchResolverManager | null = null;
   private bridgeServer: McpBridgeServer | null = null;
@@ -296,8 +349,54 @@ export class McpRuntime {
         rawCount++;
         await pushRawStdioServer(server);
       } else {
+        const identity = this.deps.getEnterpriseMcpIdentity?.();
+        const isEnterpriseManaged = isEnterpriseManagedServer(server);
+        if (identity && isEnterpriseManaged && this.deps.getEnterpriseMcpPolicy) {
+          const enterpriseMcpId = resolveEnterpriseMcpId(server);
+          const policy = await this.deps.getEnterpriseMcpPolicy(enterpriseMcpId);
+          const latest = findEnterpriseMcpServer(policy, server, enterpriseMcpId);
+          if (!latest) {
+            console.warn(`[MCP] skipping enterprise MCP "${server.name}" because current enterprise policy no longer exposes it`);
+            continue;
+          }
+          const registryId = toEnterpriseMcpRegistryId(latest.id || enterpriseMcpId);
+          const transportType = normalizeEnterpriseTransportType(latest.transportType);
+          if (transportType === 'sse' && latest.url) {
+            await this.enterpriseProxy.start();
+            const remote = this.enterpriseProxy.register(registryId, latest.url, identity, async force => {
+              if (identity !== this.deps.getEnterpriseMcpIdentity?.()) throw new Error('MCP enterprise identity changed');
+              const refreshedPolicy = await this.deps.getEnterpriseMcpPolicy!(force ? latest.id || enterpriseMcpId : undefined);
+              const refreshed = findEnterpriseMcpServer(refreshedPolicy, server, latest.id || enterpriseMcpId);
+              if (!refreshed || identity !== this.deps.getEnterpriseMcpIdentity?.()) throw new Error('MCP enterprise access revoked');
+              return refreshed;
+            });
+            resolved.push({
+              name: latest.name || latest.id,
+              registryId,
+              transportType,
+              connectionTimeoutMs: EnterpriseMcpTimeout.ConnectionMs,
+              requestTimeoutMs: EnterpriseMcpTimeout.RequestMs,
+              ...remote,
+            });
+            continue;
+          }
+          resolved.push({
+            name: latest.name || latest.id,
+            registryId,
+            transportType,
+            connectionTimeoutMs: EnterpriseMcpTimeout.ConnectionMs,
+            requestTimeoutMs: EnterpriseMcpTimeout.RequestMs,
+            url: latest.url,
+            headers: latest.headers,
+            command: latest.command,
+            args: latest.args,
+            env: latest.env,
+          });
+          continue;
+        }
         resolved.push({
           name: server.name,
+          registryId: server.registryId,
           transportType: server.transportType,
           url: server.url,
           headers: server.headers,

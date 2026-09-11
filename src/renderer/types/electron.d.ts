@@ -1588,6 +1588,7 @@ interface IElectronAPI {
         modelName: string;
         provider: string;
         apiFormat: string;
+        openClawApi?: 'openai-completions' | 'openai-responses';
         supportsImage?: boolean;
         supportsThinking?: boolean;
         modelTypes?: string[];

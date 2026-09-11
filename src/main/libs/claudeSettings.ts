@@ -71,6 +71,7 @@ export type ApiConfigResolution = {
     supportsThinking?: boolean;
     modelName?: string;
     contextWindow?: number;
+    openClawApi?: 'openai-completions' | 'openai-responses';
   };
 };
 
@@ -601,6 +602,7 @@ export function resolveRawApiConfig(): ApiConfigResolution {
       supportsThinking: matched.supportsThinking,
       modelName: matched.modelName,
       contextWindow: matched.contextWindow,
+      openClawApi: matched.providerConfig.openClawApi,
     },
   };
 }
@@ -676,6 +678,7 @@ export type ProviderRawConfig = {
   baseURL: string;
   apiKey: string;
   apiType: 'anthropic' | 'openai';
+  openClawApi?: 'openai-completions' | 'openai-responses';
   authType?: ProviderConfig['authType'];
   codingPlanEnabled: boolean;
   models: ProviderModelConfig[];
@@ -774,6 +777,7 @@ export function resolveAllEnabledProviderConfigs(): ProviderRawConfig[] {
       baseURL: effectiveBaseURL,
       apiKey: apiKey || 'sk-lobsterai-local',
       apiType: effectiveApiFormat === 'anthropic' ? 'anthropic' : 'openai',
+      openClawApi: providerConfig.openClawApi,
       authType: providerConfig.authType,
       codingPlanEnabled: !!providerConfig.codingPlanEnabled,
       models,

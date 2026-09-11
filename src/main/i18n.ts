@@ -68,6 +68,8 @@ const translations: Record<LanguageType, Record<string, string>> = {
 
     // Cowork error messages (shared with renderer via classifyErrorKey)
     coworkErrorAuthInvalid: 'API 密钥无效或已过期，请检查配置。',
+    coworkErrorEnterpriseMcpAuthInvalid:
+      '企业 MCP 权限签名被服务端拒绝，请联系管理员检查该 MCP 的签名密钥和 MCP ID 配置。',
     coworkErrorOAuthInvalid: 'OAuth 授权已失效或权限不足，请重新授权后重试。',
     coworkErrorModelAccessDenied: '当前账号无权访问该模型，请切换模型或检查服务商账号权限。',
     coworkErrorQuotaExhausted:
@@ -366,6 +368,8 @@ const translations: Record<LanguageType, Record<string, string>> = {
 
     // Cowork error messages
     coworkErrorAuthInvalid: 'Invalid or expired API key. Please check your configuration.',
+    coworkErrorEnterpriseMcpAuthInvalid:
+      'The enterprise MCP permission signature was rejected. Ask an administrator to check the MCP signing secret and MCP ID.',
     coworkErrorOAuthInvalid: 'OAuth authorization is invalid or missing required access. Re-authenticate and try again.',
     coworkErrorModelAccessDenied: 'This account is not allowed to access the selected model. Switch models or check provider account permissions.',
     coworkErrorQuotaExhausted:

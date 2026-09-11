@@ -560,15 +560,18 @@ const App: React.FC = () => {
     handleShowEnterprise();
   }, [handleShowEnterprise]);
 
-  const runUpdateCheck = useCallback(async () => {
+  const runUpdateCheck = useCallback(async (): Promise<boolean> => {
     try {
       const result = await window.electron.appUpdate.checkNow({ userId: authUser?.yid });
       setAppUpdateState(result.state);
       if (!result.success) {
         console.error('[App] app update check failed:', result.error);
+        return false;
       }
+      return true;
     } catch (error) {
       console.error('Failed to check app update:', error);
+      return false;
     }
   }, [authUser]);
 
@@ -1042,13 +1045,20 @@ const App: React.FC = () => {
     let cancelled = false;
     let lastCheckTime = 0;
 
-    const maybeCheck = async (reason: 'startup' | 'heartbeat' | 'visibility') => {
+    const maybeCheck = async (reason: 'startup' | 'heartbeat' | 'visibility' | 'online') => {
       if (cancelled) return;
       const now = Date.now();
       if (lastCheckTime > 0 && now - lastCheckTime < APP_UPDATE_POLL_INTERVAL_MS) return;
+      if (!navigator.onLine) {
+        console.log(`[App] auto update check skipped while offline, reason=${reason}`);
+        return;
+      }
       lastCheckTime = now;
       console.log(`[App] auto update check triggered, reason=${reason}, at=${new Date(now).toISOString()}`);
-      await runUpdateCheck();
+      const ok = await runUpdateCheck();
+      if (!ok && !cancelled && lastCheckTime === now) {
+        lastCheckTime = 0;
+      }
     };
 
     // 鍚姩鏃剁珛鍗虫鏌?
@@ -1067,10 +1077,16 @@ const App: React.FC = () => {
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
+    const handleOnline = () => {
+      void maybeCheck('online');
+    };
+    window.addEventListener('online', handleOnline);
+
     return () => {
       cancelled = true;
       window.clearInterval(timer);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('online', handleOnline);
     };
   }, [isInitialized, runUpdateCheck, enterpriseConfig]);
 

@@ -163,7 +163,12 @@ function precompileLocalExtensions(runtimeRoot, buildHint) {
 }
 
 function ensureBundledLocalExtensions(runtimeRoot, buildHint) {
-  const requiredLocalExtensions = ['mcp-bridge', 'ask-user-question', 'lobster-media-generation'];
+  const requiredLocalExtensions = [
+    'mcp-bridge',
+    'ask-user-question',
+    'lobster-media-generation',
+    'lfclaw-openviking-memory',
+  ];
   const missingCompiledExtensions = requiredLocalExtensions.filter(
     (extensionId) => !hasCompiledLocalExtension(runtimeRoot, extensionId),
   );

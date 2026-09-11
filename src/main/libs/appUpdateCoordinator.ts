@@ -300,16 +300,33 @@ export class AppUpdateCoordinator {
         return { success: true, state: this.getState(), updateFound: this.getState().info !== null };
       }
       console.error('[AppUpdate] check failed:', error);
+      const message = error instanceof Error ? error.message : 'Check failed';
+      // A failed availability check must not invalidate an already downloaded
+      // and verified installer. Otherwise a transient network error can strand
+      // the ready package until a later successful check.
+      const keepReady =
+        previousState.status === AppUpdateStatus.Ready
+        && previousState.readyFilePath != null
+        && previousState.readyFileHash != null;
+      if (keepReady) {
+        console.warn(
+          `[AppUpdate] check failed but a verified ready update exists, keeping Ready state for version ${previousState.info?.latestVersion ?? 'unknown'}`,
+        );
+      }
       const state = this.setState({
         ...previousState,
-        status: previousState.info ? AppUpdateStatus.Error : AppUpdateStatus.Idle,
-        errorMessage: error instanceof Error ? error.message : 'Check failed',
+        status: keepReady
+          ? AppUpdateStatus.Ready
+          : previousState.info
+            ? AppUpdateStatus.Error
+            : AppUpdateStatus.Idle,
+        errorMessage: keepReady ? null : message,
       });
       return {
         success: false,
         state,
         updateFound: previousState.info !== null,
-        error: state.errorMessage ?? 'Check failed',
+        error: message,
       };
     }
   }
@@ -352,7 +369,17 @@ export class AppUpdateCoordinator {
     state: AppUpdateRuntimeState;
     error?: string;
   }> {
-    if (!this.state.readyFilePath || this.state.status !== AppUpdateStatus.Ready) {
+    // Preserve installability for legacy or unexpected Error states that still
+    // carry a verified package. Integrity and URL-policy checks run again below.
+    const installableFromError =
+      this.state.status === AppUpdateStatus.Error && this.state.readyFileHash != null;
+    if (
+      !this.state.readyFilePath
+      || (this.state.status !== AppUpdateStatus.Ready && !installableFromError)
+    ) {
+      console.warn(
+        `[AppUpdate] install rejected: status=${this.state.status}, readyFilePath=${this.state.readyFilePath ?? 'none'}, readyFileHash=${this.state.readyFileHash != null ? 'present' : 'none'}`,
+      );
       return {
         success: false,
         state: this.getState(),

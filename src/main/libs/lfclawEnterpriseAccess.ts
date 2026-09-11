@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { app, net } from 'electron';
+import { app } from 'electron';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -17,8 +17,11 @@ import type {
 import { EnterpriseEnvironment } from '../../shared/enterprise/constants';
 import { ProviderRegistry } from '../../shared/providers';
 import type { SqliteStore } from '../sqliteStore';
+import { fetchEnterprise } from './enterpriseHttpClient';
 
 const ENTERPRISE_ACCESS_KEY = 'lfclaw_enterprise_access';
+const LEGACY_ENTERPRISE_ACTIVATION_IDENTITY_KEY = 'enterprise_activation_identity';
+const ENTERPRISE_CONFIG_KEY = 'enterprise_config';
 const ENTERPRISE_LAST_ACTIVATION_CODE_KEY = 'lfclaw_enterprise_last_activation_code';
 const ENTERPRISE_SERVER_URL_KEY = 'lfclaw_enterprise_server_url';
 const ENTERPRISE_SERVER_URL_ENV = 'LFCLAW_ENTERPRISE_BASE_URL';
@@ -88,6 +91,12 @@ const normalizeApiFormat = (value: unknown): 'openai' | 'anthropic' | 'gemini' =
   value === 'anthropic' || value === 'gemini' ? value : 'openai'
 );
 
+const normalizeOpenClawApi = (
+  value: unknown,
+): 'openai-completions' | 'openai-responses' | undefined => (
+  value === 'openai-responses' || value === 'openai-completions' ? value : undefined
+);
+
 const normalizeMcpTransportType = (value: unknown): 'stdio' | 'sse' | 'http' | 'streamable-http' => (
   value === 'stdio' || value === 'http' || value === 'streamable-http' ? value : 'sse'
 );
@@ -95,11 +104,16 @@ const normalizeMcpTransportType = (value: unknown): 'stdio' | 'sse' | 'http' | '
 const normalizeAsrFormat = (_value: unknown): 'pcm' => 'pcm';
 
 export class LFClawEnterpriseAccess {
+  private policySync: Promise<EnterpriseCurrentAccess | null> | null = null;
+  private policySyncMcpId: string | undefined;
   constructor(
     private readonly store: SqliteStore,
     private readonly getClientVersion: () => string = () => app.getVersion(),
   ) {
-    this.syncWorkspaceScope(this.store.get<EnterpriseCurrentAccess>(ENTERPRISE_ACCESS_KEY));
+    this.syncWorkspaceScope(
+      this.store.get<EnterpriseCurrentAccess>(ENTERPRISE_ACCESS_KEY)
+        ?? this.migrateLegacyActivationIdentity(),
+    );
   }
 
   private syncWorkspaceScope(access: EnterpriseCurrentAccess | null | undefined): void {
@@ -140,7 +154,8 @@ export class LFClawEnterpriseAccess {
   }
 
   getCurrentAccess(): EnterpriseCurrentAccess | null {
-    const access = this.store.get<EnterpriseCurrentAccess>(ENTERPRISE_ACCESS_KEY);
+    const access = this.store.get<EnterpriseCurrentAccess>(ENTERPRISE_ACCESS_KEY)
+      ?? this.migrateLegacyActivationIdentity();
     if (!access || !access.accessToken || !access.activationCode) {
       this.syncWorkspaceScope(null);
       return null;
@@ -148,6 +163,51 @@ export class LFClawEnterpriseAccess {
     const normalized = this.normalizeAccess(access);
     this.syncWorkspaceScope(normalized);
     return normalized;
+  }
+
+  private migrateLegacyActivationIdentity(): EnterpriseCurrentAccess | null {
+    const legacy = this.store.get<Record<string, unknown>>(LEGACY_ENTERPRISE_ACTIVATION_IDENTITY_KEY);
+    if (!isRecord(legacy)) return null;
+    const activationToken = typeof legacy.activationToken === 'string' ? legacy.activationToken.trim() : '';
+    const activationCode = typeof legacy.activationCode === 'string' ? legacy.activationCode.trim().toUpperCase() : '';
+    if (!activationToken || !activationCode) return null;
+
+    const enterpriseConfig = this.store.get<Record<string, unknown>>(ENTERPRISE_CONFIG_KEY);
+    const activation = isRecord(enterpriseConfig?.activation) ? enterpriseConfig.activation : {};
+    const serverUrl = normalizeUrl(activation.managerUrl)
+      || normalizeUrl(enterpriseConfig?.enterpriseServerUrl)
+      || normalizeUrl(enterpriseConfig?.serverUrl)
+      || normalizeUrl(enterpriseConfig?.baseUrl)
+      || this.getServerUrl();
+    if (!serverUrl) return null;
+
+    const userId = typeof legacy.userId === 'string' && legacy.userId.trim()
+      ? legacy.userId.trim()
+      : activationCode;
+    const displayName = typeof legacy.displayName === 'string' && legacy.displayName.trim()
+      ? legacy.displayName.trim()
+      : userId;
+    const migrated = this.normalizeAccess({
+      serverUrl,
+      activationCode,
+      accessToken: activationToken,
+      user: {
+        yid: userId,
+        nickname: displayName,
+        avatarUrl: null,
+        userId,
+        status: 1,
+      },
+      quota: this.normalizeQuota({}),
+      policy: this.normalizePolicy({}, undefined, serverUrl),
+      activatedAt: typeof legacy.activatedAt === 'string' ? legacy.activatedAt : nowIso(),
+      syncedAt: nowIso(),
+    });
+
+    this.store.set(ENTERPRISE_ACCESS_KEY, migrated);
+    this.store.set(ENTERPRISE_LAST_ACTIVATION_CODE_KEY, activationCode);
+    console.log('[Enterprise] migrated legacy activation identity into current access state');
+    return migrated;
   }
 
   async activate(input: EnterpriseActivateInput): Promise<EnterpriseCurrentAccess> {
@@ -180,15 +240,38 @@ export class LFClawEnterpriseAccess {
     return access;
   }
 
-  async syncPolicy(): Promise<EnterpriseCurrentAccess | null> {
+  async syncPolicy(forceMcpRefresh?: string): Promise<EnterpriseCurrentAccess | null> {
+    if (this.policySync) {
+      if (!forceMcpRefresh || this.policySyncMcpId === forceMcpRefresh) return this.policySync;
+      await this.policySync.catch((): void => undefined);
+      return this.syncPolicy(forceMcpRefresh);
+    }
+    this.policySyncMcpId = forceMcpRefresh;
+    const pending = this.fetchPolicy(forceMcpRefresh);
+    this.policySync = pending;
+    try {
+      return await pending;
+    } finally {
+      if (this.policySync === pending) {
+        this.policySync = null;
+        this.policySyncMcpId = undefined;
+      }
+    }
+  }
+
+  private async fetchPolicy(forceMcpRefresh?: string): Promise<EnterpriseCurrentAccess | null> {
     const current = this.getCurrentAccess();
     if (!current) return null;
 
     const clientVersion = encodeURIComponent(this.getClientVersion());
-    const payload = await this.request(current.serverUrl, `/api/enterprise/me?clientVersion=${clientVersion}`, {
+    const forceQuery = forceMcpRefresh ? `&forceMcpRefresh=${encodeURIComponent(forceMcpRefresh)}` : '';
+    const payload = await this.request(current.serverUrl, `/api/enterprise/me?clientVersion=${clientVersion}${forceQuery}`, {
       method: 'GET',
       accessToken: current.accessToken,
     });
+    if (this.getCurrentAccess()?.accessToken !== current.accessToken) {
+      throw new Error('Enterprise identity changed during policy synchronization.');
+    }
     const synced = this.normalizeAccessFromPayload(current.serverUrl, current.activationCode, {
       ...payload,
       accessToken: current.accessToken,
@@ -320,7 +403,7 @@ export class LFClawEnterpriseAccess {
     if (options.body) headers['Content-Type'] = 'application/json';
     if (options.accessToken) headers.Authorization = `Bearer ${options.accessToken}`;
 
-    const response = await net.fetch(`${serverUrl}${path}`, {
+    const response = await fetchEnterprise(`${serverUrl}${path}`, {
       method: options.method,
       headers,
       body: options.body ? JSON.stringify(options.body) : undefined,
@@ -352,7 +435,7 @@ export class LFClawEnterpriseAccess {
     const current = this.getCurrentAccess();
     const user = this.normalizeUser(payload.user, current?.user);
     const quota = this.normalizeQuota(payload.quota, current?.quota);
-    const policy = this.normalizePolicy(payload.policy, current?.policy);
+    const policy = this.normalizePolicy(payload.policy, current?.policy, serverUrl);
     const accessToken = typeof payload.accessToken === 'string' && payload.accessToken.trim()
       ? payload.accessToken.trim()
       : current?.accessToken;
@@ -374,14 +457,15 @@ export class LFClawEnterpriseAccess {
   }
 
   private normalizeAccess(access: EnterpriseCurrentAccess): EnterpriseCurrentAccess {
+    const serverUrl = normalizeUrl(access.serverUrl);
     return {
-      serverUrl: normalizeUrl(access.serverUrl),
+      serverUrl,
       activationCode: String(access.activationCode || '').trim().toUpperCase(),
       accessToken: String(access.accessToken || ''),
       refreshToken: typeof access.refreshToken === 'string' ? access.refreshToken : undefined,
       user: this.normalizeUser(access.user),
       quota: this.normalizeQuota(access.quota),
-      policy: this.normalizePolicy(access.policy),
+      policy: this.normalizePolicy(access.policy, undefined, serverUrl),
       activatedAt: typeof access.activatedAt === 'string' ? access.activatedAt : nowIso(),
       syncedAt: typeof access.syncedAt === 'string' ? access.syncedAt : nowIso(),
     };
@@ -417,7 +501,11 @@ export class LFClawEnterpriseAccess {
     };
   }
 
-  private normalizePolicy(value: unknown, fallback?: EnterprisePolicy): EnterprisePolicy {
+  private normalizePolicy(
+    value: unknown,
+    fallback?: EnterprisePolicy,
+    enterpriseServerUrl?: string,
+  ): EnterprisePolicy {
     const raw = isRecord(value) ? value : {};
     return {
       allowedModelIds: stringList(raw.allowedModelIds ?? fallback?.allowedModelIds),
@@ -432,6 +520,9 @@ export class LFClawEnterpriseAccess {
         baseUrl: String(provider.baseUrl || '').trim(),
         apiKey: String(provider.apiKey || '').trim(),
         apiFormat: normalizeApiFormat(provider.apiFormat),
+        ...(normalizeOpenClawApi(provider.openClawApi)
+          ? { openClawApi: normalizeOpenClawApi(provider.openClawApi) }
+          : {}),
         models: recordList(provider.models).map(model => ({
           id: String(model.id || '').trim(),
           name: String(model.name || model.id || '').trim(),
@@ -476,6 +567,7 @@ export class LFClawEnterpriseAccess {
           ?? fallback?.enterpriseSkills,
       ),
       skillDelivery: this.normalizeSkillDelivery(raw.skillDelivery ?? fallback?.skillDelivery),
+      openViking: this.normalizeOpenVikingPolicy(raw.openViking, enterpriseServerUrl),
       adminUrl: typeof raw.adminUrl === 'string' && raw.adminUrl.trim() ? raw.adminUrl.trim() : fallback?.adminUrl,
       enterpriseName: typeof raw.enterpriseName === 'string' && raw.enterpriseName.trim() ? raw.enterpriseName.trim() : fallback?.enterpriseName,
     };
@@ -492,6 +584,40 @@ export class LFClawEnterpriseAccess {
       minimumClientVersion: typeof raw.minimumClientVersion === 'string' ? raw.minimumClientVersion : undefined,
       guarded: raw.guarded === true,
       reason: typeof raw.reason === 'string' ? raw.reason : undefined,
+    };
+  }
+
+  private normalizeOpenVikingPolicy(
+    value: unknown,
+    enterpriseServerUrl?: string,
+  ): EnterprisePolicy['openViking'] | undefined {
+    if (!isRecord(value)) return undefined;
+    const baseUrl = enterpriseServerUrl
+      ? `${normalizeUrl(enterpriseServerUrl)}/api/enterprise/openviking`
+      : normalizeUrl(value.baseUrl);
+    const timeoutMs = Math.min(300_000, Math.max(1_000, numberValue(value.timeoutMs) || 2_500));
+    const autoRecallTimeoutMs = Math.min(
+      300_000,
+      Math.max(1_000, numberValue(value.autoRecallTimeoutMs) || timeoutMs),
+    );
+    return {
+      enabled: value.enabled === true && Boolean(baseUrl),
+      baseUrl,
+      timeoutMs,
+      autoRecallTimeoutMs,
+      autoCapture: value.autoCapture !== false,
+      autoRecall: value.autoRecall !== false,
+      recallTargetTypes: ['user'],
+      peerRole: 'none',
+      commitTokenThresholdRatio: Math.min(
+        1,
+        Math.max(0, numberValue(value.commitTokenThresholdRatio)),
+      ),
+      commitKeepRecentCount: Math.max(0, Math.floor(numberValue(value.commitKeepRecentCount))),
+      enabledTools: stringList(value.enabledTools).filter(tool => (
+        tool === 'memory_recall' || tool === 'memory_store'
+      )),
+      enableAddResourceTool: false,
     };
   }
 

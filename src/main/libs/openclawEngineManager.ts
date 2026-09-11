@@ -23,6 +23,7 @@ import { cleanupStaleThirdPartyPluginsFromBundledDir, listLocalOpenClawExtension
 import { migrateAllFtsOnlyMemoryIndexes } from './openclawMemoryIndexMigration';
 import { ensureOpenClawWorkerShims } from './openclawWorkerShims';
 import { appendPythonRuntimeToEnv } from './pythonRuntime';
+import { ensureWindowsHiddenSubprocessArgs } from './windowsHiddenSubprocess';
 
 const gwDiagTs = (): string => {
   const d = new Date();
@@ -624,6 +625,7 @@ export class OpenClawEngineManager extends EventEmitter {
     } else {
       console.log('[OpenClaw] gateway V8 old-space limit is controlled by existing NODE_OPTIONS');
     }
+    gatewayExecArgv.push(...ensureWindowsHiddenSubprocessArgs(path.join(this.stateDir, 'runtime-hooks')));
     console.log(`[OpenClaw] forking gateway: entry=${openclawEntry}, cwd=${runtime.root}, port=${port}, args=${JSON.stringify(forkArgs)}`);
 
     // On Windows, use child_process.spawn with ELECTRON_RUN_AS_NODE=1 instead of

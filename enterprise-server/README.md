@@ -65,6 +65,7 @@ https://git.code.tencent.com/tongkai/LfClaw.git
 /opt/LfClaw/
 ├── enterprise-server/
 │   ├── server.mjs
+│   ├── openVikingGateway.mjs
 │   ├── mcpPermissions.mjs
 │   ├── conversationShareRoutes.mjs
 │   ├── conversationShares.mjs
@@ -92,6 +93,17 @@ https://git.code.tencent.com/tongkai/LfClaw.git
 ```
 
 随后在 `/opt/LfClaw/enterprise-server` 执行 `npm install --omit=dev` 并重启企业服务。不要只上传 `server.mjs`，否则楼层权限和对话分享模块会缺失。旧客户端仍可正常使用；网页查看链接无需升级客户端，客户端内接收和续聊需要新版本。
+
+如果服务器已经是当前版本、这次只上线 OpenViking 接入，服务端最少只需上传：
+
+```text
+/opt/LfClaw/enterprise-server/server.mjs
+/opt/LfClaw/enterprise-server/openVikingGateway.mjs
+```
+
+同时修改服务器现有的 systemd 环境变量文件并重启服务即可，不需要重新上传
+`node_modules`、`data`、`storage` 或整个仓库。LFCLAW 桌面端还需要发布一个包含
+OpenViking OpenClaw 插件的新客户端版本；以后只调整全局开关或服务地址时不需要重发客户端。
 
 不要覆盖：
 
@@ -142,9 +154,86 @@ http://服务器IP:8787/admin
 http://服务器IP:8787
 ```
 
-## 4. restart.sh
+## 4. 生产环境使用 systemd
 
-建议创建：
+生产服务器应使用 `enterprise-server/deploy/lfclaw-enterprise.service`，不要依赖
+`nohup` 守护进程。安装步骤和环境变量模板见 `enterprise-server/deploy/README.md`。
+
+服务启动后可检查：
+
+```bash
+curl --fail http://127.0.0.1:8787/healthz
+sudo systemctl status lfclaw-enterprise
+sudo journalctl -u lfclaw-enterprise -f
+```
+
+默认情况下，客户端仍每 30 秒同步权限，但在线时间最多每 5 分钟落盘一次；
+session 保留 30 天，使用明细保留 180 天且最多 100000 条。清理使用明细不会改变
+员工累计额度。以上限制均可通过部署环境变量调整。
+
+## 4.1 OpenViking 个人长期记忆
+
+第一阶段只启用个人长期记忆，不启用 VikingBot、部门知识库、资源导入或客户端删除。
+同一员工的全部本地 Agent 使用同一个稳定 OpenViking 用户空间，员工之间隔离。
+
+OpenViking 必须只监听服务器回环地址。Docker 端口映射使用：
+
+```yaml
+ports:
+  - "127.0.0.1:1933:1933"
+```
+
+阿里云安全组不再开放 1933。LFCLAW 客户端只访问企业服务，调用链为：
+
+```text
+LFCLAW / OpenClaw 插件
+  -> 企业服务 /api/enterprise/openviking
+  -> http://127.0.0.1:1933
+  -> OpenViking
+```
+
+在 `/etc/lfclaw/lfclaw-enterprise.env` 增加：
+
+```bash
+LFCLAW_PUBLIC_BASE_URL=http://你的服务器IP:8787
+LFCLAW_OPENVIKING_UPSTREAM_URL=http://127.0.0.1:1933
+LFCLAW_OPENVIKING_ACCOUNT_ID=lfclaw
+LFCLAW_OPENVIKING_TIMEOUT_MS=2500
+LFCLAW_OPENVIKING_TASK_POLL_WINDOW_MS=10000
+```
+
+`LFCLAW_PUBLIC_BASE_URL` 要与 LFCLAW 客户端里填写的企业服务地址一致；不要填写
+OpenViking 的 1933 地址。这样服务端不会根据可伪造的转发请求头生成代理地址。
+
+如果 OpenViking 继续使用 API-key 模式，再把 root key 仅写入该服务器环境文件：
+
+```bash
+LFCLAW_OPENVIKING_API_KEY=替换为_OpenViking_Root_Key
+```
+
+若 OpenViking 已配置为仅回环可访问的 trusted 模式，则该变量留空。无论哪种模式，
+root key 和个人 key 都不会下发给客户端。插件发送的是现有 LFCLAW 企业会话凭据，
+企业服务校验员工状态后覆盖 account/user 身份再转发。
+
+部署后依次执行：
+
+```bash
+sudo systemctl restart lfclaw
+curl --fail http://127.0.0.1:8787/healthz
+```
+
+随后进入 `/admin` 的“OpenViking 记忆”页，先“测试连接”，再打开全局开关。
+旧 Agent Memory 对话记忆与 OpenViking 不能同时开启。现有员工首次使用时会以当时的
+`employeeId` 固化记忆 ID；例如 `u_kai_feb3` 会继续使用已经测试过的同名个人空间。
+
+召回最多等待 2.5 秒，超时或失败会跳过记忆继续聊天；一轮对话结束后的写入在后台排队，
+不会占用聊天响应链。企业代理连续失败后会短暂熔断，防止故障期间反复等待。
+常见 API Key、Token、密码、Cookie、手机号、邮箱、身份证和银行卡信息会在代理写入前
+脱敏，但任何基于规则的脱敏都无法保证识别所有自由文本敏感信息，上线后仍需审计。
+
+## 4.2 restart.sh（仅临时调试）
+
+仅在没有 systemd 的临时调试环境中创建：
 
 ```text
 /opt/LfClaw/restart.sh

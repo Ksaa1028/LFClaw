@@ -5,6 +5,15 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { createConversationShareRoutes } from './conversationShareRoutes.mjs';
+import { createEnterpriseDataStore, dataRetentionFromEnv } from './dataStore.mjs';
+import {
+  createOpenVikingGateway,
+  normalizeOpenViking,
+  openVikingAdminState,
+  openVikingClientPolicy,
+  openVikingDefault,
+} from './openVikingGateway.mjs';
+import { createReleaseHashCache } from './releaseCatalog.mjs';
 
 import {
   effectiveMcpPermissionIds,
@@ -33,6 +42,16 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HOST = process.env.LFCLAW_ENTERPRISE_HOST || '127.0.0.1';
 const PORT = Number(process.env.LFCLAW_ENTERPRISE_PORT || 8787);
+const PUBLIC_BASE_URL = (() => {
+  const value = String(process.env.LFCLAW_PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
+  if (!value) return '';
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.toString().replace(/\/+$/, '') : '';
+  } catch {
+    return '';
+  }
+})();
 const ADMIN_TOKEN = process.env.LFCLAW_ADMIN_TOKEN || 'lfclaw-admin';
 // Built-in compatibility key keeps the enterprise permission feature
 // deployable without extra environment configuration. An environment value
@@ -40,7 +59,18 @@ const ADMIN_TOKEN = process.env.LFCLAW_ADMIN_TOKEN || 'lfclaw-admin';
 const DEFAULT_MCP_PERMISSION_SIGNING_SECRET = 'lfclaw-enterprise-mcp-permission-v1-2026';
 const MCP_PERMISSION_SIGNING_SECRET = String(process.env.LFCLAW_MCP_PERMISSION_SECRET || DEFAULT_MCP_PERMISSION_SIGNING_SECRET).trim();
 const MCP_PERMISSION_ASSERTION_HEADER = 'x-lfclaw-permission-assertion';
-const MCP_PERMISSION_ASSERTION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const parsePositiveDurationMs = (value, fallback) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+const MCP_PERMISSION_ASSERTION_TTL_MS = parsePositiveDurationMs(
+  process.env.LFCLAW_MCP_PERMISSION_TTL_MS,
+  30 * 24 * 60 * 60 * 1000,
+);
+const MCP_PERMISSION_ASSERTION_REFRESH_SKEW_MS = Math.min(
+  5 * 60 * 1000,
+  Math.max(30 * 1000, Math.floor(MCP_PERMISSION_ASSERTION_TTL_MS / 3)),
+);
 const mcpPermissionAssertionCache = new Map();
 const FLOOR_PERMISSION_MCP_ID = 'dz2.0';
 const FLOOR_PERMISSION_OPTIONS = [
@@ -79,13 +109,30 @@ const ASR_PROXY_SESSION_TTL_MS = 2 * 60 * 1000;
 const ASR_INFERENCE_PATH = '/api-ws/v1/inference';
 const MODEL_CONNECTION_TEST_TOKEN_BUDGET = 16;
 const AGENT_MEMORY_CONNECTION_TIMEOUT_MS = 15000;
+const MODEL_PROXY_TIMEOUT_MS = parsePositiveDurationMs(process.env.LFCLAW_MODEL_PROXY_TIMEOUT_MS, 120_000);
 const agentMemoryProvisioningRequests = new Map();
+const LAST_SEEN_FLUSH_MS = Math.max(30_000, Number(process.env.LFCLAW_ENTERPRISE_LAST_SEEN_FLUSH_MS) || 300_000);
+const SESSION_TTL_MS = dataRetentionFromEnv().sessionTtlMs;
+const OPENVIKING_PROXY_PREFIX = '/api/enterprise/openviking';
+const OPENVIKING_USER_ID_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/;
+let openVikingGatewayConfigurationError = null;
+let repairedOpenVikingIdentitiesOnLoad = false;
 
 const nowIso = () => new Date().toISOString();
 const id = prefix => `${prefix}_${crypto.randomBytes(6).toString('hex')}`;
 const randomHex = len => crypto.randomBytes(len).toString('hex');
 const toNumber = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
 const list = value => Array.isArray(value) ? [...new Set(value.map(v => String(v).trim()).filter(Boolean))] : [];
+const enterpriseMcpPermissionOptions = server => {
+  const configured = normalizePermissionOptions(server?.permissionOptions);
+  if (configured.length > 0) return configured;
+  return String(server?.id || '').trim() === FLOOR_PERMISSION_MCP_ID ? FLOOR_PERMISSION_OPTIONS : [];
+};
+const clearMcpPermissionAssertionCache = reason => {
+  if (mcpPermissionAssertionCache.size === 0) return;
+  mcpPermissionAssertionCache.clear();
+  console.log(`[MCP Permission] cleared assertion cache: ${reason}`);
+};
 const normalizeClientVersion = value => String(value || '').trim().replace(/^v/i, '');
 const versionDigits = value => normalizeClientVersion(value).replace(/\D/g, '');
 const compareClientVersion = (left, right) => {
@@ -235,11 +282,7 @@ const releaseMimeType = filePath => {
   return 'application/octet-stream';
 };
 
-const releaseFileHash = filePath => {
-  const hash = crypto.createHash('sha256');
-  hash.update(fs.readFileSync(filePath));
-  return hash.digest('hex');
-};
+const releaseHashCache = createReleaseHashCache();
 
 const parseRangeHeader = (rangeHeader, size) => {
   const match = String(rangeHeader || '').match(/^bytes=(\d*)-(\d*)$/);
@@ -344,19 +387,20 @@ const detectReleasePlatform = filename => {
   return 'macUniversalUrl';
 };
 
-const detectAutoRelease = origin => {
+const detectAutoRelease = async origin => {
   if (!fs.existsSync(RELEASE_DIR)) return null;
-  const candidates = fs.readdirSync(RELEASE_DIR)
+  const candidatePromises = fs.readdirSync(RELEASE_DIR)
     .filter(name => /^[A-Za-z0-9._-]+$/.test(name))
-    .map(name => {
+    .map(async name => {
       const version = name.match(/20\d{8}/)?.[0] || '';
       const platform = detectReleasePlatform(name);
       if (!version || !platform) return null;
       const filePath = path.join(RELEASE_DIR, name);
       const stat = fs.statSync(filePath);
       if (!stat.isFile() || !getReleaseStability(stat).stable) return null;
-      return { name, version, platform, mtimeMs: stat.mtimeMs, size: stat.size, sha256: releaseFileHash(filePath) };
-    })
+      return { name, version, platform, mtimeMs: stat.mtimeMs, size: stat.size, sha256: await releaseHashCache.hashFile(filePath, stat) };
+    });
+  const candidates = (await Promise.all(candidatePromises))
     .filter(Boolean)
     .sort((a, b) => Number(b.version) - Number(a.version) || b.mtimeMs - a.mtimeMs);
   const latestVersion = candidates[0]?.version || '';
@@ -405,6 +449,7 @@ const defaultData = () => ({
   permissionAssignmentMode: 'employee-only-v1',
   asr: asrDefault(),
   agentMemory: agentMemoryDefault(),
+  openViking: openVikingDefault(),
   modelProviders: [],
   mcpServers: [],
   skills: [],
@@ -425,6 +470,37 @@ const defaultData = () => ({
   },
 });
 
+const normalizeEmployeeOpenVikingIdentities = employees => {
+  const usedUserIds = new Set();
+  return employees.map((employee, index) => {
+    const storedUserId = String(employee.openVikingUserId || '').trim();
+    const preferredUserId = storedUserId || String(employee.employeeId || employee.id || '').trim();
+    const internalId = String(employee.id || '').trim();
+    let openVikingUserId = preferredUserId;
+
+    if (!OPENVIKING_USER_ID_PATTERN.test(openVikingUserId) || usedUserIds.has(openVikingUserId)) {
+      const internalIdAvailable = OPENVIKING_USER_ID_PATTERN.test(internalId) && !usedUserIds.has(internalId);
+      if (internalIdAvailable) {
+        openVikingUserId = internalId;
+      } else {
+        let attempt = 0;
+        do {
+          openVikingUserId = `ov_${crypto.createHash('sha256')
+            .update(`${internalId}\0${employee.activationCode || ''}\0${employee.employeeId || ''}\0${index}\0${attempt}`)
+            .digest('hex')
+            .slice(0, 24)}`;
+          attempt += 1;
+        } while (usedUserIds.has(openVikingUserId));
+      }
+      console.warn('[OpenViking] repaired an invalid or duplicate employee memory identity.');
+    }
+
+    usedUserIds.add(openVikingUserId);
+    if (storedUserId !== openVikingUserId) repairedOpenVikingIdentitiesOnLoad = true;
+    return { ...employee, openVikingUserId };
+  });
+};
+
 const ensureData = data => ({
   ...defaultData(),
   ...data,
@@ -432,16 +508,19 @@ const ensureData = data => ({
   modelProviders: Array.isArray(data.modelProviders) ? data.modelProviders : Array.isArray(data.models) ? data.models : [],
   mcpServers: (Array.isArray(data.mcpServers) ? data.mcpServers : []).map(server => ({
     ...server,
-    permissionOptions: server.id === FLOOR_PERMISSION_MCP_ID ? FLOOR_PERMISSION_OPTIONS : [],
+    permissionOptions: enterpriseMcpPermissionOptions(server),
   })),
   skills: Array.isArray(data.skills) ? data.skills : [],
   departments: Array.isArray(data.departments) ? data.departments : [],
-  employees: Array.isArray(data.employees) ? data.employees : Array.isArray(data.activations) ? data.activations : [],
+  employees: normalizeEmployeeOpenVikingIdentities(
+    Array.isArray(data.employees) ? data.employees : Array.isArray(data.activations) ? data.activations : [],
+  ),
   sessions: data.sessions && typeof data.sessions === 'object' ? data.sessions : {},
   usageEvents: Array.isArray(data.usageEvents) ? data.usageEvents : [],
   releaseHistory: normalizeReleaseHistory(data.releaseHistory),
   asr: normalizeAsr(data.asr || {}, defaultData().asr),
   agentMemory: normalizeAgentMemory(data.agentMemory || {}, defaultData().agentMemory),
+  openViking: normalizeOpenViking(data.openViking || {}, defaultData().openViking),
   release: data.release && typeof data.release === 'object' ? { ...defaultData().release, ...data.release } : defaultData().release,
 });
 
@@ -494,25 +573,40 @@ const migrateDepartmentGrantsToEmployees = data => {
   return { data, migrated: true };
 };
 
-const readData = () => {
-  try {
-    if (!fs.existsSync(DATA_FILE)) return defaultData();
-    const normalized = ensureData(JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')));
-    const migration = migrateDepartmentGrantsToEmployees(normalized);
-    if (migration.migrated) {
-      fs.mkdirSync(BACKUP_DIR, { recursive: true });
-      fs.copyFileSync(DATA_FILE, path.join(BACKUP_DIR, `enterprise-data-before-employee-only-${Date.now()}.json`));
-      fs.writeFileSync(DATA_FILE, JSON.stringify(migration.data, null, 2), 'utf8');
-    }
+let migratedEnterpriseDataOnLoad = false;
+const enterpriseDataStore = createEnterpriseDataStore({
+  filePath: DATA_FILE,
+  normalize: value => {
+    const migration = migrateDepartmentGrantsToEmployees(ensureData(value));
+    if (migration.migrated) migratedEnterpriseDataOnLoad = true;
     return migration.data;
-  } catch {
-    return defaultData();
-  }
-};
+  },
+  createDefault: defaultData,
+  retention: dataRetentionFromEnv(),
+});
 
-const writeData = data => {
-  fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
-  fs.writeFileSync(DATA_FILE, JSON.stringify(ensureData(data), null, 2), 'utf8');
+try {
+  enterpriseDataStore.load();
+  if ((migratedEnterpriseDataOnLoad || repairedOpenVikingIdentitiesOnLoad) && fs.existsSync(DATA_FILE)) {
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    const backupReason = migratedEnterpriseDataOnLoad ? 'employee-only' : 'openviking-identities';
+    fs.copyFileSync(DATA_FILE, path.join(BACKUP_DIR, `enterprise-data-before-${backupReason}-${Date.now()}.json`));
+    void enterpriseDataStore.save().catch(error => {
+      console.error('[EnterpriseServer] failed to persist migrated enterprise data:', error);
+    });
+  }
+} catch (error) {
+  console.error('[EnterpriseServer] enterprise data could not be loaded; refusing to start:', error);
+  throw error;
+}
+
+const readData = () => enterpriseDataStore.get();
+let dataWritesSealed = false;
+const writeData = () => {
+  if (dataWritesSealed) return Promise.resolve();
+  return enterpriseDataStore.save().catch(error => {
+    console.error('[EnterpriseServer] failed to persist enterprise data:', error);
+  });
 };
 
 const backupTimestamp = () => new Date().toISOString().replace(/[:.]/g, '-');
@@ -632,6 +726,11 @@ const pinyinSlug = name => {
 const makeEmployeeId = name => `u_${pinyinSlug(name)}_${randomHex(2)}`;
 const makeActivationCode = name => `LFCLAW-${pinyinSlug(name).toUpperCase()}-${randomHex(3).toUpperCase()}`;
 
+const OPENCLAW_MODEL_API = {
+  Completions: 'openai-completions',
+  Responses: 'openai-responses',
+};
+
 const normalizeModel = (body, existing = {}) => {
   const modelId = String(body.modelId || body.id || existing.id || '').trim();
   const rawApiKey = body.apiKey === undefined ? undefined : String(body.apiKey || '').trim();
@@ -659,18 +758,28 @@ const normalizeModel = (body, existing = {}) => {
     : body.modelTypes !== undefined
       ? modelTypeSupportsImage
       : existing.supportsImage === true || existing.models?.[0]?.supportsImage === true;
+  const requestedOpenClawApi = String(body.openClawApi || '').trim();
+  const openClawApi = Object.values(OPENCLAW_MODEL_API).includes(requestedOpenClawApi)
+    ? requestedOpenClawApi
+    : existing.openClawApi || (modelId === 'gpt-5.6-terra'
+      ? OPENCLAW_MODEL_API.Responses
+      : OPENCLAW_MODEL_API.Completions);
+  const supportsThinking = modelId === 'gpt-5.6-terra'
+    ? false
+    : existing.models?.[0]?.supportsThinking === true;
   const item = {
     ...existing,
     id: modelId,
     name: String(body.modelName || body.name || existing.name || modelId).trim(),
     provider: 'custom',
     apiFormat: ['openai', 'anthropic', 'gemini'].includes(body.apiFormat) ? body.apiFormat : existing.apiFormat || 'openai',
+    openClawApi,
     baseUrl: String(body.baseUrl || existing.baseUrl || '').trim(),
     apiKey,
     supportsImage,
     modelTypes,
     ...(contextWindow > 0 ? { contextWindow } : {}),
-    models: [{ id: modelId, name: String(body.modelName || body.name || modelId).trim(), supportsImage, modelTypes, ...(contextWindow > 0 ? { contextWindow } : {}) }],
+    models: [{ id: modelId, name: String(body.modelName || body.name || modelId).trim(), supportsImage, supportsThinking, modelTypes, ...(contextWindow > 0 ? { contextWindow } : {}) }],
     billing,
     enabled: body.enabled !== undefined ? body.enabled !== false : existing.enabled !== false,
     createdAt: existing.createdAt || nowIso(),
@@ -695,7 +804,11 @@ const normalizeMcp = (body, existing = {}) => {
     command: String(body.command || existing.command || '').trim(),
     args: list(body.args ?? existing.args),
     env: parseJson(body.env ?? existing.env),
-    permissionOptions: String(body.id || existing.id || '').trim() === FLOOR_PERMISSION_MCP_ID ? FLOOR_PERMISSION_OPTIONS : [],
+    permissionOptions: enterpriseMcpPermissionOptions({
+      ...existing,
+      ...body,
+      id: String(body.id || existing.id || '').trim(),
+    }),
     enabled: body.enabled !== undefined ? body.enabled !== false : existing.enabled !== false,
     createdAt: existing.createdAt || nowIso(),
     updatedAt: nowIso(),
@@ -780,7 +893,7 @@ const employeeView = (employee, data) => {
   const effective = data ? effectiveEmployeeGrants(data, employee) : null;
   const effectiveMcpPermissions = data && effective ? Object.fromEntries(
     data.mcpServers
-      .filter(server => effective.allowedMcpServerIds.includes(server.id) && server.id === FLOOR_PERMISSION_MCP_ID)
+      .filter(server => effective.allowedMcpServerIds.includes(server.id) && enterpriseMcpPermissionOptions(server).length > 0)
       .map(server => [server.id, effectiveMcpPermissionIds(data, employee, server, departmentChain)]),
   ) : {};
   return {
@@ -811,6 +924,7 @@ const adminState = data => ({
   models: data.modelProviders.map(redactModel),
   asr: redactAsr(data.asr),
   agentMemory: redactAgentMemory(data.agentMemory),
+  openViking: openVikingAdminState(data.openViking),
   mcpServers: data.mcpServers,
   skills: data.skills.map(skill => ({ ...skill, packagePath: undefined })),
   departments: data.departments.map(departmentView),
@@ -822,23 +936,30 @@ const adminState = data => ({
   backups: listBackups(),
 });
 
-const requestOrigin = req => `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers['x-forwarded-host'] || req.headers.host || `${HOST}:${PORT}`}`;
+const requestOrigin = (req) => {
+  if (PUBLIC_BASE_URL) return PUBLIC_BASE_URL;
+  const fallbackHost = `${HOST}:${PORT}`;
+  const requestHost = String(req.headers.host || '').trim();
+  const host = /^[A-Za-z0-9.[\]:_-]+$/.test(requestHost) ? requestHost : fallbackHost;
+  return `${req.socket?.encrypted ? 'https' : 'http'}://${host}`;
+};
 const selectByIds = (items, ids) => {
   const allowed = new Set(list(ids));
   if (allowed.size === 0) return [];
   return items.filter(item => item.enabled !== false && allowed.has(item.id));
 };
 
-const cachedMcpPermissionAssertion = ({ employeeId, mcpId, permissionIds }) => {
+const cachedMcpPermissionAssertion = ({ employeeId, mcpId, permissionIds, forceRefresh = false }) => {
   const cacheKey = JSON.stringify([employeeId, mcpId, permissionIds]);
   const cached = mcpPermissionAssertionCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now() + 5 * 60 * 1000) return cached.assertion;
+  if (!forceRefresh && cached && cached.expiresAt > Date.now() + MCP_PERMISSION_ASSERTION_REFRESH_SKEW_MS) return cached.assertion;
   const assertion = signMcpPermissionAssertion({
     secret: MCP_PERMISSION_SIGNING_SECRET,
     employeeId,
     mcpId,
     permissionIds,
     ttlMs: MCP_PERMISSION_ASSERTION_TTL_MS,
+    ...(forceRefresh ? { nonce: crypto.randomUUID() } : {}),
   });
   mcpPermissionAssertionCache.set(cacheKey, {
     assertion,
@@ -847,12 +968,13 @@ const cachedMcpPermissionAssertion = ({ employeeId, mcpId, permissionIds }) => {
   return assertion;
 };
 
-const clientPayload = (data, employee, accessToken, req, clientVersion = '') => {
+const clientPayload = (data, employee, accessToken, req, clientVersion = '', forceMcpRefresh = '') => {
   const effectiveClientVersion = normalizeClientVersion(clientVersion || employee.clientVersion || employee.appVersion);
   const grants = effectiveEmployeeGrants(data, employee);
   let modelProviders = selectByIds(data.modelProviders, grants.allowedModelProviderIds);
+  const openViking = normalizeOpenViking(data.openViking);
   const agentMemory = normalizeAgentMemory(data.agentMemory);
-  if (agentMemory.enabled && agentMemory.chatMemoryEnabled && redactAgentMemory(agentMemory).configured) {
+  if (!openViking.enabled && agentMemory.enabled && agentMemory.chatMemoryEnabled && redactAgentMemory(agentMemory).configured) {
     modelProviders = modelProviders.map(provider => ({
       ...provider,
       baseUrl: `${requestOrigin(req)}/api/enterprise/model-proxy/${encodeURIComponent(provider.id)}/v1`,
@@ -861,7 +983,7 @@ const clientPayload = (data, employee, accessToken, req, clientVersion = '') => 
     }));
   }
   const mcpServers = selectByIds(data.mcpServers, grants.allowedMcpServerIds).flatMap(server => {
-    const permissionOptions = server.id === FLOOR_PERMISSION_MCP_ID ? FLOOR_PERMISSION_OPTIONS : [];
+    const permissionOptions = enterpriseMcpPermissionOptions(server);
     if (permissionOptions.length === 0) return [server];
     // Fine-grained enterprise MCPs must never silently fall back to their old
     // unrestricted behavior when the signing secret is missing.
@@ -871,6 +993,7 @@ const clientPayload = (data, employee, accessToken, req, clientVersion = '') => 
       employeeId: employee.employeeId,
       mcpId: server.id,
       permissionIds,
+      forceRefresh: forceMcpRefresh === server.id,
     });
     return [{
       ...server,
@@ -919,6 +1042,10 @@ const clientPayload = (data, employee, accessToken, req, clientVersion = '') => 
         reason: '',
       },
       asr: publicAsr(data.asr),
+      openViking: openVikingClientPolicy({
+        enabled: openViking.enabled,
+        baseUrl: `${requestOrigin(req)}${OPENVIKING_PROXY_PREFIX}`,
+      }),
       adminUrl: `${requestOrigin(req)}/admin`,
     },
   };
@@ -941,7 +1068,7 @@ const adminHtml = () => String.raw`<!doctype html><html lang="zh-CN"><head><meta
 :root{font-family:Inter,"Microsoft YaHei",Arial,sans-serif;color:#0b1833;background:#f4f7fb}body{margin:0}main{max-width:1320px;margin:0 auto;padding:28px}header{display:flex;justify-content:space-between;gap:16px;align-items:flex-end;margin-bottom:16px}h1{margin:0;font-size:28px}.hint{color:#66758a;margin:6px 0 0}.token{display:flex;gap:8px;align-items:end}.token input{width:260px}nav{display:flex;gap:8px;margin:16px 0;flex-wrap:wrap}button{border:0;border-radius:6px;padding:9px 13px;font-weight:750;cursor:pointer;background:#0b1833;color:white}button.secondary,nav button{background:#e9eef5;color:#0b1833}button.danger{background:#df2626}.active-tab{background:#0b1833!important;color:#fff!important}section{display:none;background:#fff;border:1px solid #dce3ec;border-radius:8px;padding:18px;box-shadow:0 10px 30px rgba(15,23,42,.04)}section.active{display:block}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.grid-3{grid-template-columns:repeat(3,1fr)}.grid-5{grid-template-columns:repeat(5,1fr)}label{font-size:13px;font-weight:650;color:#24324a}input,textarea,select{width:100%;box-sizing:border-box;border:1px solid #c8d2df;border-radius:6px;padding:9px 10px;font:inherit;background:#fff}textarea{min-height:72px}.multi-select{position:relative}.multi-trigger{width:100%;height:40px;border:1px solid #c8d2df;border-radius:6px;background:#fff;color:#0b1833;text-align:left;font-weight:650;display:flex;align-items:center;justify-content:space-between}.multi-trigger:after{content:"▾";color:#66758a}.multi-options{display:none;max-height:220px;overflow:auto;border:1px solid #c8d2df;border-radius:8px;background:#fff;box-shadow:0 8px 18px rgba(15,23,42,.08);padding:6px;margin-top:6px}.multi-select.open .multi-options{display:block}.multi-option{display:flex;align-items:center;gap:8px;padding:8px;border-radius:6px;font-size:13px;font-weight:500;cursor:pointer}.multi-option:hover{background:#f4f7fb}.multi-option input{width:auto}.multi-option.inherited{color:#66758a;cursor:not-allowed}.multi-option.inherited:after{content:"部门继承";margin-left:auto;border-radius:999px;padding:2px 7px;background:#e8eef6;color:#53647a;font-size:11px;font-weight:650}.model-type-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px;border:1px solid #c8d2df;border-radius:8px;padding:6px;background:#fff}.field-title{font-size:13px;font-weight:650;color:#24324a;margin-bottom:4px}.multi-empty{padding:10px;color:#66758a}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.list-toolbar{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:12px}.form-panel{display:none;margin:12px 0 16px;padding:14px;border:1px solid #cfd9e6;border-radius:8px;background:#fbfcfe}.form-panel.open{display:block}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.card{border:1px solid #dce3ec;border-radius:8px;padding:14px;background:#fbfcfe}.num{font-size:24px;font-weight:800}table{width:100%;border-collapse:collapse;font-size:13px;margin-top:14px}th,td{border-bottom:1px solid #e2e8f0;padding:10px;text-align:left;vertical-align:top}code{font-family:Consolas,monospace}.formula{margin:12px 0;padding:12px;border:1px solid #dce3ec;border-radius:8px;background:#fbfcfe;color:#24324a;font-size:13px;line-height:1.7}.edit-box{display:none;margin:14px 0;padding:14px;border:1px solid #cfd9e6;border-radius:8px;background:#fbfcfe}.pill{display:inline-block;background:#eef2f7;border-radius:999px;padding:3px 8px;margin:2px}.pager{justify-content:space-between;margin-top:12px}.pager select{width:auto}.bulk-box{display:none;margin:14px 0;padding:14px;border:1px solid #cfd9e6;border-radius:8px;background:#fbfcfe}.bulk-list{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;max-height:260px;overflow:auto;margin:10px 0}.permission-dialog{width:min(560px,calc(100vw - 32px));border:0;border-radius:12px;padding:0;box-shadow:0 20px 60px rgba(15,23,42,.24)}.permission-dialog::backdrop{background:rgba(15,23,42,.42)}.permission-dialog-content{padding:20px}.permission-dialog-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.permission-dialog-head h2{margin:0;font-size:18px}.permission-group{margin-top:16px}.permission-group b{display:block;margin-bottom:8px}.permission-items{display:flex;gap:8px;flex-wrap:wrap}.status-ok{color:#0f8a43}.status-bad{color:#c02626}@media(max-width:960px){.grid,.grid-3,.grid-5,.cards,.bulk-list{grid-template-columns:1fr}header{display:block}.token{margin-top:12px}}
 </style></head><body><main>
 <header><div><h1>LfClaw 企业管理</h1><p class="hint">维护模型、MCP 服务和技能包，再给员工分配激活码、积分和能力。</p></div><div class="token"><label>管理员 Token<input id="token" type="password" placeholder="LFCLAW_ADMIN_TOKEN"></label><button class="secondary" id="refreshBtn">刷新</button></div></header>
-<nav><button data-tab="overview" class="active-tab">总览</button><button data-tab="employees">员工与激活码</button><button data-tab="models">模型配置</button><button data-tab="mcp">MCP 服务</button><button data-tab="skills">技能包</button><button data-tab="asr">语音识别</button><button data-tab="agentMemory">Agent Memory</button><button data-tab="usage">用量监控</button><button data-tab="backup">数据备份</button><button data-tab="release">版本更新</button></nav>
+<nav><button data-tab="overview" class="active-tab">总览</button><button data-tab="employees">员工与激活码</button><button data-tab="models">模型配置</button><button data-tab="mcp">MCP 服务</button><button data-tab="skills">技能包</button><button data-tab="asr">语音识别</button><button data-tab="openViking">OpenViking 记忆</button><button data-tab="agentMemory">Agent Memory</button><button data-tab="usage">用量监控</button><button data-tab="backup">数据备份</button><button data-tab="release">版本更新</button></nav>
 <section id="overview" class="active"><div class="cards"><div class="card"><div class="hint">员工数</div><div class="num" id="statEmployees">0</div></div><div class="card"><div class="hint">模型数</div><div class="num" id="statModels">0</div></div><div class="card"><div class="hint">MCP 数量</div><div class="num" id="statMcps">0</div></div><div class="card"><div class="hint">技能数量</div><div class="num" id="statSkills">0</div></div><div class="card"><div class="hint">调用次数</div><div class="num" id="statCalls">0</div></div><div class="card"><div class="hint">已用积分</div><div class="num" id="statCredits">0</div></div></div></section>
 <section id="employees"><div class="list-toolbar"><div class="hint">员工列表默认每页 10 条，授权详情通过弹窗查看。</div><button id="newEmployeeBtn">新增员工</button></div><div id="employeeForm" class="form-panel"><div class="grid"><label>中文姓名<input id="employeeName" placeholder="张三"></label><label>员工 ID<input id="employeeId" placeholder="自动生成"></label><label>积分额度<input id="creditsLimit" type="number" value="1000"></label><label>备注<input id="notes"></label></div><div class="grid grid-3" style="margin-top:12px"><label>可用模型<div id="employeeModels" class="multi-select"></div></label><label>可用 MCP<div id="employeeMcps" class="multi-select"></div></label><label>可用技能<div id="employeeSkills" class="multi-select"></div></label></div><p class="hint">预览：<code id="employeePreview">输入中文姓名后自动生成员工 ID 与激活码前缀</code></p><div class="row"><button id="addEmployeeBtn">添加员工并生成激活码</button><button class="secondary" id="saveEmployeeBtn" style="display:none">保存员工授权</button><button class="secondary" id="cancelEmployeeBtn" style="display:none">取消编辑</button></div></div><table><thead><tr><th>状态</th><th>激活码</th><th>员工</th><th>积分/使用</th><th>最近客户端</th><th>设备</th><th>操作</th></tr></thead><tbody id="employeeRows"></tbody></table><div class="row pager"><div class="hint" id="employeePagerInfo"></div><div class="row"><label>每页<select id="employeePageSize"><option value="10" selected>10</option><option value="20">20</option><option value="50">50</option><option value="100">100</option></select></label><button class="secondary" id="employeePrevPage">上一页</button><button class="secondary" id="employeeNextPage">下一页</button></div></div></section>
 <dialog id="permissionDialog" class="permission-dialog"><div class="permission-dialog-content"><div class="permission-dialog-head"><h2 id="permissionDialogTitle">员工授权</h2><button class="secondary" id="permissionDialogClose">关闭</button></div><div id="permissionDialogBody"></div></div></dialog>
@@ -949,17 +1076,18 @@ const adminHtml = () => String.raw`<!doctype html><html lang="zh-CN"><head><meta
 <section id="mcp"><div class="list-toolbar"><div class="hint">先维护 MCP 服务，再分配给员工使用。</div><button id="newMcpBtn">新增 MCP</button></div><div id="mcpForm" class="form-panel"><div class="grid"><label>MCP ID<input id="mcpId" placeholder="qdrant-search"></label><label>名称<input id="mcpName"></label><label>类型<select id="mcpTransport"><option value="sse">SSE</option><option value="streamable-http">Streamable HTTP</option><option value="http">HTTP</option><option value="stdio">stdio</option></select></label><label>说明<input id="mcpDesc"></label></div><div class="grid" style="margin-top:12px"><label>服务 URL<input id="mcpUrl" placeholder="https://mcp.example.com/sse 或 /mcp"></label><label>Headers(JSON)<textarea id="mcpHeaders" placeholder='{"Authorization":"Bearer xxx"}'></textarea></label><label>命令(stdio)<input id="mcpCommand" placeholder="npx"></label><label>参数/环境变量<textarea id="mcpArgs" placeholder="参数每行一个；环境变量可后续补"></textarea></label></div><div class="row" style="margin-top:12px"><button id="saveMcpBtn">保存 MCP</button><button class="secondary" id="cancelMcpBtn">取消编辑</button></div></div><table><thead><tr><th>ID</th><th>名称</th><th>类型</th><th>连接</th><th>操作</th></tr></thead><tbody id="mcpRows"></tbody></table></section>
 <section id="skills"><div class="list-toolbar"><div class="hint">上传企业技能包后，可批量分配给员工。</div><button id="newSkillBtn">新增技能</button></div><div id="skillForm" class="form-panel"><div class="grid"><label>技能 ID<input id="skillId" placeholder="sales-report"></label><label>名称<input id="skillName"></label><label>版本<input id="skillVersion" value="1.0.0"></label><label>说明<input id="skillDesc"></label></div><div class="grid" style="margin-top:12px"><label>技能压缩包(.zip)<input id="skillZip" type="file" accept=".zip,application/zip"></label><div><p class="hint">上传后服务端保存 zip，客户端按员工权限下载。</p><button id="uploadSkillBtn">上传/保存技能包</button><button class="secondary" id="cancelSkillBtn">取消编辑</button></div></div></div><div id="skillBulkBox" class="bulk-box"><b id="skillBulkTitle">批量分配授权</b><p class="hint">勾选需要拥有该授权的员工，保存后会一次性同步所有员工授权。</p><div class="row"><button class="secondary" id="skillBulkSelectAll">全部员工</button><button class="secondary" id="skillBulkClear">清空</button><button id="skillBulkSave">保存分配</button><button class="secondary" id="skillBulkCancel">取消</button></div><div id="skillBulkEmployees" class="bulk-list"></div></div><table><thead><tr><th>ID</th><th>名称</th><th>版本</th><th>包</th><th>操作</th></tr></thead><tbody id="skillRows"></tbody></table></section>
 <section id="asr"><div class="formula"><b>全局语音输入：</b>语音能力不按员工单独授权。所有已激活员工都可使用；API Key 只保存在服务端，客户端只拿临时代理地址。</div><div class="grid"><label>显示名称<input id="asrName" placeholder="阿里云实时语音识别"></label><label>Workspace ID<input id="asrWorkspaceId" placeholder="llm-xxxx"></label><label>地域<input id="asrRegion" placeholder="cn-beijing"></label><label>模型<input id="asrModel" placeholder="fun-asr-realtime"></label></div><div class="grid" style="margin-top:12px"><label>API Host<input id="asrApiHost" placeholder="llm-xxx.cn-beijing.maas.aliyuncs.com"></label><label>WebSocket URL<input id="asrWebsocketUrl" placeholder="留空则按 Workspace 自动生成"></label><label>API Key<input id="asrApiKey" type="password" placeholder="sk-..."></label><label>音频格式<select id="asrFormat"><option value="wav">wav</option><option value="pcm">pcm</option></select></label></div><div class="grid" style="margin-top:12px"><label>采样率<input id="asrSampleRate" type="number" value="16000"></label><label>分片间隔(ms)<input id="asrChunkIntervalMillis" type="number" value="200"></label><label>单次最长录音(s)<input id="asrMaxSessionSeconds" type="number" value="60"></label><label>价格备注<input id="asrPriceNote" placeholder="如按秒/分钟计费"></label></div><div id="asrStatus" class="formula"></div><div class="row"><button id="saveAsrBtn">保存语音配置</button><button class="secondary" id="cancelAsrBtn">重置表单</button></div></section>
+<section id="openViking"><div class="formula"><b>个人长期记忆：</b>这是全企业唯一开关。开启后，每位员工的全部 LFCLAW Agent 共享该员工自己的长期记忆；员工之间严格隔离。OpenViking 故障或超时时，聊天会跳过记忆继续响应。</div><div class="grid"><label>启用 OpenViking<select id="openVikingEnabled"><option value="false">关闭</option><option value="true">开启</option></select></label><label>服务端内部地址<input id="openVikingUpstreamUrl" disabled></label><label>OpenViking Account<input id="openVikingAccountId" disabled></label><label>请求超时(ms)<input id="openVikingTimeoutMs" disabled></label></div><div id="openVikingStatus" class="formula"></div><div class="row"><button id="saveOpenVikingBtn">保存全局开关</button><button class="secondary" id="testOpenVikingBtn">测试连接</button><span id="openVikingTestResult" class="hint"></span></div><p class="hint">当前只开放个人记忆召回与写入，不开放删除、资源导入、部门知识库和 VikingBot。敏感凭据及常见个人敏感字段会在企业代理层脱敏。</p></section>
 <section id="usage"><div class="formula"><b>用量扣费说明：</b>客户端上报模型调用后，服务端按模型价格计算积分，并按天汇总展示。</div><div class="grid grid-5"><label>员工筛选<select id="usageEmployeeFilter"><option value="">全部员工</option></select></label><label>模型筛选<select id="usageModelFilter"><option value="">全部模型</option></select></label><div class="card"><div class="hint">调用次数</div><div class="num" id="usageCalls">0</div></div><div class="card"><div class="hint">消耗积分</div><div class="num" id="usageCredits">0</div></div><div class="card"><div class="hint">折算金额</div><div class="num" id="usageMoney">-</div></div></div><table><thead><tr><th>时间（天）</th><th>员工</th><th>模型</th><th>使用 token</th><th>积分</th><th>折算金额</th></tr></thead><tbody id="usageRows"></tbody></table><div class="row pager"><div class="hint" id="usagePagerInfo"></div><div class="row"><button class="secondary" id="usagePrevPage">上一页</button><button class="secondary" id="usageNextPage">下一页</button></div></div></section>
 <section id="backup"><div class="formula"><b>数据位置：</b>当前企业数据固定保存在 data/enterprise-data.json；备份保存在 data/backups，更新 server.mjs 不会覆盖这里。</div><div class="row"><button id="createBackupBtn">创建备份</button><button class="secondary" id="exportDataBtn">导出当前数据</button></div><table><thead><tr><th>备份文件</th><th>大小</th><th>时间</th><th>操作</th></tr></thead><tbody id="backupRows"></tbody></table></section>
 <section id="release"><div class="formula"><b>自动更新源：</b>把安装包上传到 <code>/opt/LfClaw/releases</code>，文件名带日期流水号即可自动识别，无需手动填写下载地址。示例：<code>LfClaw-Setup-2026071501-win-x64-official.exe</code>、<code>LfClaw-2026071501-mac-arm64-official.dmg</code>。更新日志可放 <code>changelog-2026071501.zh.txt</code>，一行一条。</div><div id="releaseSummary" class="formula"></div><div class="form-panel" style="display:block"><h3>手动版本记录</h3><div class="grid grid-3"><label>版本号<input id="releaseHistoryVersion" placeholder="例如：2026080903"></label><label style="grid-column:span 2">版本更新描述<textarea id="releaseHistoryDescription" placeholder="简要记录本次更新内容"></textarea></label></div><div class="row" style="margin-top:12px"><button id="addReleaseHistoryBtn">创建版本记录</button></div></div><table><thead><tr><th>版本</th><th>更新描述</th><th>创建时间</th></tr></thead><tbody id="releaseHistoryRows"></tbody></table><input id="releaseVersion" type="hidden"><input id="releaseDate" type="hidden"><input id="releaseWinUrl" type="hidden"><input id="releaseMacArmUrl" type="hidden"><input id="releaseMacIntelUrl" type="hidden"><input id="releaseManualUrl" type="hidden"><textarea id="releaseNotesZh" style="display:none"></textarea><textarea id="releaseNotesEn" style="display:none"></textarea><div class="row" style="margin-top:12px"><button class="secondary" id="testReleaseBtn">查看自动生成的更新 JSON</button><button id="saveReleaseBtn" style="display:none">保存更新信息</button></div></section>
 </main><script>
-var state={modelProviders:[],mcpServers:[],skills:[],employees:[],usageSummary:{callCount:0,creditsUsed:0},usageEvents:[],backups:[],release:{},asr:{}};var editingEmployee='';var employeePage=1;var employeePageSize=10;var usagePage=1;var usagePageSize=10;var bulkGrant={type:'',id:''};var $=function(id){return document.getElementById(id);};var esc=function(v){return String(v==null?'':v).replace(/[&<>"']/g,function(s){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s];});};var headers=function(json){localStorage.setItem('lfclaw_admin_token',$('token').value);var h={authorization:'Bearer '+$('token').value};if(json!==false)h['content-type']='application/json';return h;};var api=async function(path,opt){opt=opt||{};var res=await fetch(path,Object.assign({},opt,{headers:Object.assign({},headers(),opt.headers||{})}));var text=await res.text();var body=text?JSON.parse(text):{};if(!res.ok||body.code!==0)throw new Error(body.message||'请求失败');return body.data;};var run=async function(fn){try{await fn();}catch(e){alert(e.message||String(e));}};var openForm=function(id){$(id).classList.add('open');};var closeForm=function(id){$(id).classList.remove('open');};var multiItems={employeeModels:[],employeeMcps:[],employeeSkills:[]};var multiValues={employeeModels:[],employeeMcps:[],employeeSkills:[]};var selected=function(id){return multiValues[id]||[];};var setSelected=function(id,values){multiValues[id]=Array.from(new Set(values||[]));renderMultiSelect(id);};var set=function(id,v){$(id).value=v==null?'':v;};
+var state={modelProviders:[],mcpServers:[],skills:[],employees:[],usageSummary:{callCount:0,creditsUsed:0},usageEvents:[],backups:[],release:{},asr:{},openViking:{}};var editingEmployee='';var employeePage=1;var employeePageSize=10;var usagePage=1;var usagePageSize=10;var bulkGrant={type:'',id:''};var $=function(id){return document.getElementById(id);};var esc=function(v){return String(v==null?'':v).replace(/[&<>"']/g,function(s){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s];});};var headers=function(json){localStorage.setItem('lfclaw_admin_token',$('token').value);var h={authorization:'Bearer '+$('token').value};if(json!==false)h['content-type']='application/json';return h;};var api=async function(path,opt){opt=opt||{};var res=await fetch(path,Object.assign({},opt,{headers:Object.assign({},headers(),opt.headers||{})}));var text=await res.text();var body=text?JSON.parse(text):{};if(!res.ok||body.code!==0)throw new Error(body.message||'请求失败');return body.data;};var run=async function(fn){try{await fn();}catch(e){alert(e.message||String(e));}};var openForm=function(id){$(id).classList.add('open');};var closeForm=function(id){$(id).classList.remove('open');};var multiItems={employeeModels:[],employeeMcps:[],employeeSkills:[]};var multiValues={employeeModels:[],employeeMcps:[],employeeSkills:[]};var selected=function(id){return multiValues[id]||[];};var setSelected=function(id,values){multiValues[id]=Array.from(new Set(values||[]));renderMultiSelect(id);};var set=function(id,v){$(id).value=v==null?'':v;};
 function showTab(tab){document.querySelectorAll('section').forEach(function(s){s.classList.toggle('active',s.id===tab);});document.querySelectorAll('nav button').forEach(function(b){b.classList.toggle('active-tab',b.dataset.tab===tab);});}
 function renderMultiSelect(id){var items=multiItems[id]||[];var values=new Set(multiValues[id]||[]);var selectedItems=items.filter(function(x){return values.has(x.id);});var title=selectedItems.length?selectedItems.map(function(x){return x.name||x.id;}).join(', '):'未选择';$(id).innerHTML='<button type="button" class="multi-trigger" data-multi-toggle="'+id+'">'+esc(title)+'</button><div class="multi-options">'+(items.length?items.map(function(x){return '<label class="multi-option"><input type="checkbox" data-multi-id="'+id+'" data-multi-value="'+esc(x.id)+'" '+(values.has(x.id)?'checked':'')+'> <span>'+esc(x.name||x.id)+' ('+esc(x.id)+')</span></label>';}).join(''):'<div class="multi-empty">暂无可选项</div>')+'</div>';}function fillSelect(id,items){multiItems[id]=(items||[]).filter(function(x){return x.enabled!==false;});multiValues[id]=(multiValues[id]||[]).filter(function(value){return multiItems[id].some(function(item){return item.id===value;});});renderMultiSelect(id);}
 function initDepartmentUi(){var nav=document.querySelector('nav');var employeeTab=nav.querySelector('[data-tab="employees"]');var button=document.createElement('button');button.dataset.tab='departments';button.textContent='部门管理';nav.insertBefore(button,employeeTab);var section=document.createElement('section');section.id='departments';section.innerHTML='<div class="list-toolbar"><div class="hint">部门按树级展示，仅用于人员归属和筛选，不参与权限计算。</div><button id="newDepartmentBtn">新增部门</button></div><div id="departmentForm" class="form-panel"><div class="grid"><label>部门名称<input id="departmentName"></label><label>部门 ID<input id="departmentId" placeholder="留空自动生成"></label><label>上级部门<select id="departmentParent"><option value="">无（根部门）</option></select></label></div><div class="row" style="margin-top:12px"><button id="saveDepartmentBtn">保存部门</button><button class="secondary" id="cancelDepartmentBtn">取消</button></div></div><table><thead><tr><th>部门</th><th>上级部门</th><th>员工数</th><th>操作</th></tr></thead><tbody id="departmentRows"></tbody></table>';document.querySelector('main').insertBefore(section,$('employees'));var employeeGrid=$('employeeForm').querySelector('.grid');var label=document.createElement('label');label.innerHTML='所属部门<select id="employeeDepartment"><option value="">未分配部门</option></select>';employeeGrid.appendChild(label);}
 var editingDepartment='';
 async function loadAll(){state=await api('/api/admin/state');state.modelProviders=state.modelProviders||state.models||[];state.departments=state.departments||[];await renderAll();}
-async function renderAll(){fillSelect('employeeModels',state.modelProviders);fillSelect('employeeMcps',state.mcpServers);fillSelect('employeeSkills',state.skills);renderOverview();renderDepartments();renderEmployees();renderModels();renderMcp();renderSkills();document.querySelectorAll('[data-act="bulkGrant"]').forEach(function(button){button.textContent='分配范围';});renderAsr();renderAgentMemory();renderAgentMemoryAuditEmployees();renderUsageFilters();await renderUsage();renderBackups();renderReleaseHistory();renderRelease();}
+async function renderAll(){fillSelect('employeeModels',state.modelProviders);fillSelect('employeeMcps',state.mcpServers);fillSelect('employeeSkills',state.skills);renderOverview();renderDepartments();renderEmployees();renderModels();renderMcp();renderSkills();document.querySelectorAll('[data-act="bulkGrant"]').forEach(function(button){button.textContent='分配范围';});renderAsr();renderOpenViking();renderAgentMemory();renderAgentMemoryAuditEmployees();renderUsageFilters();await renderUsage();renderBackups();renderReleaseHistory();renderRelease();}
 function authText(v){return (v&&v.length)?v.join(', '):'未授权';}
 function renderOverview(){var modelIds=state.modelProviders.flatMap(function(provider){var models=provider.models||[];return models.length?models.map(function(model){return model.id;}):[provider.id];}).filter(Boolean);var usage=state.usageSummary||{};$('statEmployees').textContent=state.employees.length;$('statDepartments').textContent=state.departments.length;$('statModels').textContent=new Set(modelIds).size;$('statMcps').textContent=state.mcpServers.length;$('statSkills').textContent=state.skills.length;$('statCalls').textContent=Number(usage.callCount||0);$('statCredits').textContent=Number(usage.creditsUsed||0).toFixed(2);}
 function departmentList(){var result=[];var seen={};function visit(parentId,depth){state.departments.filter(function(d){return (d.parentId||'')===parentId;}).sort(function(a,b){return String(a.name).localeCompare(String(b.name),'zh-CN');}).forEach(function(d){if(seen[d.id])return;seen[d.id]=true;result.push({item:d,depth:depth});visit(d.id,depth+1);});}visit('',0);state.departments.forEach(function(d){if(!seen[d.id])result.push({item:d,depth:0});});return result;}
@@ -985,6 +1113,8 @@ function bulkEmployeeInputsForDepartments(departmentIds){return Array.from(docum
 function syncBulkDepartmentStates(){departmentList().slice().reverse().forEach(function(x){var input=document.querySelector('[data-bulk-grant-department="'+x.item.id+'"]');if(!input)return;var people=bulkEmployeeInputsForDepartments(departmentSubtreeIds(x.item.id));var selected=people.filter(function(person){return person.checked;}).length;input.checked=people.length>0&&selected===people.length;input.indeterminate=selected>0&&selected<people.length;});}
 function renderBulkGrant(){var box=$('skillBulkBox');if(!box)return;var configs=bulkGrantConfig();var cfg=configs[bulkGrant.type];if(!cfg||!bulkGrant.id){box.style.display='none';return;}var item=(cfg.items||[]).find(function(x){return x.id===bulkGrant.id;});if(!item){bulkGrant={type:'',id:''};box.style.display='none';return;}var section=$(cfg.section);if(section&&box.parentElement!==section){var table=section.querySelector('table');section.insertBefore(box,table||null);}$('skillBulkTitle').textContent='分配'+cfg.title+'：'+(item.name||item.id);box.querySelector('.hint').textContent='可授权整个部门，也可在部门下单独选择人员；部分人员已授权时部门显示减号。';var groups=departmentList().map(function(x){var d=x.item;var employees=state.employees.filter(function(e){return e.departmentId===d.id;});return '<div class="card"><label class="multi-option"><input type="checkbox" data-bulk-grant-department="'+esc(d.id)+'"> <b>'+Array(x.depth+1).join('　')+esc(d.name)+'（整个部门）</b></label>'+employees.map(function(e){var checked=employeeHasResource(e,cfg.grantKey,bulkGrant.id);return '<label class="multi-option"><input type="checkbox" data-bulk-grant-employee="'+esc(e.activationCode)+'" '+(checked?'checked':'')+'> <span>'+esc(e.employeeName)+' / '+esc(e.employeeId)+'</span></label>';}).join('')+'</div>';}).join('');var unassigned=state.employees.filter(function(e){return !e.departmentId||!state.departments.some(function(d){return d.id===e.departmentId;});});if(unassigned.length)groups+='<div class="card"><b>未分配部门</b>'+unassigned.map(function(e){var checked=(e[cfg.grantKey]||[]).indexOf(bulkGrant.id)>=0;return '<label class="multi-option"><input type="checkbox" data-bulk-grant-employee="'+esc(e.activationCode)+'" '+(checked?'checked':'')+'> <span>'+esc(e.employeeName)+' / '+esc(e.employeeId)+'</span></label>';}).join('')+'</div>';$('skillBulkEmployees').innerHTML=groups||'<div class="multi-empty">暂无部门或员工</div>';syncBulkDepartmentStates();box.style.display='block';}
 function renderAsr(){var x=state.asr||{};set('asrName',x.name||'阿里云实时语音识别');set('asrWorkspaceId',x.workspaceId||'');set('asrRegion',x.region||'cn-beijing');set('asrApiHost',x.apiHost||'');set('asrWebsocketUrl',x.websocketUrl||'');set('asrApiKey','');$('asrApiKey').placeholder=x.apiKey?'已保存，留空则不修改':'sk-...';set('asrModel',x.model||'fun-asr-realtime');set('asrFormat',x.format||'wav');set('asrSampleRate',x.sampleRate||16000);set('asrChunkIntervalMillis',x.chunkIntervalMillis||200);set('asrMaxSessionSeconds',x.maxSessionSeconds||60);set('asrPriceNote',x.priceNote||'');$('asrStatus').innerHTML=x.configured?'<b>当前状态：</b>已配置，客户端企业激活后即可使用语音输入。':'<b>当前状态：</b>未配置，请填写 API Key，并填写 Workspace ID / API Host / WebSocket URL 之一。';}
+function renderOpenViking(){var x=state.openViking||{};set('openVikingEnabled',String(Boolean(x.enabled)));set('openVikingUpstreamUrl',x.upstreamUrl||'http://127.0.0.1:1933');set('openVikingAccountId',x.accountId||'lfclaw');set('openVikingTimeoutMs',x.timeoutMs||2500);$('openVikingStatus').innerHTML=x.enabled?'<b>当前状态：</b>OpenViking 个人长期记忆已开启；全部员工 Agent 将按员工隔离召回和写入。':'<b>当前状态：</b>OpenViking 已关闭，LFCLAW 不会调用记忆服务。';$('openVikingTestResult').textContent='';$('openVikingTestResult').className='hint';}
+function openVikingPayload(){return{enabled:$('openVikingEnabled').value==='true'};}
 function asrPayload(){return{name:$('asrName').value,workspaceId:$('asrWorkspaceId').value,region:$('asrRegion').value,apiHost:$('asrApiHost').value,websocketUrl:$('asrWebsocketUrl').value,apiKey:$('asrApiKey').value,model:$('asrModel').value,format:$('asrFormat').value,sampleRate:Number($('asrSampleRate').value),chunkIntervalMillis:Number($('asrChunkIntervalMillis').value),maxSessionSeconds:Number($('asrMaxSessionSeconds').value),priceNote:$('asrPriceNote').value};}
 function initAgentMemoryUi(){var usage=$('usage');var section=document.createElement('section');section.id='agentMemory';section.innerHTML='<div class="formula"><b>Agent Memory 服务：</b>这是整个 Agent Memory 模块的总开关。关闭后 LFCLAW 不再调用该服务；开启对话记忆后，系统会自动读取和保存每位员工自己的记忆，员工之间完全隔离。</div><div class="grid"><label>启用 Agent Memory 服务<select id="agentMemoryEnabled"><option value="false">关闭</option><option value="true">开启</option></select></label><label>企业编码<input id="agentMemoryEnterpriseCode" placeholder="longfeng"></label><label>Memory Core 地址<input id="agentMemoryCoreUrl" placeholder="http://127.0.0.1:8420"></label><label>实例 ID<input id="agentMemoryServiceId" placeholder="default"></label><label>系统管理员 User_Key<input id="agentMemoryAdminUserKey" type="password" placeholder="sk-mem-..."></label><label>Team ID<input id="agentMemoryTeamId" placeholder="team-..."></label></div><label class="row" style="margin-top:12px"><input id="agentMemoryChatEnabled" type="checkbox" style="width:auto"> 启用员工对话记忆</label><div id="agentMemoryStatus" class="formula"></div><div class="row"><button id="saveAgentMemoryBtn">保存配置</button><button class="secondary" id="testAgentMemoryBtn">测试连接</button><button class="secondary" id="cancelAgentMemoryBtn">重置表单</button><span id="agentMemoryTestResult" class="hint"></span></div><div class="formula" style="margin-top:20px"><b>管理员记忆审计：</b>选择员工后读取其 L0-L3 对话记忆。员工密钥仅在服务端使用，不会发送到浏览器。</div><div class="row"><label style="min-width:300px">员工<select id="agentMemoryAuditEmployee"></select></label><button id="loadAgentMemoryAuditBtn">查看记忆</button><span id="agentMemoryAuditStatus" class="hint"></span></div><div id="agentMemoryAuditResult"></div>';usage.parentElement.insertBefore(section,usage);}
 function renderAgentMemory(){var x=state.agentMemory||{};set('agentMemoryEnabled',String(Boolean(x.enabled)));set('agentMemoryEnterpriseCode',x.enterpriseCode||'longfeng');set('agentMemoryCoreUrl',x.coreUrl||'');set('agentMemoryServiceId',x.serviceId||'default');set('agentMemoryAdminUserKey','');$('agentMemoryAdminUserKey').placeholder=x.adminUserKey?'已保存，留空则不修改':'sk-mem-...';set('agentMemoryTeamId',x.teamId||'');$('agentMemoryChatEnabled').checked=Boolean(x.chatMemoryEnabled);var active=Boolean(x.enabled&&x.chatMemoryEnabled&&x.configured);$('agentMemoryStatus').innerHTML=!x.configured?'<b>当前状态：</b>未完整配置，请填写 Memory Core、系统管理员 User_Key 和 Team ID。':!x.enabled?'<b>当前状态：</b>Agent Memory 服务已关闭，LFCLAW 不会调用该服务。':!x.chatMemoryEnabled?'<b>当前状态：</b>Agent Memory 服务已开启，员工对话记忆已关闭，不会召回、写入或审计 L0-L3。':'<b>当前状态：</b>员工对话记忆已开启，所有已授权模型会自动使用员工独立记忆。';$('loadAgentMemoryAuditBtn').disabled=!active;$('agentMemoryAuditStatus').textContent=active?'':'员工对话记忆未启用';$('agentMemoryTestResult').textContent='';$('agentMemoryTestResult').className='hint';}
@@ -1005,6 +1135,8 @@ function editEmployee(code){var e=state.employees.find(function(x){return x.acti
 function clearEmployee(){editingEmployee='';['employeeName','employeeId','notes'].forEach(function(id){set(id,'');});set('employeeDepartment','');set('creditsLimit',1000);setSelected('employeeModels',[]);setSelected('employeeMcps',[]);setSelected('employeeSkills',[]);$('addEmployeeBtn').style.display='inline-block';$('saveEmployeeBtn').style.display='none';$('cancelEmployeeBtn').style.display='none';closeForm('employeeForm');}
 initDepartmentUi();
 initAgentMemoryUi();
+$('saveOpenVikingBtn').onclick=function(){run(async function(){await api('/api/admin/openviking',{method:'POST',body:JSON.stringify(openVikingPayload())});await loadAll();alert('OpenViking 全局开关已保存');});};
+$('testOpenVikingBtn').onclick=function(){run(async function(){$('openVikingTestResult').textContent='测试中...';$('openVikingTestResult').className='hint';var result=await api('/api/admin/openviking/test',{method:'POST',body:'{}'});$('openVikingTestResult').textContent=result.ok?'连接成功：'+(result.message||('HTTP '+result.status)):'连接失败：'+(result.message||'未知错误');$('openVikingTestResult').className=result.ok?'hint status-ok':'hint status-bad';});};
 $('saveAgentMemoryBtn').onclick=function(){run(async function(){await api('/api/admin/agent-memory',{method:'POST',body:JSON.stringify(agentMemoryPayload())});await loadAll();alert('Agent Memory 配置已保存');});};
 $('testAgentMemoryBtn').onclick=function(){run(async function(){$('agentMemoryTestResult').textContent='测试中...';$('agentMemoryTestResult').className='hint';var result=await api('/api/admin/agent-memory/test',{method:'POST',body:JSON.stringify(agentMemoryPayload())});$('agentMemoryTestResult').textContent=result.ok?'连接成功：'+(result.message||('HTTP '+result.status)):'连接失败：'+(result.message||'未知错误');$('agentMemoryTestResult').className=result.ok?'hint status-ok':'hint status-bad';});};
 $('cancelAgentMemoryBtn').onclick=renderAgentMemory;
@@ -1059,7 +1191,7 @@ function initEmployeeFilters(){var panel=document.createElement('div');panel.cla
 renderEmployees=function(){var employees=filteredEmployees();var total=employees.length;var pages=Math.max(1,Math.ceil(total/employeePageSize));employeePage=Math.min(Math.max(1,employeePage),pages);var start=(employeePage-1)*employeePageSize;var rows=employees.slice(start,start+employeePageSize);$('employeeRows').innerHTML=rows.map(function(e){return '<tr><td>'+esc(e.status)+'</td><td><code>'+esc(e.activationCode)+'</code></td><td>'+esc(e.employeeName)+'<br><code>'+esc(e.employeeId)+'</code><br><span class="pill">'+esc(departmentName(e.departmentId))+'</span></td><td>'+esc(Math.max(0,(e.creditsLimit||0)-(e.creditsUsed||0)))+'/'+esc(e.creditsLimit||0)+'<br><button class="secondary" data-act="credits" data-code="'+esc(e.activationCode)+'">改积分</button></td><td><code>'+esc(e.lastSeenClientVersion||e.clientVersion||'-')+'</code><br>'+esc(e.lastSeenClientVersionAt||'-')+'</td><td><code>'+esc(e.deviceToken||'-')+'</code><br>'+esc(e.lastUsedAt||'-')+'</td><td><div class="row"><button class="secondary" data-act="viewGrants" data-code="'+esc(e.activationCode)+'">授权</button><button class="secondary" data-act="editEmployee" data-code="'+esc(e.activationCode)+'">编辑</button><button class="secondary" data-act="copy" data-code="'+esc(e.activationCode)+'">复制</button><button class="secondary" data-act="toggle" data-code="'+esc(e.activationCode)+'" data-status="'+esc(e.status)+'">'+(e.status==='active'?'禁用':'启用')+'</button><button class="danger" data-act="deleteEmployee" data-code="'+esc(e.activationCode)+'">删除</button></div></td></tr>';}).join('');var filterActive=employeeNameFilter.trim()||employeeDepartmentFilter.trim();$('employeePagerInfo').textContent=total?'第 '+employeePage+' / '+pages+' 页，'+(filterActive?'筛选到 ':'共 ')+total+' 人，当前显示 '+(start+1)+'-'+Math.min(start+rows.length,total):(filterActive?'没有符合筛选条件的员工':'暂无员工');$('employeePrevPage').disabled=employeePage<=1;$('employeeNextPage').disabled=employeePage>=pages;$('employeePageSize').value=String(employeePageSize);}
 initEmployeeFilters();
 initEmployeeMcpPermissionUi();
-showEmployeeGrants=function(code){var e=state.employees.find(function(x){return x.activationCode===code;});if(!e)return;var floorIds=e.effectiveMcpPermissions&&e.effectiveMcpPermissions['dz2.0']||[];var floorNames=operationPermissionPreset.filter(function(option){return floorIds.indexOf(option.id)>=0;}).map(function(option){return option.name;});$('permissionDialogTitle').textContent=(e.employeeName||e.employeeId)+' 的个人授权';$('permissionDialogBody').innerHTML='<div class="formula"><b>所属部门：</b>'+esc(departmentName(e.departmentId))+'<br>部门仅用于人员归属，以下权限全部按个人授权生效。</div>'+grantGroup('模型',e.allowedModelProviderIds,state.modelProviders)+grantGroup('MCP',e.allowedMcpServerIds,state.mcpServers)+(floorIds.length?'<div class="permission-group"><b>兜知2.0 楼层权限</b><div class="permission-items">'+floorNames.map(function(name){return'<span class="pill">'+esc(name)+'</span>';}).join('')+'</div></div>':'')+grantGroup('技能',e.allowedSkillIds,state.skills);$('permissionDialog').showModal();};
+showEmployeeGrants=function(code){var e=state.employees.find(function(x){return x.activationCode===code;});if(!e)return;var mcpPermissionHtml=(state.mcpServers||[]).filter(function(mcp){return(mcp.permissionOptions||[]).length&&e.effectiveMcpPermissions&&e.effectiveMcpPermissions[mcp.id]&&e.effectiveMcpPermissions[mcp.id].length;}).map(function(mcp){var ids=e.effectiveMcpPermissions[mcp.id]||[];var names=(mcp.permissionOptions||[]).filter(function(option){return ids.indexOf(option.id)>=0;}).map(function(option){return option.name;});return '<div class="permission-group"><b>'+esc(mcp.name)+' 细分权限</b><div class="permission-items">'+names.map(function(name){return'<span class="pill">'+esc(name)+'</span>';}).join('')+'</div></div>';}).join('');$('permissionDialogTitle').textContent=(e.employeeName||e.employeeId)+' 的个人授权';$('permissionDialogBody').innerHTML='<div class="formula"><b>所属部门：</b>'+esc(departmentName(e.departmentId))+'<br>部门仅用于人员归属，以下权限全部按个人授权生效。</div>'+grantGroup('模型',e.allowedModelProviderIds,state.modelProviders)+grantGroup('MCP',e.allowedMcpServerIds,state.mcpServers)+mcpPermissionHtml+grantGroup('技能',e.allowedSkillIds,state.skills);$('permissionDialog').showModal();};
 var baseEditEmployee=editEmployee;editEmployee=function(code){baseEditEmployee(code);var employee=state.employees.find(function(x){return x.activationCode===code;});renderEmployeeMcpPermissions(employee);};
 var baseClearEmployee=clearEmployee;clearEmployee=function(){baseClearEmployee();renderEmployeeMcpPermissions(null);};
 $('addEmployeeBtn').onclick=function(){run(async function(){await api('/api/admin/employees',{method:'POST',body:JSON.stringify(employeePayload())});clearEmployee();employeePage=1;await loadAll();});};
@@ -1168,9 +1300,9 @@ const sendJsonDownload = (res, fileName, data) => {
   res.end(JSON.stringify(ensureData(data), null, 2));
 };
 
-const releaseResponse = (data, req) => {
+const releaseResponse = async (data, req) => {
   const release = data.release || {};
-  const autoRelease = detectAutoRelease(requestOrigin(req)) || {};
+  const autoRelease = await detectAutoRelease(requestOrigin(req)) || {};
   const notesZh = autoRelease.notesZh?.length ? autoRelease.notesZh : release.notesZh ? release.notesZh.split(/\r?\n/).filter(Boolean) : [];
   const notesEn = autoRelease.notesEn?.length ? autoRelease.notesEn : release.notesEn ? release.notesEn.split(/\r?\n/).filter(Boolean) : notesZh;
   const version = autoRelease.version || release.version || '';
@@ -1227,9 +1359,105 @@ const handleAdmin = async (req, res, url, data) => {
     writeData(data);
     return ok(res, redactAsr(data.asr)), true;
   }
+  if (url.pathname === '/api/admin/openviking' && req.method === 'POST') {
+    const body = await readBody(req);
+    const next = normalizeOpenViking(body, data.openViking);
+    const legacyMemory = normalizeAgentMemory(data.agentMemory);
+    if (next.enabled && legacyMemory.enabled && legacyMemory.chatMemoryEnabled) {
+      return fail(res, 409, '请先关闭旧 Agent Memory 对话记忆，再启用 OpenViking。'), true;
+    }
+    data.openViking = next;
+    writeData(data);
+    return ok(res, openVikingAdminState(data.openViking)), true;
+  }
+  if (url.pathname === '/api/admin/openviking/test' && req.method === 'POST') {
+    const state = openVikingAdminState(data.openViking);
+    if (openVikingGatewayConfigurationError) {
+      return ok(res, {
+        ok: false,
+        message: `OpenViking 企业代理配置无效：${openVikingGatewayConfigurationError}`,
+      }), true;
+    }
+    const testEmployee = data.employees.find(employee => (
+      employee.status === 'active'
+      && OPENVIKING_USER_ID_PATTERN.test(String(employee.openVikingUserId || '').trim())
+    ));
+    if (!testEmployee) {
+      return ok(res, {
+        ok: false,
+        message: '没有可用于验证 OpenViking 租户访问的有效员工。',
+      }), true;
+    }
+    const upstreamApiKey = String(process.env.LFCLAW_OPENVIKING_API_KEY || '').trim();
+    if (!upstreamApiKey) {
+      return ok(res, {
+        ok: false,
+        message: 'LFCLAW_OPENVIKING_API_KEY 未配置。',
+      }), true;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), state.timeoutMs);
+    try {
+      const upstreamUrl = state.upstreamUrl.replace(/\/+$/, '');
+      const readinessResponse = await fetch(`${upstreamUrl}/ready`, {
+        method: 'GET',
+        signal: controller.signal,
+        redirect: 'manual',
+        headers: {
+          accept: 'application/json',
+          'x-api-key': upstreamApiKey,
+        },
+      });
+      const readinessText = await readinessResponse.text();
+      let readiness = null;
+      try {
+        readiness = readinessText ? JSON.parse(readinessText) : null;
+      } catch {
+        readiness = null;
+      }
+      if (!readinessResponse.ok || readiness?.status !== 'ready') {
+        return ok(res, {
+          ok: false,
+          status: readinessResponse.status,
+          message: readinessText.slice(0, 300) || `OpenViking 未就绪（HTTP ${readinessResponse.status}）。`,
+        }), true;
+      }
+
+      const tenantResponse = await fetch(`${upstreamUrl}/api/v1/sessions`, {
+        method: 'GET',
+        signal: controller.signal,
+        redirect: 'manual',
+        headers: {
+          accept: 'application/json',
+          'x-api-key': upstreamApiKey,
+          'x-openviking-account': state.accountId,
+          'x-openviking-user': testEmployee.openVikingUserId,
+        },
+      });
+      const tenantText = await tenantResponse.text();
+      return ok(res, {
+        ok: tenantResponse.ok,
+        status: tenantResponse.status,
+        message: tenantResponse.ok
+          ? 'OpenViking 已就绪，记忆检索和整理依赖均可用。'
+          : tenantText.slice(0, 300) || `OpenViking 租户访问失败（HTTP ${tenantResponse.status}）。`,
+      }), true;
+    } catch (error) {
+      return ok(res, {
+        ok: false,
+        message: controller.signal.aborted ? 'OpenViking 连接超时。' : String(error?.message || error),
+      }), true;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
   if (url.pathname === '/api/admin/agent-memory' && req.method === 'POST') {
     const body = await readBody(req);
-    data.agentMemory = normalizeAgentMemory(body, data.agentMemory);
+    const next = normalizeAgentMemory(body, data.agentMemory);
+    if (next.enabled && next.chatMemoryEnabled && normalizeOpenViking(data.openViking).enabled) {
+      return fail(res, 409, '请先关闭 OpenViking，再启用旧 Agent Memory 对话记忆。'), true;
+    }
+    data.agentMemory = next;
     writeData(data);
     return ok(res, redactAgentMemory(data.agentMemory)), true;
   }
@@ -1441,6 +1669,7 @@ const handleAdmin = async (req, res, url, data) => {
       return fail(res, 400, '配置 MCP 细分权限前，请先设置 LFCLAW_MCP_PERMISSION_SECRET。'), true;
     }
     existing ? Object.assign(existing, item) : data.mcpServers.unshift(item);
+    clearMcpPermissionAssertionCache(`mcp ${item.id} changed`);
     writeData(data);
     return ok(res, item), true;
   }
@@ -1497,6 +1726,7 @@ const handleAdmin = async (req, res, url, data) => {
     };
     applyAssignments(data.employees, body.employeePermissions, 'activationCode');
     applyAssignments(data.departments, body.departmentPermissions, 'id');
+    clearMcpPermissionAssertionCache(`mcp ${mcpId} permission assignments changed`);
     writeData(data);
     return ok(res, {
       mcpServerId: mcpId,
@@ -1524,6 +1754,7 @@ const handleAdmin = async (req, res, url, data) => {
         itemId,
         activationCodes,
       );
+      if (route === '/api/admin/mcp') clearMcpPermissionAssertionCache(`mcp ${itemId} assignments changed`);
       writeData(data);
       return ok(res, {
         [resultKey]: itemId,
@@ -1544,6 +1775,7 @@ const handleAdmin = async (req, res, url, data) => {
         itemId,
         body.activationCodes ?? body.employeeActivationCodes ?? body.employeeCodes,
       );
+      if (route === '/api/admin/mcp') clearMcpPermissionAssertionCache(`mcp ${itemId} employee assignments changed`);
       writeData(data);
       return ok(res, { [resultKey]: itemId, assigned, employees: data.employees.map(employeeView) }), true;
     }
@@ -1573,6 +1805,7 @@ const handleAdmin = async (req, res, url, data) => {
           delete grants[itemId];
           subject.mcpPermissionGrants = grants;
         }
+        clearMcpPermissionAssertionCache(`mcp ${itemId} deleted`);
       }
       writeData(data);
       return ok(res, { deleted: true }), true;
@@ -1584,11 +1817,24 @@ const handleAdmin = async (req, res, url, data) => {
     if (!employeeName) return fail(res, 400, '员工姓名必填。'), true;
     let activationCode = makeActivationCode(employeeName);
     while (data.employees.some(employee => employee.activationCode === activationCode)) activationCode = makeActivationCode(employeeName);
+    const requestedEmployeeId = String(body.employeeId || '').trim();
+    const conflictsWithExistingMemoryIdentity = candidate => data.employees.some(employee => (
+      employee.employeeId === candidate || employee.openVikingUserId === candidate
+    ));
+    if (requestedEmployeeId && conflictsWithExistingMemoryIdentity(requestedEmployeeId)) {
+      return fail(res, 409, '员工 ID 已存在或已被长期记忆身份占用。'), true;
+    }
+    let employeeId = requestedEmployeeId || makeEmployeeId(employeeName);
+    while (!requestedEmployeeId && conflictsWithExistingMemoryIdentity(employeeId)) employeeId = makeEmployeeId(employeeName);
+    let internalEmployeeId = id('employee');
+    while (data.employees.some(employee => (
+      employee.id === internalEmployeeId || employee.openVikingUserId === internalEmployeeId
+    ))) internalEmployeeId = id('employee');
     const employee = {
-      id: id('employee'),
+      id: internalEmployeeId,
       activationCode,
       employeeName,
-      employeeId: String(body.employeeId || '').trim() || makeEmployeeId(employeeName),
+      employeeId,
       status: 'active',
       deviceToken: null,
       lastUsedAt: null,
@@ -1607,10 +1853,16 @@ const handleAdmin = async (req, res, url, data) => {
       createdAt: nowIso(),
       updatedAt: nowIso(),
     };
+    employee.openVikingUserId = OPENVIKING_USER_ID_PATTERN.test(employee.employeeId)
+      ? employee.employeeId
+      : internalEmployeeId;
     if (employee.departmentId && !data.departments.some(item => item.id === employee.departmentId)) {
       return fail(res, 400, '部门不存在。'), true;
     }
     data.employees.unshift(employee);
+    if (employee.allowedMcpServerIds.length > 0 || Object.keys(employee.mcpPermissionGrants).length > 0) {
+      clearMcpPermissionAssertionCache(`employee ${employee.employeeId} created`);
+    }
     writeData(data);
     return ok(res, employeeView(employee, data)), true;
   }
@@ -1635,11 +1887,20 @@ const handleAdmin = async (req, res, url, data) => {
     }
     if (body.notes !== undefined) employee.notes = String(body.notes || '');
     employee.updatedAt = nowIso();
+    if (
+      body.allowedMcpServerIds !== undefined
+      || body.mcpPermissionGrants !== undefined
+      || body.status !== undefined
+      || body.employeeId !== undefined
+    ) {
+      clearMcpPermissionAssertionCache(`employee ${employee.employeeId} changed`);
+    }
     writeData(data);
     return ok(res, employeeView(employee, data)), true;
   }
   if (employeeMatch && req.method === 'DELETE') {
     data.employees = data.employees.filter(item => item.activationCode !== decodeURIComponent(employeeMatch[1]));
+    clearMcpPermissionAssertionCache('employee deleted');
     writeData(data);
     return ok(res, { deleted: true }), true;
   }
@@ -1649,8 +1910,41 @@ const handleAdmin = async (req, res, url, data) => {
 const findEmployeeByToken = (data, token) => {
   const session = data.sessions[token];
   if (!session) return null;
+  const lastSeenAt = Date.parse(session.lastSeenAt || session.createdAt || '');
+  if (!Number.isFinite(lastSeenAt) || Date.now() - lastSeenAt > SESSION_TTL_MS) {
+    delete data.sessions[token];
+    writeData(data);
+    return null;
+  }
   return data.employees.find(employee => employee.activationCode === session.activationCode) || null;
 };
+
+const handleOpenViking = (() => {
+  try {
+    return createOpenVikingGateway({
+      prefix: OPENVIKING_PROXY_PREFIX,
+      isEnabled: () => normalizeOpenViking(readData().openViking).enabled,
+      authenticate: token => {
+        const data = readData();
+        const employee = findEmployeeByToken(data, token);
+        if (!employee) return null;
+        return {
+          status: employee.status,
+          userId: String(employee.openVikingUserId || employee.employeeId || employee.id || '').trim(),
+        };
+      },
+    });
+  } catch (error) {
+    openVikingGatewayConfigurationError = error instanceof Error ? error.message : String(error);
+    console.error('[OpenViking] gateway configuration is invalid; memory proxy will remain unavailable:', error);
+    return async (_req, res, url) => {
+      const pathname = String(url?.pathname || '');
+      if (pathname !== OPENVIKING_PROXY_PREFIX && !pathname.startsWith(`${OPENVIKING_PROXY_PREFIX}/`)) return false;
+      fail(res, 503, 'OpenViking memory is temporarily unavailable. Chat can continue without memory.');
+      return true;
+    };
+  }
+})();
 
 const cleanupAsrProxySessions = () => {
   const expiresBefore = Date.now() - ASR_PROXY_SESSION_TTL_MS;
@@ -1841,15 +2135,19 @@ const handleAsrProxyWebSocket = (client, req, url) => {
 const handleConversationShare = createConversationShareRoutes({ directory: path.join(STORAGE_DIR, 'conversation-shares'), findEmployeeByToken });
 
 const server = http.createServer(async (req, res) => {
-  if (req.method === 'OPTIONS') return json(res, 204, {});
-  const url = new URL(req.url || '/', `http://${req.headers.host}`);
-  if ((req.method === 'GET' || req.method === 'HEAD') && serveReleaseFile(req, res, url.pathname)) return;
-  const data = readData();
   try {
+    if (req.method === 'OPTIONS') return json(res, 204, {});
+    const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+    if (url.pathname === '/healthz' && req.method === 'GET') {
+      return ok(res, { status: 'ok', dataStore: enterpriseDataStore.health() });
+    }
+    if ((req.method === 'GET' || req.method === 'HEAD') && serveReleaseFile(req, res, url.pathname)) return;
+    const data = readData();
     if (await handleConversationShare(req, res, url, data)) return;
+    if (await handleOpenViking(req, res, url)) return;
     if (await handleAdmin(req, res, url, data)) return;
     if ((url.pathname === '/api/enterprise/update' || url.pathname === '/api/enterprise/update-manual') && req.method === 'GET') {
-      return json(res, 200, releaseResponse(data, req));
+      return json(res, 200, await releaseResponse(data, req));
     }
     if (url.pathname === '/api/enterprise/activate' && req.method === 'POST') {
       const body = await readBody(req);
@@ -1870,7 +2168,7 @@ const server = http.createServer(async (req, res) => {
       employee.lastUsedAt = activatedAt;
       employee.updatedAt = activatedAt;
       const accessToken = randomHex(24);
-      data.sessions[accessToken] = { activationCode, createdAt: nowIso(), clientVersion };
+      data.sessions[accessToken] = { activationCode, createdAt: activatedAt, lastSeenAt: activatedAt, clientVersion };
       writeData(data);
       return ok(res, clientPayload(data, employee, accessToken, req, clientVersion));
     }
@@ -1881,17 +2179,23 @@ const server = http.createServer(async (req, res) => {
       if (employee.status !== 'active') return fail(res, 403, 'Activation code is disabled.');
       const session = data.sessions?.[token];
       const clientVersion = clientVersionFromRequest(req, url) || normalizeClientVersion(session?.clientVersion || employee.clientVersion);
+      const seenAt = nowIso();
+      const previousVersion = normalizeClientVersion(session?.clientVersion || employee.lastSeenClientVersion);
+      const previousSeenAt = Date.parse(session?.lastSeenAt || session?.createdAt || '');
+      const shouldPersist = (Boolean(clientVersion) && previousVersion !== clientVersion)
+        || !Number.isFinite(previousSeenAt)
+        || Date.now() - previousSeenAt >= LAST_SEEN_FLUSH_MS;
       if (clientVersion) {
-        const seenAt = nowIso();
         employee.clientVersion = clientVersion;
         employee.lastSeenClientVersion = clientVersion;
         employee.lastSeenClientVersionAt = seenAt;
         if (session) session.clientVersion = clientVersion;
-        employee.lastUsedAt = seenAt;
-        employee.updatedAt = seenAt;
-        writeData(data);
       }
-      return ok(res, clientPayload(data, employee, token, req, clientVersion));
+      if (session && shouldPersist) session.lastSeenAt = seenAt;
+      employee.lastUsedAt = seenAt;
+      employee.updatedAt = seenAt;
+      if (shouldPersist) writeData(data);
+      return ok(res, clientPayload(data, employee, token, req, clientVersion, url.searchParams.get('forceMcpRefresh') || ''));
     }
     if (url.pathname === '/api/enterprise/asr/realtime/sessions' && req.method === 'POST') {
       const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
@@ -1955,8 +2259,11 @@ const server = http.createServer(async (req, res) => {
         }
       }
 
-      const upstreamUrl = upstreamModelUrl(provider.baseUrl, enterpriseModelProxyMatch[2]);
+      const upstreamPath = enterpriseModelProxyMatch[2];
+      const upstreamUrl = upstreamModelUrl(provider.baseUrl, upstreamPath);
+      const startedAt = Date.now();
       const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), MODEL_PROXY_TIMEOUT_MS);
       res.once('close', () => {
         if (!res.writableEnded) controller.abort();
       });
@@ -1974,10 +2281,24 @@ const server = http.createServer(async (req, res) => {
           },
           body: JSON.stringify(upstreamBody),
         });
+        const contentType = upstream.headers.get('content-type') || 'application/json; charset=utf-8';
+        if (!upstream.ok) {
+          console.warn('[EnterpriseModelProxy] upstream returned non-2xx response:', {
+            providerId,
+            modelId,
+            upstreamPath,
+            status: upstream.status,
+            durationMs: Date.now() - startedAt,
+            contentType,
+          });
+        }
         res.writeHead(upstream.status, {
-          'content-type': upstream.headers.get('content-type') || 'application/json; charset=utf-8',
+          'content-type': contentType,
         });
-        if (!upstream.body) return res.end();
+        if (!upstream.body) {
+          clearTimeout(timeout);
+          return res.end();
+        }
         const reader = upstream.body.getReader();
         const memoryResponseChunks = [];
         let memoryResponseBytes = 0;
@@ -1991,6 +2312,7 @@ const server = http.createServer(async (req, res) => {
           res.write(Buffer.from(value));
         }
         res.end();
+        clearTimeout(timeout);
         if (employeeMapping && memoryUserText) {
           const responseText = Buffer.concat(memoryResponseChunks).toString('utf8');
           void rememberAgentMemoryTurn({
@@ -2005,6 +2327,16 @@ const server = http.createServer(async (req, res) => {
         }
         return;
       } catch (error) {
+        clearTimeout(timeout);
+        console.error('[EnterpriseModelProxy] upstream request failed:', {
+          providerId,
+          modelId,
+          upstreamPath,
+          durationMs: Date.now() - startedAt,
+          timeoutMs: MODEL_PROXY_TIMEOUT_MS,
+          errorName: error instanceof Error ? error.name : '',
+          errorMessage: error instanceof Error ? error.message : String(error),
+        });
         if (!res.headersSent) return fail(res, 502, error instanceof Error ? error.message : 'Enterprise model request failed.');
         return res.end();
       }
@@ -2060,8 +2392,25 @@ const server = http.createServer(async (req, res) => {
     }
     fail(res, 404, 'Not found.');
   } catch (error) {
-    fail(res, 500, error instanceof Error ? error.message : String(error));
+    console.error(`[EnterpriseServer] ${req.method || 'UNKNOWN'} ${req.url || '/'} failed:`, error);
+    if (!res.headersSent) fail(res, 500, 'Internal server error.');
+    else if (!res.writableEnded) res.end();
   }
+});
+
+server.on('clientError', (error, socket) => {
+  console.warn('[EnterpriseServer] client connection error:', error);
+  if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+});
+
+const activeSockets = new Set();
+server.on('connection', socket => {
+  activeSockets.add(socket);
+  socket.once('close', () => activeSockets.delete(socket));
+});
+
+server.on('error', error => {
+  console.error('[EnterpriseServer] HTTP server error:', error);
 });
 
 const asrWss = new WebSocketServer({ noServer: true });
@@ -2084,6 +2433,54 @@ fs.mkdirSync(SKILL_DIR, { recursive: true });
 server.listen(PORT, HOST, () => {
   console.log(`[LfClaw Enterprise] listening at http://${HOST}:${PORT}`);
 });
+
+let shuttingDown = false;
+const shutdown = signal => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[EnterpriseServer] received ${signal}; shutting down.`);
+  dataWritesSealed = true;
+  let exitCode = 0;
+  let finished = false;
+  let serverClosed = false;
+  let dataFlushed = false;
+  const finish = code => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(forceTimer);
+    process.exit(code);
+  };
+  const finishWhenReady = () => {
+    if (serverClosed && dataFlushed) finish(exitCode);
+  };
+  const forceTimer = setTimeout(() => {
+    console.error('[EnterpriseServer] shutdown exceeded 5 seconds; forcing exit.');
+    finish(1);
+  }, 5_000);
+  server.close(error => {
+    if (error) {
+      console.error('[EnterpriseServer] HTTP server close failed:', error);
+      exitCode = 1;
+    }
+    serverClosed = true;
+    finishWhenReady();
+  });
+
+  for (const client of asrWss.clients) client.terminate();
+  if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+  for (const socket of activeSockets) socket.destroy();
+
+  enterpriseDataStore.flush().catch(flushError => {
+    console.error('[EnterpriseServer] pending data flush failed:', flushError);
+    exitCode = 1;
+  }).finally(() => {
+    dataFlushed = true;
+    finishWhenReady();
+  });
+};
+
+process.once('SIGTERM', () => shutdown('SIGTERM'));
+process.once('SIGINT', () => shutdown('SIGINT'));
 
 
 

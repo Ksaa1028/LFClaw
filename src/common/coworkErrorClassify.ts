@@ -5,6 +5,7 @@
 
 export const CoworkErrorI18nKey = {
   AuthInvalid: 'coworkErrorAuthInvalid',
+  EnterpriseMcpAuthInvalid: 'coworkErrorEnterpriseMcpAuthInvalid',
   OAuthInvalid: 'coworkErrorOAuthInvalid',
   ModelAccessDenied: 'coworkErrorModelAccessDenied',
   QuotaExhausted: 'coworkErrorQuotaExhausted',
@@ -22,6 +23,9 @@ const API_KEY_PATTERN = String.raw`(?:api\s*key|api[_-]?key|apikey)`;
 const UNAVAILABLE_NETWORK_CODE_PATTERN = String.raw`(?:ECONNREFUSED|ECONNRESET|ECONNABORTED|ENOTFOUND|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|EAI_AGAIN|UND_ERR_[A-Z_]+)`;
 
 const ERROR_RULES: Array<[RegExp, string]> = [
+  // LFClaw enterprise MCP credentials are issued by the enterprise server, not by
+  // the upstream business OAuth provider.
+  [/MCP_AUTH_FAILED_AFTER_REFRESH|MCP_ASSERTION|LFCLAW permission assertion|x-lfclaw-permission-assertion/i, CoworkErrorI18nKey.EnterpriseMcpAuthInvalid],
   // OAuth / token refresh failures. Must precede generic auth handling.
   [/oauth.*(invalid|expired|failed|error|scope|token|callback|authorization|not completed)|auth[_ ]refresh|refresh[_ ]timeout|callback[_ ](timeout|validation)|token.*(expired|invalid)|invalid.*token|authorization method/i, CoworkErrorI18nKey.OAuthInvalid],
   // Provider/model permission errors. Must precede generic auth handling.

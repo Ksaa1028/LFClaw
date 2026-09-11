@@ -55,7 +55,7 @@ export const effectiveMcpPermissionIds = (_data, employee, mcp, _departmentChain
 
 const base64Url = value => Buffer.from(value).toString('base64url');
 
-export const signMcpPermissionAssertion = ({ secret, employeeId, mcpId, permissionIds, now = Date.now(), ttlMs = 24 * 60 * 60 * 1000 }) => {
+export const signMcpPermissionAssertion = ({ secret, employeeId, mcpId, permissionIds, now = Date.now(), ttlMs = 24 * 60 * 60 * 1000, nonce }) => {
   if (!secret) return '';
   const payload = base64Url(JSON.stringify({
     sub: String(employeeId || ''),
@@ -63,6 +63,7 @@ export const signMcpPermissionAssertion = ({ secret, employeeId, mcpId, permissi
     permissions: [...new Set(asList(permissionIds).map(String))],
     iat: Math.floor(now / 1000),
     exp: Math.floor((now + ttlMs) / 1000),
+    ...(nonce ? { jti: nonce } : {}),
   }));
   const signature = crypto.createHmac('sha256', secret).update(payload).digest('base64url');
   return `${payload}.${signature}`;

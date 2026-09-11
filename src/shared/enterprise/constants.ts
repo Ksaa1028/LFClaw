@@ -29,6 +29,21 @@ export interface EnterpriseUser {
   status: number;
 }
 
+export interface EnterpriseOpenVikingPolicy {
+  enabled: boolean;
+  baseUrl: string;
+  timeoutMs: number;
+  autoRecallTimeoutMs: number;
+  autoCapture: boolean;
+  autoRecall: boolean;
+  recallTargetTypes: Array<'user'>;
+  peerRole: 'none';
+  commitTokenThresholdRatio: number;
+  commitKeepRecentCount: number;
+  enabledTools: string[];
+  enableAddResourceTool: boolean;
+}
+
 export interface EnterprisePolicy {
   allowedModelIds: string[];
   allowedModelProviderIds?: string[];
@@ -55,6 +70,7 @@ export interface EnterprisePolicy {
     baseUrl: string;
     apiKey: string;
     apiFormat: 'openai' | 'anthropic' | 'gemini';
+    openClawApi?: 'openai-completions' | 'openai-responses';
     models: Array<{
       id: string;
       name: string;
@@ -118,6 +134,7 @@ export interface EnterprisePolicy {
     guarded?: boolean;
     reason?: string;
   };
+  openViking?: EnterpriseOpenVikingPolicy;
   adminUrl?: string;
   enterpriseName?: string;
 }

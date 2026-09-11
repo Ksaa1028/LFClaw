@@ -2202,6 +2202,29 @@ describe('OpenClawConfigSync runtime config output', () => {
     const agentsMd = fs.readFileSync(agentsMdPath, 'utf8');
     expect(agentsMd).toContain('LobsterAI does not support sandbox browser execution in this version.');
     expect(agentsMd).toContain('For every `browser` tool call, set `target="host"` explicitly.');
+    expect(agentsMd).toContain('LFClaw enterprise MCP servers are app-managed resources injected through `openclaw.json` from the current enterprise policy.');
+    expect(agentsMd).toContain('Do not run `openclaw mcp add`, `openclaw mcp set`, `openclaw mcp remove`, `openclaw mcp probe`, `openclaw mcp reload`, or `openclaw mcp status`');
+  });
+
+  test('honors an enterprise model explicit OpenAI Responses transport', async () => {
+    const { OpenClawApi } = await import('../../shared/providers');
+    const { buildProviderSelection } = await import('./openclawConfigSync');
+
+    const selection = buildProviderSelection({
+      apiKey: 'sk-enterprise',
+      baseURL: 'https://api.openai.com/v1',
+      modelId: 'gpt-5.6-terra',
+      apiType: 'openai',
+      providerName: 'custom_0',
+      openClawApi: 'openai-responses',
+      supportsImage: true,
+      supportsThinking: false,
+      modelName: 'OpenAI GPT-5.6 Terra',
+    });
+
+    expect(selection.providerConfig.api).toBe(OpenClawApi.OpenAIResponses);
+    expect(selection.providerConfig.models[0].api).toBe(OpenClawApi.OpenAIResponses);
+    expect(selection.providerConfig.models[0].reasoning).toBe(false);
   });
 
   test('enables managed OpenClaw tool loop detection', async () => {
@@ -2383,6 +2406,32 @@ describe('OpenClawConfigSync runtime config output', () => {
         authorization: 'Bearer test-token',
         'x-tenant-id': 'tenant-123',
         'x-client-id': 'client-456',
+      },
+    });
+  });
+
+  test('uses stable enterprise MCP registry id as openclaw server key', async () => {
+    const sync = await createSync({
+      getResolvedMcpServers: () => [{
+        name: '企业数据 MCP',
+        registryId: 'enterprise:analytics-mcp',
+        transportType: 'sse',
+        url: 'http://127.0.0.1:14055/proxy/sse',
+        headers: {
+          'x-lfclaw-mcp-proxy-secret': 'proxy-secret',
+        },
+      }],
+    });
+
+    const result = sync.sync('enterprise-mcp-updated');
+
+    expect(result.ok).toBe(true);
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(Object.keys(config.mcp.servers)).toEqual(['analytics-mcp']);
+    expect(config.mcp.servers['analytics-mcp']).toMatchObject({
+      url: 'http://127.0.0.1:14055/proxy/sse',
+      headers: {
+        'x-lfclaw-mcp-proxy-secret': 'proxy-secret',
       },
     });
   });
