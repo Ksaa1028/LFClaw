@@ -1285,14 +1285,6 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
 
               <div className="mt-auto flex items-center justify-between text-[11px] text-secondary">
                 <div className="flex items-center gap-2">
-                {skill.isOfficial && (
-                  <>
-                    <span className="px-1.5 py-0.5 rounded bg-primary-muted text-primary font-medium">
-                      {i18nService.t('official')}
-                    </span>
-                    <span>·</span>
-                  </>
-                )}
                 {skill.version && (
                   <>
                     <span className="px-1.5 py-0.5 rounded bg-surface-raised font-medium">
@@ -1725,19 +1717,6 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                 const mp = marketplaceSkills.find(m => m.id === selectedSkill.id);
                 return (
                   <>
-                    {selectedSkill.isOfficial && (
-                      <div className="flex items-center text-xs">
-                        <span className="w-16 flex-shrink-0 text-secondary">{i18nService.t('skillDetailSource')}</span>
-                        <span className="px-1.5 py-0.5 rounded bg-primary-muted text-primary font-medium">
-                          {i18nService.t('official')}
-                        </span>
-                        {mp?.source?.author && (
-                          <span className="ml-1.5 px-1.5 py-0.5 rounded bg-surface-raised text-foreground font-medium">
-                            {mp.source.author}
-                          </span>
-                        )}
-                      </div>
-                    )}
                     {!selectedSkill.isOfficial && mp?.source?.from && (
                       <div className="flex items-center text-xs">
                         <span className="w-16 flex-shrink-0 text-secondary">{i18nService.t('skillDetailSource')}</span>

@@ -230,11 +230,6 @@ const KitsPopover: React.FC<KitsPopoverProps> = ({
                     <span className="min-w-0 truncate text-[13px] font-semibold leading-5 text-foreground">
                       {resolveLocalizedText(kit.name)}
                     </span>
-                    {kit.author && (
-                      <span className="flex-shrink-0 rounded bg-surface-raised px-1.5 py-0.5 text-[10px] font-medium leading-none text-secondary">
-                        {i18nService.t('kitOfficial')}
-                      </span>
-                    )}
                   </div>
                   <p className="mt-0.5 truncate text-[12px] leading-4 text-secondary">
                     {resolveLocalizedText(kit.description)}

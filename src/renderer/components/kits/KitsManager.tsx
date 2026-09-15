@@ -523,14 +523,6 @@ const KitsManager: React.FC<KitsManagerProps> = ({ onTryAsking, onUseKit }) => {
                       <span className="text-secondary/50">·</span>
                     </>
                   )}
-                  {selectedKit.author && (
-                    <>
-                      <span className="rounded-md bg-primary-muted px-1.5 py-0.5 font-medium text-primary">
-                        {i18nService.t('kitOfficial')}
-                      </span>
-                      <span className="text-secondary/50">·</span>
-                    </>
-                  )}
                   {selectedKit.version && (
                     <>
                       <span className="rounded-md bg-surface-raised px-1.5 py-0.5 font-medium">
@@ -849,14 +841,6 @@ const KitsManager: React.FC<KitsManagerProps> = ({ onTryAsking, onUseKit }) => {
                           <span className="inline-flex items-center gap-0.5 rounded-md bg-green-500/10 px-1.5 py-0.5 font-medium text-green-600 dark:text-green-400">
                             <CheckIcon className="h-2.5 w-2.5" />
                             {i18nService.t('kitInstalled')}
-                          </span>
-                          <span className="text-secondary/50">·</span>
-                        </>
-                      )}
-                      {kit.author && (
-                        <>
-                          <span className="rounded-md bg-primary-muted px-1.5 py-0.5 font-medium text-primary">
-                            {i18nService.t('kitOfficial')}
                           </span>
                           <span className="text-secondary/50">·</span>
                         </>

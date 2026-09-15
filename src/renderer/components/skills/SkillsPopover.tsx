@@ -309,14 +309,6 @@ const SkillsPopover: React.FC<SkillsPopoverProps> = ({
                     >
                       {skill.name}
                     </span>
-                    {skill.isOfficial && (
-                      <span className={asSubmenu
-                        ? 'flex-shrink-0 rounded bg-surface-raised px-1.5 py-0.5 text-[10px] font-medium leading-none text-secondary'
-                        : 'px-1.5 py-0.5 text-[10px] font-medium rounded bg-primary/10 text-primary flex-shrink-0'}
-                      >
-                        {i18nService.t('official')}
-                      </span>
-                    )}
                   </div>
                   {description && (
                     <p className={asSubmenu ? 'mt-0.5 truncate text-[12px] leading-4 text-secondary' : 'text-xs text-secondary truncate mt-0.5'}>
